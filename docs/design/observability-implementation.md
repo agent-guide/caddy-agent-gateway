@@ -2,19 +2,19 @@
 
 ## 0. About This Document
 
-This is the execution plan for landing the design in `observability.md`. It does
-not restate the design rationale. It records the concrete, ordered, codebase-
-anchored steps required to implement observability, the seams that must be opened
-first, and the verification gate for each step.
+This document records the implementation path for the observability design in
+`observability.md` and the remaining follow-up work. The foundation milestones
+have landed; the remaining work is called out explicitly rather than mixed into
+the completed plan.
 
 Every file path and type below was verified against the current tree. When the
 design and the code disagree, this document follows the code.
 
 Conventions:
 
-- each step lists its target files, the change, and a verification command/check
-- steps are ordered so the tree stays buildable (`go build ./...`) after each step
-- `go test ./...` and `go vet ./...` must pass at every milestone boundary
+- completed milestones list their original target files and verification gates
+- remaining follow-ups list the target files, change, and verification checks
+- `go test ./...` and `go vet ./...` should pass at each milestone boundary
 
 Source-of-truth anchors used throughout:
 
@@ -29,8 +29,10 @@ Source-of-truth anchors used throughout:
 
 ## 1. Milestone Map
 
-Phase 1 (durable events + real `/admin/metrics`) is split into ordered
-milestones M0–M9. Phase 2 and Phase 3 follow the design's own phasing.
+The durable event pipeline, real `/admin/metrics`, per-protocol event listing,
+aggregate metrics, Prometheus exposition, retention cleanup, agent-depth gate,
+MCP verbose audit mode, and ACP Admin audit spans are implemented. The original
+foundation work was split into milestones M0–M9:
 
 ```
 M0  Storage seam            open *gorm.DB access on the sqlite backend
@@ -45,7 +47,8 @@ M8  admin summary            replace GET /admin/metrics 501 with real summary
 M9  admin events endpoints   llm/mcp/acp/interactions events listing
 ```
 
-A working vertical slice exists after M5 (LLM end-to-end). M6–M9 extend coverage.
+M0-M9 are completed historical milestones. Remaining follow-ups are listed after
+the completed sections.
 
 ## 1.1 Implementation Contracts
 
@@ -183,7 +186,8 @@ Steps:
 4. `usage_query.go`: leave as stubs/signatures here; fill in M8/M9.
 
 Tables created: `llm_usage_events`, `mcp_usage_events`, `acp_usage_events`
-(design §10.1–§10.3, exact columns + indexes). Rollup tables are Phase 2.
+(design §10.1–§10.3, exact columns + indexes). Rollup tables were later dropped;
+aggregate queries scan the event tables directly.
 
 `mcp_usage_events` includes the policy-attribution columns `presented_tool_name`,
 `executed_tool_name`, `execution_mode`, and `policy_action` from phase 1 (created
@@ -310,8 +314,10 @@ M6 only reserves the seam — do not populate or block on tool policy here.
 `pkg/mcp/runtime/registry.go`: unchanged in role — remains in-memory inspection;
 `CompletedRequest` is NOT the persisted schema and the sink must not consume it.
 
-`pkg/mcp/service/types.go`: defer `AuditConfig` (`capture_tool_args`) to Phase 2.
-In M6 always leave `tool_args_json` null.
+`pkg/mcp/service/types.go`: in the original M6 slice `tool_args_json` stayed
+null. The later verbose audit follow-up added `AuditConfig`
+(`capture_tool_args`) and populates `tool_args_json` only when enabled per
+service.
 
 Error categories: design §7.2.
 
@@ -334,9 +340,9 @@ Verification:
 - for `sessions`/`transcript`: record query shape only; never store transcript
   content.
 
-Phase 1 records only route-scoped ACP traffic through `agent_route_dispatcher`.
-Admin-scoped ACP session/transcript operator calls are deferred (Phase 3 admin
-audit events).
+Route-scoped ACP traffic is recorded through `agent_route_dispatcher`. ACP Admin
+runtime/session/transcript operator calls are now recorded as management-plane
+audit spans with the synthetic route `/admin/acp` and `route_protocol=admin`.
 
 Error categories: design §8.2.
 
@@ -345,6 +351,90 @@ Verification:
 - unit test: a turn records one `acp_usage_events` row with `operation=turn`,
   populated `event_counts_json`, and no content fields.
 - permission resolution records `operation=permission` + request id.
+
+## 9.1 Remaining Follow-up - ACP Token Metrics
+
+Design source: `observability.md` §8.2.
+
+ACP `usage_update` reports session context occupancy (a gauge), not LLM-style
+input/output tokens. Add ACP token metrics as a schema extension without changing
+that meaning, and treat the totals as an approximate context-growth signal, not a
+billable token count.
+
+Field names are fixed by the ACP v1 `session/update` schema (already decoded and
+tested in `pkg/acp/runtime/acpupdate`), so `used`/`size` parsing needs no capture.
+Emission is agent-specific but verified for both current adapters (live captures
+2026-06-24, one `usage_update` per turn each):
+
+- `codex-acp` v0.16.0: `{"sessionUpdate":"usage_update","used":14769,"size":258400}`
+  — only `used`/`size`.
+- `opencode`: `{"sessionUpdate":"usage_update","used":11102,"size":200000,"cost":{"amount":0,"currency":"USD"}}`
+  — same `used`/`size` plus a nested `cost` object.
+
+So codex turns DO get token columns. (codex only lacks `session_info_update`, an
+unrelated update that affects the session title, not token data.) The parser must
+extract only `used`/`size` and tolerate extra/nested fields like opencode's
+`cost`; `cost` is not persisted (and was `0` in the capture, so it is not a
+billing source). An adapter that emits no parseable `usage_update` simply leaves
+the token columns null for its turns; document per-adapter emission rather than
+assuming uniform coverage.
+
+Targets:
+
+- `pkg/acp/runtime/types.go` + `pkg/acp/runtime/instance.go`: add a `Replay bool`
+  marker to `TurnEvent`, set true for every event built in
+  `sessionMetaCache.turnStartEvents` (the cached config/commands/session-info/
+  mode/usage snapshot replayed at each turn start). This is the seam that lets the
+  metrics layer tell a turn's own live `usage_update` from the joined-session
+  snapshot replay; without it, every turn on a session with cached usage would be
+  miscounted.
+- `pkg/metrics/usage/event.go`: add `ContextUsedTokens *int`,
+  `ContextWindowTokens *int`, `TokenDelta *int`, and `UsageObserved bool` to
+  `ACPUsageEvent` and `ACPExtension`, and merge them in `mergeACP`
+  (`pkg/metrics/usage/merge.go`).
+- `pkg/dispatcher/acp_handler.go`: in `wrapACPEventSinkForUsage`, parse only
+  live (`!event.Replay`) `event: usage` payloads for the ACP context fields; skip
+  replayed snapshots entirely so they never set `UsageObserved` or token fields.
+  Set `UsageObserved=true` and the parsed values on the `ACPExtension` (later live
+  usage events overwrite earlier ones, so the final live snapshot wins); keep
+  malformed payloads non-fatal and continue storing bounded `usage_json`.
+- `pkg/metrics/usage/observer.go`: at ACP event finalization, before enqueue,
+  stamp `TokenDelta` using a small in-process per-session last-value tracker keyed
+  by `service_id` + `session_id` (guarded by a mutex, with bounded entry
+  eviction). Store only a positive delta vs the previous turn's value; leave it
+  null on first turn, missing current value, decrease, or missing session id, then
+  update the tracker to the current value. This single upstream stamp is what
+  keeps the SQLite and Prometheus sinks consistent — neither sink computes the
+  delta itself.
+- `pkg/configstore/sqlite/usage_schema.go`: add nullable `context_used_tokens`,
+  `context_window_tokens`, `token_delta`, and `usage_observed`
+  (`INTEGER NOT NULL DEFAULT 0`) columns to `acp_usage_events`, with idempotent
+  migration for existing databases. No new index is required because the delta is
+  precomputed; the write path stays a single `INSERT`.
+- `pkg/configstore/sqlite/usage_writer.go`: persist the new ACP fields in
+  `InsertACPUsageEvent`; no per-turn `SELECT`.
+- `pkg/configstore/sqlite/usage_query.go`: `context_growth_tokens` =
+  `SUM(token_delta)` over the window; `latest_context_used_tokens` =
+  `context_used_tokens` of the most recent (`finished_at`) row with a non-null
+  value. Label growth as approximate, not "tokens used".
+- `pkg/metrics/pipeline/prom_sink.go`: in `eventMetrics`, return the stamped
+  `TokenDelta` (not `context_used_tokens`) as the ACP token contribution so the
+  Prometheus counter matches the SQLite sum.
+
+Verification:
+
+- a turn with a live `usage_update` stores context token fields and sets
+  `usage_observed=true`.
+- a turn with no live `usage_update` leaves token fields null and
+  `usage_observed=false`, even when the runtime replays a cached usage snapshot
+  at turn start (replayed `usage` events with `Replay=true` are ignored).
+- malformed usage JSON does not fail the ACP turn and leaves token fields null.
+- two consecutive same-session turns `100 -> 160` stamp `token_delta=60` on the
+  second event; the first turn's `token_delta` is null.
+- a decreasing snapshot such as `160 -> 80` stamps a null `token_delta` and
+  contributes nothing to `context_growth_tokens`.
+- the Prometheus ACP token counter and the SQLite `context_growth_tokens` for the
+  same window agree (same stamped `token_delta` source).
 
 ## 10. M8 — Real `/admin/metrics` Summary
 
@@ -382,7 +472,7 @@ Verification:
 - each endpoint returns recent rows with working filters; `limit` clamped to
   1000; bad `from`/`to` rejected.
 
-## 12. Phase 2 — Aggregated Statistics (after Phase 1 lands)
+## 12. Implemented Follow-ons
 
 Aggregate queries run directly over the typed event tables. Internal rollup
 tables were intentionally dropped: the single-dimension rollup shape could not
@@ -391,33 +481,38 @@ source of truth anyway), while it added per-event write amplification and
 unbounded table growth. High-volume aggregation, trends, and alerting are
 delegated to an external system through the Prometheus exposition endpoint.
 
+Implemented follow-ons:
+
 1. aggregate endpoints scan the event tables: `GET /admin/metrics/llm/timeseries`,
    `GET /admin/metrics/llm/breakdown`, `GET /admin/metrics/mcp/tools/summary`,
    `GET /admin/metrics/acp/summary`, `GET /admin/metrics/interactions/summary`.
 2. retention cleanup runs at startup and on a periodic janitor in the SQLite
    sink (configurable window; design §10.5).
-3. MCP verbose audit mode: add `AuditConfig`/`capture_tool_args` to
+3. MCP verbose audit mode: `AuditConfig`/`capture_tool_args` on
    `pkg/mcp/service.MCPServiceConfig`; populate `tool_args_json` when enabled.
    Persisted free-form payloads (`tool_args_json`, ACP `usage_json`) are
    truncated to a fixed byte cap to bound secret/PII exposure.
-
-## 13. Phase 3 — Exporters & Policy Hooks
-
-Per design §14 Phase 3:
-
-1. improve streaming token finalization for providers exposing final usage.
-2. `PrometheusSink` (`pkg/metrics/pipeline/prom_sink.go`) is wired into the
+4. `PrometheusSink` (`pkg/metrics/pipeline/prom_sink.go`) is wired into the
    pipeline and exposed at `GET /admin/metrics/prometheus`; pipeline drop/failure
    counters are surfaced both there and in the `pipeline` object of
    `GET /admin/metrics`.
-3. `OpenTelemetrySink` (design §5.4 mapping rules) remains an adapter seam for a
-   deployment-supplied push exporter.
-4. configurable retention window through the Caddyfile `metrics` block and
+5. configurable retention window through the Caddyfile `metrics` block and
    `agwd --metrics-retention-days`.
-5. agent-depth enforcement policy gate through `max_agent_depth` and
+6. agent-depth enforcement policy gate through `max_agent_depth` and
    `agwd --max-agent-depth`.
-6. optional admin-audit events for operator Admin API runtime/session/transcript
+7. admin-audit events for operator Admin API runtime/session/transcript
    calls.
+
+## 13. Remaining Exporter & Policy Hooks
+
+Remaining work:
+
+1. improve streaming token finalization for providers exposing final usage.
+2. wire a deployment-supplied push exporter into the `OpenTelemetrySink` adapter
+   seam.
+3. implement MCP tool policy so `presented_tool_name`, `executed_tool_name`,
+   `execution_mode`, and `policy_action` are populated.
+4. implement ACP token metrics as described in §9.1.
 
 ## 14. Cross-Cutting Test Strategy
 
@@ -428,17 +523,12 @@ Per design §14 Phase 3:
 - one end-to-end smoke per protocol family asserting exactly one persisted row.
 - `go test ./...` and `go vet ./...` green at each milestone boundary.
 
-## 15. Docs To Update When Phase 1 Lands
+## 15. Documentation Status
 
-Per repo change policy:
-
-- `AGENTS.md`: add `pkg/metrics/...` to Key Packages; note `/admin/metrics*` is
-  implemented (no longer stubbed); record the `SQLDBProvider` seam on the sqlite
-  backend.
-- `README.md`: document the metrics endpoints and the trace-context headers.
-- `docs/architecture/architecture-overview.md`: move metrics from "future" to
-  implemented infrastructure.
-- `observability.md` §15 cross-references stay accurate.
+`AGENTS.md`, `README.md`, `docs/architecture/architecture-overview.md`, and
+`observability.md` describe metrics as implemented infrastructure. Future
+observability changes should update those documents in the same change when they
+alter Admin API paths, metric semantics, storage schema, or dispatcher behavior.
 
 ## 16. Resolved Decisions
 

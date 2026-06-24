@@ -205,6 +205,7 @@ func smokePromptTurn(t *testing.T, cfg acpservice.ServiceConfig) {
 
 	const input = "Reply with exactly the single word: pong"
 	var deltas, reasoning []string
+	var usageRaw []string
 	events := map[string]int{}
 	emit := func(ev TurnEvent) error {
 		events[ev.Event]++
@@ -213,6 +214,8 @@ func smokePromptTurn(t *testing.T, cfg acpservice.ServiceConfig) {
 			deltas = append(deltas, ev.Text)
 		case "reasoning":
 			reasoning = append(reasoning, ev.Text)
+		case "usage":
+			usageRaw = append(usageRaw, string(ev.Data))
 		}
 		return nil
 	}
@@ -246,6 +249,14 @@ func smokePromptTurn(t *testing.T, cfg acpservice.ServiceConfig) {
 	}
 	t.Logf("%s transcript: %d messages, assistant=%q", cfg.AgentType, len(transcript.Messages), strings.TrimSpace(roles["assistant"]))
 
+	if len(usageRaw) > 0 {
+		t.Logf("%s streamed %d usage event(s) during the turn:", cfg.AgentType, len(usageRaw))
+		for i, raw := range usageRaw {
+			t.Logf("  usage[%d] = %s", i, raw)
+		}
+	} else {
+		t.Logf("%s streamed no usage events during the turn", cfg.AgentType)
+	}
 	if snap := inst.meta.snapshot(); len(snap.Usage) > 0 {
 		t.Logf("%s usage cached after turn: %s", cfg.AgentType, snap.Usage)
 	} else {

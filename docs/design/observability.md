@@ -21,7 +21,7 @@ This allows operators and agent builders to:
 - reconstruct multi-agent call chains through trace and span correlation
 - govern agent behavior by inspecting depth, frequency, and error patterns across agent chains
 
-This document fills in the metrics area currently stubbed by `GET /admin/metrics`. MCP tool policy is a separate concern described in `mcp-tool-policy.md`.
+This document describes the metrics area implemented by `GET /admin/metrics` and the related per-protocol metrics endpoints. MCP tool policy is a separate concern described in `mcp-tool-policy.md`.
 
 The current implementation baseline is:
 
@@ -45,7 +45,7 @@ The current implementation baseline is:
 - Carry agent chain identity (`trace_id`, `span_id`, `parent_span_id`, `agent_depth`) on every persisted event from phase 1.
 - Persist events durably to SQLite so history survives restarts.
 - Expose useful summaries and recent-event inspection through the Admin API, including a unified cross-protocol view.
-- Support aggregated rollups for token and request volume trends.
+- Support aggregate queries for token and request volume trends.
 - Keep the request critical path impact minimal.
 
 ## 3. Non-Goals
@@ -142,7 +142,7 @@ ACP event payloads must not store turn input, deltas, content, reasoning text, t
 ┌──────────────────────────────────────────────────────┐
 │                 pkg/metrics/pipeline                  │
 │   EventPipeline: buffered channel + fan-out           │
-│   SQLiteSink / [future: Prometheus, OTel, webhook]    │
+│   SQLiteSink / PrometheusSink / [future: OTel, webhook]│
 └──────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -151,7 +151,7 @@ ACP event payloads must not store turn input, deltas, content, reasoning text, t
 │   llm_usage_events table                             │
 │   mcp_usage_events table                             │
 │   acp_usage_events table                             │
-│   usage rollup tables                                │
+│   event tables queried directly for aggregates        │
 └──────────────────────────────────────────────────────┘
                          │
                          ▼
@@ -227,7 +227,9 @@ Request extraction precedence is:
 
 The gateway always generates a new `span_id` for the current operation. When a valid `traceparent` is present, the generated IDs must remain compatible with W3C Trace Context. The gateway emits `traceparent` and `tracestate` response headers, and may also emit `X-Trace-ID`, `X-Span-ID`, and `X-Agent-Depth` as compatibility headers. `X-Agent-Depth` is returned as `agent_depth + 1`.
 
-Agent depth enforcement is a later policy gate. The fields must be stored from phase 1 so that enforcement can be added without a schema migration.
+Agent depth enforcement is implemented as an optional policy gate through the
+`metrics` Caddyfile block and `agwd --max-agent-depth`. A value of `0` disables
+the gate.
 
 ### 5.3 Event Pipeline
 
@@ -236,7 +238,7 @@ The `InteractionObserver` interface used at call sites does not write to storage
 ```
 InteractionObserver  ->  buffered channel  ->  EventPipeline
                                                    ├── SQLiteSink
-                                                   ├── [future] PrometheusSink
+                                                   ├── PrometheusSink
                                                    ├── [future] OpenTelemetrySink
                                                    └── [future] WebhookSink
 ```
@@ -346,7 +348,7 @@ Normalized LLM `error_type` values:
 
 ### 6.4 Streaming Behavior
 
-Phase 1 behavior for streaming requests:
+Current behavior for streaming requests:
 
 - record the event when the stream completes or errors
 - use available final usage metadata if the provider exposes it in the stream
@@ -476,9 +478,102 @@ result_status       success | error
 
 ACP `turn` requests are SSE operations. The event is recorded when `ServeTurn` returns, the client connection fails, or the request context is cancelled. The event should count emitted SSE event names (`session`, `delta`, `reasoning`, `content`, `plan`, `tool_call`, `usage`, `available_commands`, `session_info`, `mode`, `config_options`, `permission`, `done`, `error`) without storing event payload content.
 
-Route-scoped `sessions` and `transcript` requests and service-scoped Admin ACP session/transcript requests are separate surfaces. Phase 1 records only route-scoped ACP traffic through `agent_route_dispatcher`. Admin API operator calls may be added later as admin audit events.
+### 8.2 Planned ACP Token Metrics
 
-### 8.2 ACP Error Categories
+Status: planned follow-up, not implemented in the current schema or event model.
+
+ACP token metrics should follow the ACP `usage_update` semantics. The protocol reports
+**session context occupancy** (a gauge), not per-model request accounting. This
+is the exact payload captured live from `codex-acp` v0.16.0 (one `usage_update`
+per turn, verified 2026-06-24 by the prompt smoke; the turn only asked the model
+to reply "pong", so `used` is almost entirely the agent's standing context, not
+the reply):
+
+```json
+// codex-acp v0.16.0
+{ "sessionUpdate": "usage_update", "used": 14769, "size": 258400 }
+
+// opencode (adds a nested cost object)
+{ "sessionUpdate": "usage_update", "used": 11102, "size": 200000,
+  "cost": { "amount": 0, "currency": "USD" } }
+```
+
+Neither adapter reports `input_tokens`/`output_tokens` — only the `used`/`size`
+gauge. `cost` is agent-specific (present on opencode, absent on codex) and is
+not persisted by these metrics; in the captured opencode turn `cost.amount` was
+`0`, so it is not a reliable billing source either. The parser extracts only
+`used`/`size` and must tolerate extra or nested fields like `cost`. `used` and
+`size` are the current-context token counts, parsed per the ACP v1
+`session/update` schema (the same schema `pkg/acp/runtime/acpupdate` already
+decodes and tests against), and should be stored as `context_used_tokens` and
+`context_window_tokens` when this follow-up lands. They must not be treated as LLM-style `input_tokens`,
+`output_tokens`, or per-request `total_tokens`.
+
+**Coverage caveat.** The field names `used`/`size` are fixed by the ACP v1
+schema, so parsing does not depend on a capture to learn key names. What is
+agent-specific is whether an adapter actually emits `usage_update` at all. Both
+verified adapters do (live captures 2026-06-24, above): `codex-acp` v0.16.0 emits
+exactly one `usage_update` per turn carrying only `used`/`size` — note this is a
+different update from `session_info_update`, which codex does *not* emit, so the
+missing session *title* does not imply missing *token* data — and `opencode`
+emits one per turn too, with the same `used`/`size` plus an extra nested `cost`
+object the parser ignores.
+An adapter that emits no parseable `usage_update` leaves the token columns null
+for its turns; document per-adapter emission rather than assuming uniform
+coverage.
+
+**Turn-start replay must be excluded.** At the start of every turn the runtime
+replays the cached session metadata, including the last `usage` snapshot, as a
+`usage` event (`sessionMetaCache.turnStartEvents` in
+`pkg/acp/runtime/instance.go`). A replayed snapshot is indistinguishable from a
+fresh `usage_update` at the SSE layer, so counting it would mark a turn that
+produced no new usage as `usage_observed=true` and re-stamp a stale
+`context_used_tokens` (and a spurious `token_delta`). ACP token metrics must
+count only **live** (non-replay) usage updates. This requires a source marker on
+the runtime event: add a `Replay bool` (set true in `turnStartEvents`) to
+`acpruntime.TurnEvent`, and have the dispatcher's usage parser ignore replayed
+`usage` events. Without that marker the metric cannot distinguish a turn's own
+usage from the joined-session snapshot.
+
+**Why a gauge cannot be summed as throughput.** `context_used_tokens` rises
+during a session and periodically drops on context compaction, truncation,
+reload, or `fresh_session`. Summing the gauge, or even summing positive
+turn-to-turn deltas, does not equal tokens processed: every compaction turn
+contributes nothing and subsequent growth is measured from the lowered baseline,
+so any "total" systematically under-counts. ACP token metrics are therefore an
+**approximate context-growth signal, not a billable token count**. Real token
+billing must come from the LLM event path, not from ACP `usage_update`.
+
+`token_delta` is a best-effort, per-turn positive difference between this turn's
+final `context_used_tokens` and the previous turn's value for the same
+`service_id` + `session_id`. It is stamped onto the event **before the event is
+enqueued to the pipeline**, by a small in-process per-session last-value tracker
+in the usage observer — not computed inside a sink. This is required for
+consistency: the SQLite sink and the Prometheus sink each receive a copy of the
+same `ACPUsageEvent`, so a delta computed inside one sink would be invisible to
+the other. Computing it once upstream lets both sinks read the same stamped
+`token_delta`, and avoids a per-turn `SELECT`-before-`INSERT` (and the extra
+index and retention-janitor hazards) in the write path.
+
+`token_delta` stays null — and is excluded from any total — when the previous
+value is unknown (process restart, first turn, evicted tracker entry), the
+current value is missing, the value decreased, or the session identity is
+unavailable. Because the tracker keys on the finalized turn event, the "previous
+value" is the previous turn as ordered by event finalization, not strict
+wall-clock turn start; rapid concurrent turns on one session can therefore order
+imprecisely, which is acceptable for an approximate signal but is another reason
+not to treat the totals as exact.
+
+Only the final live `usage_update` of a turn is retained: the dispatcher
+overwrites the parsed values on each live (non-replay) `usage` SSE event, so
+intra-turn fluctuation is not preserved. The dispatcher parses only live `usage`
+SSE events and only the known ACP fields; malformed or unknown usage payloads
+must not fail the turn, and the raw bounded `usage_json` continues to be stored
+for inspection.
+
+Route-scoped `sessions` and `transcript` requests and service-scoped Admin ACP session/transcript requests are separate surfaces. Route-scoped ACP traffic is recorded through `agent_route_dispatcher`; ACP Admin runtime/session/transcript operator calls are recorded as management-plane audit spans with the synthetic route `/admin/acp` and `route_protocol=admin`.
+
+### 8.3 ACP Error Categories
 
 - `route_not_found`
 - `route_disabled`
@@ -496,7 +591,7 @@ Route-scoped `sessions` and `transcript` requests and service-scoped Admin ACP s
 
 ### 9.1 Existing Endpoint Updated
 
-`GET /admin/metrics` currently returns `501 Not Implemented`. It becomes a real summary response:
+`GET /admin/metrics` returns a real summary response plus pipeline health counters:
 
 ```json
 {
@@ -522,6 +617,10 @@ Route-scoped `sessions` and `transcript` requests and service-scoped Admin ACP s
     "success_count": 214,
     "failure_count": 6,
     "avg_latency_ms": 8840
+  },
+  "pipeline": {
+    "dropped_events": 0,
+    "write_failures": 0
   }
 }
 ```
@@ -581,7 +680,9 @@ Returns recent ACP usage events. Supports query parameters:
 
 `GET /admin/metrics/acp/summary`
 
-Returns ACP totals grouped by `route_id`, `service_id`, `agent_type`, or `operation`.
+Returns ACP totals grouped by `route_id`, `service_id`, `agent_type`, or
+`operation`. Planned ACP context-token fields such as `context_growth_tokens`
+and `latest_context_used_tokens` are not part of the current response.
 
 ### 9.5 Unified Cross-Protocol Interactions Endpoint
 
@@ -769,7 +870,7 @@ CREATE INDEX idx_acp_events_thread ON acp_usage_events (thread_id, started_at)
 > delegated to an external system via the Prometheus exposition endpoint
 > (`GET /admin/metrics/prometheus`). The original design is kept below for context.
 
-Rollups are derived from event tables. Phase 2 introduces rollup tables for time-series and breakdown queries:
+The superseded rollup design derived rows from event tables and introduced:
 
 - `llm_usage_rollups`
 - `mcp_usage_rollups`
@@ -786,7 +887,10 @@ Default retention policy (enforced at startup and by a periodic background janit
 - `mcp_usage_events`: 30 days
 - `acp_usage_events`: 30 days
 
-A background cleanup job deletes expired event rows. The cleanup interval and retention window are configurable in a later phase; phase 1 may use a fixed 30-day window and run cleanup on gateway startup.
+A background cleanup job deletes expired event rows. The retention window is
+configurable through the Caddyfile `metrics` block and `agwd
+--metrics-retention-days`; cleanup runs at startup and through a periodic
+janitor in the SQLite sink.
 
 ## 11. Package Structure
 
@@ -800,7 +904,7 @@ pkg/metrics/usage/
 pkg/metrics/pipeline/
     pipeline.go      EventPipeline: buffered input channel, fan-out loop, Sink interface
     sqlite_sink.go   SQLite sink
-    prom_sink.go     Prometheus sink (later phase)
+    prom_sink.go     Prometheus sink
 
 pkg/configstore/sqlite/
     usage_writer.go  low-level typed INSERT helpers consumed by sqlite_sink
@@ -910,7 +1014,7 @@ ACP permission params may contain sensitive command details and are not stored i
 
 ## 14. Implementation Order
 
-### Phase 1: Foundation And Durable Events
+### Implemented Foundation And Durable Events
 
 Goal: durable event capture for LLM, MCP, and ACP traffic plus a real `/admin/metrics` summary.
 
@@ -926,28 +1030,27 @@ Goal: durable event capture for LLM, MCP, and ACP traffic plus a real `/admin/me
 10. Replace `GET /admin/metrics` with a real summary from SQLite.
 11. Add `GET /admin/metrics/llm/events`, `GET /admin/metrics/mcp/events`, `GET /admin/metrics/acp/events`, and `GET /admin/metrics/interactions`.
 
-### Phase 2: Aggregated Statistics
+### Implemented Aggregated Statistics
 
-Goal: rollup tables and time-series query endpoints.
+Goal: event-table-backed time-series and breakdown endpoints. Rollup tables were
+dropped; event tables remain the source of truth.
 
-1. Implement rollup tables and additive updates on event write.
-2. Implement `GET /admin/metrics/llm/timeseries` and `GET /admin/metrics/llm/breakdown`.
-3. Implement `GET /admin/metrics/mcp/tools/summary`.
-4. Implement `GET /admin/metrics/acp/summary`.
-5. Implement `GET /admin/metrics/interactions/summary`.
-6. Add startup retention cleanup for event tables.
-7. Add verbose audit mode for MCP tool arguments.
+1. Implement `GET /admin/metrics/llm/timeseries` and `GET /admin/metrics/llm/breakdown`.
+2. Implement MCP and ACP timeseries/breakdown/summary endpoints.
+3. Implement `GET /admin/metrics/interactions/summary`.
+4. Add startup and periodic retention cleanup for event tables.
+5. Add verbose audit mode for MCP tool arguments.
 
-### Phase 3: Exporters And Policy Hooks
+### Remaining Follow-Ups
 
-Goal: better streaming coverage, external exporter support, and agent chain governance.
+Goal: external exporter integration and protocol-specific refinements.
 
 1. Improve streaming token finalization for providers that expose final usage.
-2. Register optional `PrometheusSink`.
-3. Add optional `OpenTelemetrySink`.
-4. Add configurable retention window.
-5. Add agent depth enforcement policy.
-6. Add optional admin-audit events for operator calls to Admin API runtime/session/transcript surfaces.
+2. Wire a deployment-supplied OpenTelemetry exporter into the `OpenTelemetrySink`
+   adapter seam.
+3. Implement MCP tool policy so policy-attribution columns are populated.
+4. Implement planned ACP context-token metrics.
+5. Add optional permission-argument capture if a future audit mode requires it.
 
 ## 15. Relationship To Existing Documents
 
