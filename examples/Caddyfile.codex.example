@@ -6,6 +6,7 @@
 # Dispatcher LLM API module IDs:
 # - "agent_route_dispatcher.llm_apis.openai"
 # - "agent_route_dispatcher.llm_apis.anthropic"
+# - "agent_route_dispatcher.llm_apis.cc"
 
 {
 	admin localhost:2019
@@ -21,23 +22,44 @@
 			path ./data/configstore.db
 		}
 
-		provider_types {
-			deepseek
+		provider zhipu-for-codex {
+			provider_type zhipu
+			api_key {$ZHIPU_API_KEY}
+			base_url https://open.bigmodel.cn/api/coding/paas/v4
+			default_model glm-5.2
+			option thinking_type disabled
+			# Codex needs no compat option here: zhipu is a real OpenAI-compatible
+			# endpoint, so it does not gate on Claude Code tool names and the Codex
+			# Responses->chat conversion drops the metadata/user fields. The codex
+			# tool-name aliasing (option compact codex) only applies to the
+			# claudecode/Anthropic-relay provider.
 		}
 
-		provider deepseek-test {
+		provider deepseek-for-codex {
 			provider_type deepseek
 			api_key {$DEEPSEEK_API_KEY}
 			base_url https://api.deepseek.com
-			default_model deepseek-chat
+			default_model deepseek-v4-pro
+		}
+		
+		route codex-zp-chat {
+			protocol openai
+			path_prefix /codexzpchat
+			require_virtual_key false
+			target provider zhipu-for-codex
 		}
 
-		route chat-test {
+		route codex-ds-chat {
 			protocol openai
-			path_prefix /chattest
+			path_prefix /codexdschat
 			require_virtual_key false
 			target provider deepseek-test
 		}
+
+                metrics {
+                        retention_days 30
+                        max_agent_depth 0
+                }
 	}
 }
 

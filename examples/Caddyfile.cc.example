@@ -6,6 +6,7 @@
 # Dispatcher LLM API module IDs:
 # - "agent_route_dispatcher.llm_apis.openai"
 # - "agent_route_dispatcher.llm_apis.anthropic"
+# - "agent_route_dispatcher.llm_apis.cc"
 
 {
 	admin localhost:2019
@@ -21,23 +22,22 @@
 			path ./data/configstore.db
 		}
 
-		provider_types {
-			zhipu
-		}
-
-		provider zhipu-test {
+		provider zhipu-for-cc {
 			provider_type zhipu
 			api_key {$ZHIPU_API_KEY}
-			base_url https://open.bigmodel.cn/api/paas/v4
-			default_model glm-4.7
+			base_url https://open.bigmodel.cn/api/coding/paas/v4
+			default_model glm-5.2
 			option thinking_type disabled
+			# Claude Code CLI compatibility: strip the top-level metadata/user
+			# fields GLM rejects with a 400.
+			option compact cc
 		}
 
-		route code-test {
-			protocol anthropic
-			path_prefix /codetest
+		route cc-zp-chat {
+			protocol cc
+			path_prefix /cczpchat
 			require_virtual_key false
-			target provider zhipu-test
+			target provider zhipu-for-cc
 		}
 	}
 }
