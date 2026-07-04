@@ -23,6 +23,9 @@ type streamableHTTPTestServer struct {
 	// sseOnToolsCall, when true, makes tools/call respond with text/event-stream
 	// instead of application/json.
 	sseOnToolsCall bool
+	// initializedStatus overrides the status returned for notifications/initialized.
+	// When zero, the fake server returns 202 Accepted.
+	initializedStatus int
 }
 
 type httpTestRequest struct {
@@ -76,7 +79,13 @@ func (s *streamableHTTPTestServer) handle(w http.ResponseWriter, r *http.Request
 		})
 
 	case "notifications/initialized":
-		w.WriteHeader(http.StatusAccepted)
+		s.mu.Lock()
+		status := s.initializedStatus
+		s.mu.Unlock()
+		if status == 0 {
+			status = http.StatusAccepted
+		}
+		w.WriteHeader(status)
 
 	case "tools/list":
 		w.Header().Set("Content-Type", "application/json")
@@ -153,6 +162,25 @@ func newStreamableHTTPTestConfig(t *testing.T, id string) (service.MCPServiceCon
 
 func TestManagerStreamableHTTPInitialize(t *testing.T) {
 	cfg, _ := newStreamableHTTPTestConfig(t, "http1")
+	mgr := newInMemoryManager(t, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	payload, err := mgr.Initialize(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if payload["protocolVersion"] != "2025-11-25" {
+		t.Errorf("unexpected protocolVersion: %v", payload["protocolVersion"])
+	}
+}
+
+func TestManagerStreamableHTTPInitializeAcceptsEmptyOKNotification(t *testing.T) {
+	cfg, srv := newStreamableHTTPTestConfig(t, "http1-empty-ok")
+	srv.mu.Lock()
+	srv.initializedStatus = http.StatusOK
+	srv.mu.Unlock()
 	mgr := newInMemoryManager(t, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

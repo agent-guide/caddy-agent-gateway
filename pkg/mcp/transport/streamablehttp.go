@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,6 +117,9 @@ func (t *StreamableHTTPTransport) Do(ctx context.Context, msg *Message) (*Messag
 
 	var reply Message
 	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		if errors.Is(err, io.EOF) && msg.ID == nil {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("streamable_http: decode response: %w", err)
 	}
 	return &reply, nil
