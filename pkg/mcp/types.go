@@ -25,7 +25,7 @@ const (
 type Tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	InputSchema map[string]any `json:"inputSchema,omitempty"`
 }
 
 type ToolListResult struct {
@@ -36,8 +36,8 @@ type ToolListResult struct {
 // ToolResult is the result of calling an MCP tool.
 type ToolResult struct {
 	Content           any            `json:"content,omitempty"`
-	StructuredContent any            `json:"structured_content,omitempty"`
-	IsError           bool           `json:"is_error"`
+	StructuredContent any            `json:"structuredContent,omitempty"`
+	IsError           bool           `json:"isError"`
 	Meta              map[string]any `json:"_meta,omitempty"`
 }
 
@@ -46,7 +46,7 @@ type Resource struct {
 	URI         string `json:"uri"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	MimeType    string `json:"mime_type,omitempty"`
+	MimeType    string `json:"mimeType,omitempty"`
 }
 
 type ResourceListResult struct {
@@ -70,7 +70,7 @@ type ResourceTemplateListResult struct {
 // ResourceContent is the content of a resource.
 type ResourceContent struct {
 	URI      string `json:"uri"`
-	MimeType string `json:"mime_type"`
+	MimeType string `json:"mimeType"`
 	Text     string `json:"text,omitempty"`
 	Blob     []byte `json:"blob,omitempty"`
 }

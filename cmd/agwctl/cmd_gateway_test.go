@@ -411,7 +411,7 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 					{
 						"name":        "echo",
 						"description": "Echo input",
-						"input_schema": map[string]any{
+						"inputSchema": map[string]any{
 							"type": "object",
 						},
 					},
@@ -424,10 +424,10 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 				t.Fatalf("ReadAll(tool call body) error = %v", err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"structured_content": map[string]any{
+				"structuredContent": map[string]any{
 					"message": "ok",
 				},
-				"is_error": false,
+				"isError": false,
 			})
 		case "/admin/mcp/services/svc-1/resources":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -435,7 +435,7 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 					{
 						"uri":         "file:///tmp/example.txt",
 						"name":        "example.txt",
-						"mime_type":   "text/plain",
+						"mimeType":    "text/plain",
 						"description": "Example file",
 					},
 				},
@@ -461,9 +461,9 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"contents": []map[string]any{
 					{
-						"uri":       "file:///tmp/example.txt",
-						"mime_type": "text/plain",
-						"text":      "hello",
+						"uri":      "file:///tmp/example.txt",
+						"mimeType": "text/plain",
+						"text":     "hello",
 					},
 				},
 			})

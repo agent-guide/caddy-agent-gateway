@@ -212,6 +212,9 @@ func TestManagerStreamableHTTPListTools(t *testing.T) {
 	if tools[0].Name != "echo" {
 		t.Errorf("unexpected tool name: %q", tools[0].Name)
 	}
+	if tools[0].InputSchema["type"] != "object" {
+		t.Errorf("unexpected input schema: %#v", tools[0].InputSchema)
+	}
 }
 
 func TestManagerStreamableHTTPCallTool(t *testing.T) {
