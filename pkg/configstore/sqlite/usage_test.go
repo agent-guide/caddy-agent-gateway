@@ -314,6 +314,7 @@ func TestUsageWriterQuerySummaryAndEvents(t *testing.T) {
 			RouteID: "route-1", RouteKind: "llm", RouteProtocol: "openai", Success: true, StatusCode: 200, LatencyMS: 10,
 		},
 		LLMAPI: "openai", ProviderID: "provider-1", UpstreamModel: "gpt-4o", InputTokens: 3, OutputTokens: 4, TotalTokens: 7, UsageFinalized: true,
+		RequestToolCount: 2, RequestToolNames: []string{"read_file", "write_file"}, ToolCallCount: 1, ToolNames: []string{"read_file"},
 	}); err != nil {
 		t.Fatalf("InsertLLMUsageEvent() error = %v", err)
 	}
@@ -437,12 +438,39 @@ func TestUsageWriterQuerySummaryAndEvents(t *testing.T) {
 	if got := byID["ev-3"]["operation"]; got != "turn" {
 		t.Fatalf("ev-3 operation = %#v, want turn", got)
 	}
+	if got := byID["ev-1"]["request_tool_count"]; got != int64(2) {
+		t.Fatalf("ev-1 request_tool_count = %#v, want 2", got)
+	}
+	if got := byID["ev-1"]["request_tool_names"]; got != `["read_file","write_file"]` {
+		t.Fatalf("ev-1 request_tool_names = %#v, want read/write tools", got)
+	}
+	if got := byID["ev-1"]["tool_call_count"]; got != int64(1) {
+		t.Fatalf("ev-1 tool_call_count = %#v, want 1", got)
+	}
+	if got := byID["ev-1"]["tool_names"]; got != `["read_file"]` {
+		t.Fatalf("ev-1 tool_names = %#v, want read_file", got)
+	}
+	if got := byID["ev-1"]["input_tokens"]; got != int64(3) {
+		t.Fatalf("ev-1 input_tokens = %#v, want 3", got)
+	}
+	if got := byID["ev-1"]["output_tokens"]; got != int64(4) {
+		t.Fatalf("ev-1 output_tokens = %#v, want 4", got)
+	}
+	if got := byID["ev-1"]["total_tokens"]; got != int64(7) {
+		t.Fatalf("ev-1 total_tokens = %#v, want 7", got)
+	}
 	// Cross-protocol columns are NULL on branches that do not own them.
 	if got := byID["ev-1"]["tool_name"]; got != nil {
 		t.Fatalf("ev-1 tool_name = %#v, want nil", got)
 	}
 	if got := byID["ev-2"]["operation"]; got != nil {
 		t.Fatalf("ev-2 operation = %#v, want nil", got)
+	}
+	if got := byID["ev-2"]["input_tokens"]; got != nil {
+		t.Fatalf("ev-2 input_tokens = %#v, want nil", got)
+	}
+	if got := byID["ev-3"]["tool_call_count"]; got != nil {
+		t.Fatalf("ev-3 tool_call_count = %#v, want nil", got)
 	}
 	old := now.Add(-40 * 24 * time.Hour)
 	if err := InsertLLMUsageEvent(db, usage.LLMUsageEvent{

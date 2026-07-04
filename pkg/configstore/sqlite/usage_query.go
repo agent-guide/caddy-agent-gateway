@@ -61,12 +61,18 @@ func (q *UsageQueries) ListInteractions(opts usage.EventListOptions) (usage.Even
 	// Project protocol-specific columns so the UNION lines up, ACP session
 	// filtering works through the mixed interaction view, and the consumer can
 	// label a span by what it actually did (LLM upstream_model, MCP tool_name,
-	// ACP operation) instead of falling back to the synthetic route_id. Column
-	// order must match across every branch; absent columns are NULL placeholders.
+	// ACP operation) instead of falling back to the synthetic route_id. The LLM
+	// tool-use and token columns are carried through as well so the call-chain
+	// view can show what tools a model was offered / invoked and its token cost;
+	// they only exist on llm_usage_events, so MCP/ACP branches NULL them out.
+	// Column order must match across every branch; absent columns are NULL
+	// placeholders.
+	llmExtra := `request_tool_count, request_tool_names, tool_call_count, tool_names, input_tokens, output_tokens, total_tokens`
+	nullExtra := `NULL AS request_tool_count, NULL AS request_tool_names, NULL AS tool_call_count, NULL AS tool_names, NULL AS input_tokens, NULL AS output_tokens, NULL AS total_tokens`
 	query := "SELECT * FROM (" +
-		"SELECT " + baseCols + ", NULL AS service_id, NULL AS session_id, NULL AS operation, NULL AS tool_name, upstream_model FROM llm_usage_events UNION ALL " +
-		"SELECT " + baseCols + ", service_id, NULL AS session_id, NULL AS operation, tool_name, NULL AS upstream_model FROM mcp_usage_events UNION ALL " +
-		"SELECT " + baseCols + ", service_id, session_id, operation, NULL AS tool_name, NULL AS upstream_model FROM acp_usage_events) interactions"
+		"SELECT " + baseCols + ", NULL AS service_id, NULL AS session_id, NULL AS operation, NULL AS tool_name, upstream_model, " + llmExtra + " FROM llm_usage_events UNION ALL " +
+		"SELECT " + baseCols + ", service_id, NULL AS session_id, NULL AS operation, tool_name, NULL AS upstream_model, " + nullExtra + " FROM mcp_usage_events UNION ALL " +
+		"SELECT " + baseCols + ", service_id, session_id, operation, NULL AS tool_name, NULL AS upstream_model, " + nullExtra + " FROM acp_usage_events) interactions"
 	return q.listRows(query, "interactions", filters, opts)
 }
 

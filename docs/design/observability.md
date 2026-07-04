@@ -603,8 +603,11 @@ Returns recent interaction events across all protocol families, backed by the sh
 Beyond the base fields, the projection surfaces each protocol's labeling column
 so a consumer can name a span by what it did rather than falling back to
 `route_id`: `upstream_model` (LLM), `tool_name` (MCP), `operation` (ACP), plus
-`service_id` and `session_id`. Columns a row does not own are `null` (for
-example, `tool_name` is `null` on LLM and ACP rows). Management-plane ACP admin
+`service_id` and `session_id`. LLM rows also carry the model tool-use and token
+fields `request_tool_count`, `request_tool_names`, `tool_call_count`,
+`tool_names`, `input_tokens`, `output_tokens`, and `total_tokens`. Columns a row
+does not own are `null` (for example, `tool_name` is `null` on LLM and ACP rows,
+and token fields are `null` on MCP and ACP rows). Management-plane ACP admin
 audit spans carry the synthetic `route_id` `/admin/acp` and `route_protocol`
 `admin`; filter on `route_protocol` to separate them from data-plane traffic.
 
