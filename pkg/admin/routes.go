@@ -12,6 +12,8 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	dispatcherpkg "github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
+	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
+	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
@@ -338,6 +340,15 @@ func (h *Handler) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := r.PathValue("id")
+	refs, err := h.providerRouteReferences(r, id)
+	if err != nil {
+		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(refs) > 0 {
+		_ = httpjson.Error(w, http.StatusConflict, fmt.Sprintf("provider %q is still referenced by llm routes: %s", id, strings.Join(refs, ", ")))
+		return
+	}
 	if err := manager.DeleteConfig(r.Context(), id); err != nil {
 		if errors.Is(err, gateway.ErrStaticProviderReadOnly) {
 			_ = httpjson.Error(w, http.StatusConflict, err.Error())
@@ -350,7 +361,63 @@ func (h *Handler) handleDeleteProvider(w http.ResponseWriter, r *http.Request) {
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if err := h.deleteManagedModelsForProvider(r, id); err != nil {
+		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	_ = httpjson.Write(w, http.StatusOK, map[string]string{"status": "deleted", "id": id})
+}
+
+func (h *Handler) deleteManagedModelsForProvider(r *http.Request, providerID string) error {
+	if h.modelCatalog == nil {
+		return nil
+	}
+	items, err := h.modelCatalog.ListManagedModels(r.Context(), modelcatalog.ManagedModelFilter{
+		ProviderID: providerID,
+	})
+	if err != nil {
+		return fmt.Errorf("list managed models for provider %q: %w", providerID, err)
+	}
+	for _, item := range items {
+		if err := h.modelCatalog.DeleteManagedModel(r.Context(), item.ProviderID, item.UpstreamModel); err != nil {
+			if errors.Is(err, configstore.ErrNotFound) {
+				continue
+			}
+			return fmt.Errorf("delete managed model %q/%q: %w", item.ProviderID, item.UpstreamModel, err)
+		}
+	}
+	return nil
+}
+
+func (h *Handler) providerRouteReferences(r *http.Request, providerID string) ([]string, error) {
+	resolver := h.llmRouteResolver()
+	if resolver == nil {
+		return nil, nil
+	}
+	routes, err := resolver.ListConfigs(r.Context(), routecore.RouteListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("list llm routes: %w", err)
+	}
+	refs := make([]string, 0)
+	for _, route := range routes {
+		if route.Kind != routecore.RouteKindLLM {
+			continue
+		}
+		cfg, err := llmroutepkg.NewLLMRouteConfigFromConfig(route)
+		if err != nil {
+			return nil, err
+		}
+		if cfg.TargetPolicy == nil {
+			continue
+		}
+		for _, id := range cfg.TargetPolicy.ProviderIDs() {
+			if id == providerID {
+				refs = append(refs, cfg.ID)
+				break
+			}
+		}
+	}
+	return refs, nil
 }
 
 func (h *Handler) handleEnableProvider(w http.ResponseWriter, r *http.Request) {

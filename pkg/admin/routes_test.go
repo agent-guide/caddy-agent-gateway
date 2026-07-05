@@ -1872,6 +1872,113 @@ func TestProviderDeleteRejectsStaticProvider(t *testing.T) {
 	}
 }
 
+func TestProviderDeleteRemovesManagedModelsForProvider(t *testing.T) {
+	providerStore := &testProviderConfigStore{items: map[string]*provider.ProviderConfig{
+		"openai-main":   {Id: "openai-main", ProviderType: "openai"},
+		"deepseek-main": {Id: "deepseek-main", ProviderType: "deepseek"},
+	}}
+	modelStore := &testModelStore{items: map[string]*modelcatalog.ManagedModel{
+		"openai-main\x00gpt-4.1": {
+			ProviderID:    "openai-main",
+			UpstreamModel: "gpt-4.1",
+			Enabled:       true,
+		},
+		"openai-main\x00gpt-4.1-mini": {
+			ProviderID:    "openai-main",
+			UpstreamModel: "gpt-4.1-mini",
+			Enabled:       true,
+		},
+		"deepseek-main\x00deepseek-v4-pro": {
+			ProviderID:    "deepseek-main",
+			UpstreamModel: "deepseek-v4-pro",
+			Enabled:       true,
+		},
+	}}
+	handler := NewHandler(newTestAgentGateway(&testConfigStore{
+		providerStore: providerStore,
+		modelStore:    modelStore,
+	}, nil, nil, nil, nil), nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/llm/providers/openai-main", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected delete status: got %d want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if _, ok := providerStore.items["openai-main"]; ok {
+		t.Fatal("provider openai-main was not deleted")
+	}
+	if _, ok := modelStore.items["openai-main\x00gpt-4.1"]; ok {
+		t.Fatal("managed model openai-main/gpt-4.1 was not deleted")
+	}
+	if _, ok := modelStore.items["openai-main\x00gpt-4.1-mini"]; ok {
+		t.Fatal("managed model openai-main/gpt-4.1-mini was not deleted")
+	}
+	if _, ok := modelStore.items["deepseek-main\x00deepseek-v4-pro"]; !ok {
+		t.Fatal("managed model for another provider was deleted")
+	}
+}
+
+func TestProviderDeleteRejectsRouteReferences(t *testing.T) {
+	providerStore := &testProviderConfigStore{items: map[string]*provider.ProviderConfig{
+		"openai-main": {Id: "openai-main", ProviderType: "openai"},
+	}}
+	modelStore := &testModelStore{items: map[string]*modelcatalog.ManagedModel{
+		"openai-main\x00gpt-4.1": {
+			ProviderID:    "openai-main",
+			UpstreamModel: "gpt-4.1",
+			Enabled:       true,
+		},
+	}}
+	routeStore := &testRouteStore{items: map[string]*routecore.AgentRouteConfig{
+		"chat": mustRouteConfig(t, llmroutepkg.LLMRoute{
+			AgentRouteConfig: llmroutepkg.AgentRouteConfig{
+				ID:       "chat",
+				Kind:     routecore.RouteKindLLM,
+				Protocol: routecore.RouteProtocolOpenAI,
+			},
+			TargetPolicy: &llmroutepkg.RouteLogicalModelTargetPolicy{
+				DefaultModel: "chat-default",
+				ModelTargets: []llmroutepkg.RouteModelTarget{{
+					Name: "chat-default",
+					Candidates: []llmroutepkg.RouteModelCandidate{{
+						ProviderID:    "openai-main",
+						UpstreamModel: "gpt-4.1",
+						Weight:        100,
+					}},
+				}},
+			},
+		}),
+	}}
+	handler := NewHandler(newTestAgentGateway(&testConfigStore{
+		providerStore: providerStore,
+		routeStore:    routeStore,
+		modelStore:    modelStore,
+	}, nil, nil, nil, nil), nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+
+	req := httptest.NewRequest(http.MethodDelete, "/admin/llm/providers/openai-main", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unexpected delete status: got %d want %d body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if _, ok := providerStore.items["openai-main"]; !ok {
+		t.Fatal("referenced provider was deleted")
+	}
+	if _, ok := modelStore.items["openai-main\x00gpt-4.1"]; !ok {
+		t.Fatal("managed model for referenced provider was deleted")
+	}
+	if !strings.Contains(rec.Body.String(), "chat") {
+		t.Fatalf("response body %q does not mention referencing route", rec.Body.String())
+	}
+}
+
 func TestProtectedRouteAllowsRequestsWithoutEmbeddedAdminAuth(t *testing.T) {
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		virtualKeyStore: &testVirtualKeyStore{items: map[string]*virtualkeypkg.VirtualKey{}},
