@@ -273,6 +273,25 @@ ACP: `route_id`/`route_protocol`/`service_id`/`virtual_key_id`/`agent_type`/`ope
 The ACP `route_protocol` filter separates data-plane turns (`route_protocol=acp`)
 from the admin-plane audit spans the manager records when polling `/admin/acp`
 (`route_protocol=admin`).
+
+The LLM/MCP/ACP `breakdown`, `timeseries`, and `events` endpoints — and
+`interactions`/`interactions/summary` — also accept an `agent_id` filter. Unlike a
+plain column filter, `agent_id` resolves the agent server-side and scopes results
+by its full attribution — the durable `agent_id` tag **OR** the routes/ACP service
+the agent currently owns — matching `GET /admin/agents/{id}/usage`. This lets
+untagged-but-mappable events (pre-tag history, or events written before a
+route/service was assigned to the agent) still surface, so an `agent_id`-filtered
+read is a strict superset of the per-agent rollup. An unknown `agent_id` returns
+`404`. The durable-tag arm is indexed by `(agent_id, started_at)`.
+
+`GET /admin/metrics/interactions` is the cross-protocol call-chain view (LLM +
+MCP + ACP spans unified by `trace_id`/`span_id`/`parent_span_id`). Beyond the
+common `from`/`to`/`limit`/`success`, it filters by `route_kind`,
+`route_protocol`, `route_id`, `virtual_key_id`, `service_id`, `session_id`,
+`trace_id`, `parent_span_id`, and `agent_depth`, plus the `agent_id` attribution
+filter described above — pass `agent_id` to scope the whole call chain to a single
+agent server-side. The durable `agent_id` tag, when present, is surfaced per span
+in the response.
 Timeseries supports `bucket=minute|hour|day` (plural and short forms such as
 `minutes`/`min`/`m` are also accepted, as are Grafana-style durations such as
 `3h`/`5m`/`30s`/`1d`; empty defaults to `hour`). `mcp/tools/summary` and

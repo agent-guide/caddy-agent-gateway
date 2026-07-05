@@ -661,6 +661,11 @@ func (h *Handler) handleListLLMMetricsEvents(w http.ResponseWriter, r *http.Requ
 
 func (h *Handler) handleLLMMetricsTimeseries(w http.ResponseWriter, r *http.Request) {
 	opts := metricTimeseriesOptions(r, []string{"route_id", "provider_id", "virtual_key_id", "upstream_model", "llm_api"})
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if h.usageQuery == nil {
 		_ = httpjson.Write(w, http.StatusOK, usage.SeriesResponse{Bucket: opts.Bucket, GroupBy: opts.GroupBy})
 		return
@@ -682,6 +687,11 @@ func (h *Handler) handleLLMMetricsBreakdown(w http.ResponseWriter, r *http.Reque
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if opts.GroupBy == "" {
 		opts.GroupBy = "route_id"
 	}
@@ -709,6 +719,11 @@ func (h *Handler) handleListMCPMetricsEvents(w http.ResponseWriter, r *http.Requ
 
 func (h *Handler) handleMCPMetricsTimeseries(w http.ResponseWriter, r *http.Request) {
 	opts := metricTimeseriesOptions(r, []string{"route_id", "service_id", "virtual_key_id", "method", "tool_name", "result_status"})
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if h.usageQuery == nil {
 		_ = httpjson.Write(w, http.StatusOK, usage.SeriesResponse{Bucket: opts.Bucket, GroupBy: opts.GroupBy})
 		return
@@ -727,6 +742,11 @@ func (h *Handler) handleMCPMetricsBreakdown(w http.ResponseWriter, r *http.Reque
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if opts.GroupBy == "" {
 		opts.GroupBy = "tool_name"
 	}
@@ -768,6 +788,11 @@ func (h *Handler) handleListACPMetricsEvents(w http.ResponseWriter, r *http.Requ
 
 func (h *Handler) handleACPMetricsTimeseries(w http.ResponseWriter, r *http.Request) {
 	opts := metricTimeseriesOptions(r, []string{"route_id", "route_protocol", "service_id", "virtual_key_id", "agent_type", "operation"})
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if h.usageQuery == nil {
 		_ = httpjson.Write(w, http.StatusOK, usage.SeriesResponse{Bucket: opts.Bucket, GroupBy: opts.GroupBy})
 		return
@@ -786,6 +811,11 @@ func (h *Handler) handleACPMetricsBreakdown(w http.ResponseWriter, r *http.Reque
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if opts.GroupBy == "" {
 		opts.GroupBy = "operation"
 	}
@@ -828,6 +858,14 @@ func (h *Handler) handleListMetricInteractions(w http.ResponseWriter, r *http.Re
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// agent_id resolves to the agent's full attribution (durable tag OR owned
+	// routes/ACP service), matching the per-agent interactions/usage reads — not a
+	// literal tag filter, so untagged-but-mappable spans still surface.
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if h.usageQuery == nil {
 		_ = httpjson.Write(w, http.StatusOK, usage.EventListResponse{Limit: opts.Limit})
 		return
@@ -846,6 +884,11 @@ func (h *Handler) handleMetricInteractionsSummary(w http.ResponseWriter, r *http
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if h.usageQuery == nil {
 		_ = httpjson.Write(w, http.StatusOK, usage.BreakdownResponse{GroupBy: opts.GroupBy, Limit: opts.Limit})
 		return
@@ -864,6 +907,11 @@ func (h *Handler) handleListMetricsEvents(w http.ResponseWriter, r *http.Request
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	attribution, ok := h.agentAttributionFromRequest(w, r)
+	if !ok {
+		return
+	}
+	opts.Attribution = attribution
 	if h.usageQuery == nil {
 		_ = httpjson.Write(w, http.StatusOK, usage.EventListResponse{Limit: opts.Limit})
 		return

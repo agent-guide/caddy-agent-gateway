@@ -337,6 +337,33 @@ func agentAttributionFilter(a agentpkg.Agent) *usage.AttributionFilter {
 	return f
 }
 
+// agentAttributionFromRequest resolves an optional `agent_id` query filter into
+// a metrics attribution selector (the durable agent_id tag OR the agent's owned
+// routes/ACP service, matching the per-agent usage/interactions reads). When no
+// agent_id is present it returns (nil, true) so callers apply no attribution.
+// On an unresolvable agent id it writes the error response and returns ok=false.
+func (h *Handler) agentAttributionFromRequest(w http.ResponseWriter, r *http.Request) (*usage.AttributionFilter, bool) {
+	id := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	if id == "" {
+		return nil, true
+	}
+	manager, err := h.agentManagerOrError()
+	if err != nil {
+		_ = httpjson.Error(w, http.StatusServiceUnavailable, err.Error())
+		return nil, false
+	}
+	a, err := manager.Get(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, agentpkg.ErrAgentNotConfigured) {
+			_ = httpjson.Error(w, http.StatusNotFound, "agent not found")
+			return nil, false
+		}
+		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
+		return nil, false
+	}
+	return agentAttributionFilter(a), true
+}
+
 // handleGetAgentInteractions returns interaction events attributed to the agent.
 // It prefers the durable agent_id tag and falls back to the agent's owned
 // route/service mapping so untagged-but-mappable events still surface.
