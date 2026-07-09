@@ -48,7 +48,7 @@ Primary detailed documents:
 - [design/observability.md](design/observability.md): observability design
 - [design/observability-implementation.md](design/observability-implementation.md): observability implementation plan
 - [design/protocol-support-roadmap.md](design/protocol-support-roadmap.md): protocol support roadmap
-- [development/llm-refactor-collaboration-templates.md](development/llm-refactor-collaboration-templates.md): contributor collaboration templates
+- [development/ai-assisted-refactor-collaboration-templates.md](development/ai-assisted-refactor-collaboration-templates.md): contributor collaboration templates
 
 ## Notes
 

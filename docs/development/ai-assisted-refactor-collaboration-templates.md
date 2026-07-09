@@ -1,4 +1,4 @@
-# LLM Refactor Collaboration Templates
+# AI-Assisted Refactor Collaboration Templates
 
 ## Purpose
 
