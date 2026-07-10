@@ -13,3 +13,4 @@ Current design pages:
 - [observability.md](observability.md)
 - [observability-implementation.md](observability-implementation.md)
 - [protocol-support-roadmap.md](protocol-support-roadmap.md)
+- [v0.4-completion.md](v0.4-completion.md)
