@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 )
 
 func TestUsageAgentIDRoundTrip(t *testing.T) {

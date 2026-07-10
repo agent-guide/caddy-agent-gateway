@@ -8,13 +8,13 @@ import (
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 )
 
 type AgentView struct {

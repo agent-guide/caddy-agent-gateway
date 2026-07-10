@@ -9,11 +9,11 @@ import (
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"go.uber.org/zap"
 )
 

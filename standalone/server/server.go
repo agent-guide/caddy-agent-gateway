@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/pipeline"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/admin"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	configstore "github.com/agent-guide/agent-gateway/pkg/configstore"
@@ -25,8 +27,6 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	credentialmgrscheduler "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/pipeline"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"

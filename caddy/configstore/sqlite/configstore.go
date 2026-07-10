@@ -6,9 +6,9 @@ import (
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"gorm.io/gorm"
 )
 

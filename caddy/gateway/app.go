@@ -9,6 +9,8 @@ import (
 	"go.uber.org/zap"
 
 	configstoresqlite "github.com/agent-guide/agent-gateway/caddy/configstore/sqlite"
+	"github.com/agent-guide/agent-gateway/internal/observability/pipeline"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
@@ -17,8 +19,6 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	credentialmgrscheduler "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/pipeline"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 )
 
 func init() {

@@ -3,7 +3,7 @@ package pipeline
 import (
 	"testing"
 
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 )
 
 func TestPrometheusSinkSnapshot(t *testing.T) {

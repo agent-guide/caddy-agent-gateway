@@ -388,14 +388,14 @@ an `agwctl gateway agent` read surface; create/update flow through the bundle.
 See `docs/design/agents-control-plane.md` (including the §11 implementation
 status) for the full direction.
 
-### `pkg/metrics/`
+### `internal/observability/`
 
 Owns durable usage events and query helpers.
 
 Important packages:
 
-- `pkg/metrics/usage`: event models (with an optional `agent_id` attribution tag), observer/span interfaces, no-op observer, the `AgentAttributor` seam plus the settable `AgentAttribution` holder, usage service, Prometheus exposition rendering, and metrics config (`retention_days`, `max_agent_depth`)
-- `pkg/metrics/pipeline`: buffered event pipeline, SQLite sink (with a background retention janitor), the in-process Prometheus counter sink, and an `OpenTelemetrySink` adapter seam (push exporter is deployment-supplied)
+- `internal/observability/usage`: event models (with an optional `agent_id` attribution tag), observer/span interfaces, no-op observer, the `AgentAttributor` seam plus the settable `AgentAttribution` holder, usage service, Prometheus exposition rendering, and metrics config (`retention_days`, `max_agent_depth`)
+- `internal/observability/pipeline`: buffered event pipeline, SQLite sink (with a background retention janitor), the in-process Prometheus counter sink, and an `OpenTelemetrySink` adapter seam (no exporter is wired; sinks are passed to `NewEventPipeline` in `caddy/gateway/app.go` and `standalone/server/server.go`, so wiring one is an in-tree change)
 
 SQLite usage tables are typed event tables (`llm_usage_events`, `mcp_usage_events`, `acp_usage_events`) created by the metrics sink through the sqlite backend's `UsageDB()` capability. They carry a nullable `agent_id` attribution column, stamped at write time by the observer when the originating route resolves to exactly one agent. They are separate from generic JSON config stores. Time-series and breakdown queries scan these event tables directly; there are no internal rollup tables. Use the Prometheus exposition (`GET /admin/metrics/prometheus`) plus an external system (Prometheus/Grafana) for high-volume aggregation, trends, and alerting.
 

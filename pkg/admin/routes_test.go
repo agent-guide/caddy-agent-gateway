@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
@@ -30,7 +31,6 @@ import (
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/openai"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"github.com/cloudwego/eino/schema"
 )
 

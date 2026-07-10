@@ -56,25 +56,25 @@ These contracts are part of the executable plan and must be kept stable while
 implementing M0-M9.
 
 - The active `InteractionSpan` is stored in `context.Context` by
-  `pkg/metrics/usage.ContextWithSpan` and read with `usage.SpanFromContext`.
-  Dispatcher code starts the span; protocol handlers and provider wrappers add
-  typed extensions to the same span.
+  `internal/observability/usage.ContextWithSpan` and read with
+  `usage.SpanFromContext`. Dispatcher code starts the span; protocol handlers
+  and provider wrappers add typed extensions to the same span.
 - `InteractionSpan.Finish` is idempotent. The first call wins, later calls are
   ignored. This allows protocol handlers to defer a finish while error branches
   or streaming loops finish early.
 - `InteractionSpan.SetExtension` accepts only the typed extension structs from
-  `pkg/metrics/usage`: `LLMExtension`, `MCPExtension`, and `ACPExtension`.
-  Repeated calls merge non-zero fields into the existing extension instead of
-  replacing unrelated fields.
+  `internal/observability/usage`: `LLMExtension`, `MCPExtension`, and
+  `ACPExtension`. Repeated calls merge non-zero fields into the existing
+  extension instead of replacing unrelated fields.
 - HTTP status is captured through a small dispatcher response recorder for
   shared dispatch instrumentation. Explicit outcome status passed to `Finish`
   overrides the recorder when present; otherwise the recorded response status is
   used, defaulting to `200` only after a write succeeds.
 - SQLite usage timestamps are stored as Unix milliseconds. Admin API responses
   expose RFC3339 timestamps and do not expose internal integer timestamps.
-- `SQLDBProvider` lives in `pkg/metrics/usage`, not in the pipeline package, so
-  `pkg/configstore/sqlite` can expose the capability without depending on a
-  concrete metrics sink implementation.
+- `SQLDBProvider` lives in `internal/observability/usage`, not in the pipeline
+  package, so `pkg/configstore/sqlite` can expose the capability without
+  depending on a concrete metrics sink implementation.
 - Admin event listing responses use `{ "items": [...], "limit": n }`.
   Summaries return zero-valued blocks when tables are empty or when no SQLite
   usage store is available.
@@ -93,8 +93,9 @@ Target files:
 
 Steps:
 
-1. Define the `SQLDBProvider` capability interface in `pkg/metrics/usage`
-   (it is consumed by the SQLite sink and query service):
+1. Define the `SQLDBProvider` capability interface in
+   `internal/observability/usage` (it is consumed by the SQLite sink and query
+   service):
 
    ```go
    // SQLDBProvider is implemented by backends that expose a raw *gorm.DB
@@ -119,12 +120,12 @@ Verification:
 - a unit test that the sqlite backend satisfies `SQLDBProvider` and returns a
   usable handle (`db.Exec("SELECT 1")`).
 
-## 3. M1 — `pkg/metrics/usage` Package
+## 3. M1 — `internal/observability/usage` Package
 
 Target (new) files, per design §11:
 
 ```
-pkg/metrics/usage/
+internal/observability/usage/
     event.go      InteractionEvent base; LLMUsageEvent, MCPUsageEvent, ACPUsageEvent
     observer.go   InteractionObserver, InteractionSpan, InteractionDimensions, InteractionOutcome
     noop.go       NoopObserver / noopSpan
@@ -158,7 +159,7 @@ Verification:
 Target (new) files, per design §11:
 
 ```
-pkg/metrics/pipeline/
+internal/observability/pipeline/
     pipeline.go      EventPipeline: buffered channel, fan-out loop, Sink interface, dropped_events counter
     sqlite_sink.go   SQLiteSink (consumes SQLDBProvider handle from M0)
 
@@ -207,8 +208,9 @@ This is the `cliauth`/`credentialMgr` pattern, not the `configure*ServiceManager
 pattern. Lifecycle lives in `app.go`; `AgentGateway` only holds + exposes the
 observer.
 
-`pkg/metrics/usage/service.go` (new): `UsageService` owns the `EventPipeline`,
-exposes `Observer() InteractionObserver` (pipeline-backed) and `Close()`.
+`internal/observability/usage/service.go` (new): `UsageService` owns the
+`EventPipeline`, exposes `Observer() InteractionObserver` (pipeline-backed) and
+`Close()`.
 
 `caddy/gateway/app.go`:
 
@@ -388,24 +390,24 @@ Targets:
   metrics layer tell a turn's own live `usage_update` from the joined-session
   snapshot replay; without it, every turn on a session with cached usage would be
   miscounted.
-- `pkg/metrics/usage/event.go`: add `ContextUsedTokens *int`,
+- `internal/observability/usage/event.go`: add `ContextUsedTokens *int`,
   `ContextWindowTokens *int`, `TokenDelta *int`, and `UsageObserved bool` to
   `ACPUsageEvent` and `ACPExtension`, and merge them in `mergeACP`
-  (`pkg/metrics/usage/merge.go`).
+  (`internal/observability/usage/merge.go`).
 - `pkg/dispatcher/acp_handler.go`: in `wrapACPEventSinkForUsage`, parse only
   live (`!event.Replay`) `event: usage` payloads for the ACP context fields; skip
   replayed snapshots entirely so they never set `UsageObserved` or token fields.
   Set `UsageObserved=true` and the parsed values on the `ACPExtension` (later live
   usage events overwrite earlier ones, so the final live snapshot wins); keep
   malformed payloads non-fatal and continue storing bounded `usage_json`.
-- `pkg/metrics/usage/observer.go`: at ACP event finalization, before enqueue,
-  stamp `TokenDelta` using a small in-process per-session last-value tracker keyed
-  by `service_id` + `session_id` (guarded by a mutex, with bounded entry
-  eviction). Store only a positive delta vs the previous turn's value; leave it
-  null on first turn, missing current value, decrease, or missing session id, then
-  update the tracker to the current value. This single upstream stamp is what
-  keeps the SQLite and Prometheus sinks consistent — neither sink computes the
-  delta itself.
+- `internal/observability/usage/observer.go`: at ACP event finalization, before
+  enqueue, stamp `TokenDelta` using a small in-process per-session last-value
+  tracker keyed by `service_id` + `session_id` (guarded by a mutex, with bounded
+  entry eviction). Store only a positive delta vs the previous turn's value;
+  leave it null on first turn, missing current value, decrease, or missing
+  session id, then update the tracker to the current value. This single upstream
+  stamp is what keeps the SQLite and Prometheus sinks consistent — neither
+  sink computes the delta itself.
 - `pkg/configstore/sqlite/usage_schema.go`: add nullable `context_used_tokens`,
   `context_window_tokens`, `token_delta`, and `usage_observed`
   (`INTEGER NOT NULL DEFAULT 0`) columns to `acp_usage_events`, with idempotent
@@ -417,9 +419,9 @@ Targets:
   `SUM(token_delta)` over the window; `latest_context_used_tokens` =
   `context_used_tokens` of the most recent (`finished_at`) row with a non-null
   value. Label growth as approximate, not "tokens used".
-- `pkg/metrics/pipeline/prom_sink.go`: in `eventMetrics`, return the stamped
-  `TokenDelta` (not `context_used_tokens`) as the ACP token contribution so the
-  Prometheus counter matches the SQLite sum.
+- `internal/observability/pipeline/prom_sink.go`: in `eventMetrics`, return the
+  stamped `TokenDelta` (not `context_used_tokens`) as the ACP token contribution
+  so the Prometheus counter matches the SQLite sum.
 
 Verification:
 
@@ -492,9 +494,9 @@ Implemented follow-ons:
    `pkg/mcp/service.MCPServiceConfig`; populate `tool_args_json` when enabled.
    Persisted free-form payloads (`tool_args_json`, ACP `usage_json`) are
    truncated to a fixed byte cap to bound secret/PII exposure.
-4. `PrometheusSink` (`pkg/metrics/pipeline/prom_sink.go`) is wired into the
-   pipeline and exposed at `GET /admin/metrics/prometheus`; pipeline drop/failure
-   counters are surfaced both there and in the `pipeline` object of
+4. `PrometheusSink` (`internal/observability/pipeline/prom_sink.go`) is wired
+   into the pipeline and exposed at `GET /admin/metrics/prometheus`; pipeline
+   drop/failure counters are surfaced both there and in the `pipeline` object of
    `GET /admin/metrics`.
 5. configurable retention window through the Caddyfile `metrics` block and
    `agwd --metrics-retention-days`.
@@ -508,16 +510,18 @@ Implemented follow-ons:
 Remaining work:
 
 1. improve streaming token finalization for providers exposing final usage.
-2. wire a deployment-supplied push exporter into the `OpenTelemetrySink` adapter
-   seam.
+2. wire a push exporter into the `OpenTelemetrySink` adapter seam, at the
+   `NewEventPipeline` call sites in `caddy/gateway/app.go` and
+   `standalone/server/server.go`.
 3. implement MCP tool policy so `presented_tool_name`, `executed_tool_name`,
    `execution_mode`, and `policy_action` are populated.
 4. implement ACP token metrics as described in §9.1.
 
 ## 14. Cross-Cutting Test Strategy
 
-- unit tests live beside each new package (`pkg/metrics/usage`,
-  `pkg/metrics/pipeline`, `pkg/configstore/sqlite` usage writer/query).
+- unit tests live beside each new package (`internal/observability/usage`,
+  `internal/observability/pipeline`, `pkg/configstore/sqlite` usage
+  writer/query).
 - dispatcher instrumentation tested with the `NoopObserver` default plus a
   capturing fake observer to assert emitted dimensions without sqlite.
 - one end-to-end smoke per protocol family asserting exactly one persisted row.

@@ -7,11 +7,11 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/httpcapture"
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"go.uber.org/zap"
 )
 

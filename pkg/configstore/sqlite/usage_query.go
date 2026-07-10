@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"gorm.io/gorm"
 )
 

@@ -11,10 +11,10 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/httplog"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	dispatcher "github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )

@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	configstore "github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 )
 
 func TestRegisterDefaultStoresRegistersAllSchemas(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 
 // PrometheusSnapshot is a low-cardinality counter view of usage events keyed by
 // interaction kind (llm/mcp/acp). It lives in this package so both the sink that
-// produces it (pkg/metrics/pipeline) and the Admin API that renders it can share
+// produces it (internal/observability/pipeline) and the Admin API that renders it can share
 // the type without an import cycle.
 type PrometheusSnapshot struct {
 	RequestsByKind map[string]int64

@@ -7,6 +7,7 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/httpcapture"
 	"github.com/agent-guide/agent-gateway/internal/httplog"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
@@ -22,7 +23,6 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"go.uber.org/zap"
 )
 

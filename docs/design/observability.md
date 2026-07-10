@@ -132,7 +132,7 @@ ACP event payloads must not store turn input, deltas, content, reasoning text, t
         └────────────────┼────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────┐
-│                   pkg/metrics/usage                   │
+│              internal/observability/usage             │
 │   InteractionObserver / InteractionSpan interfaces    │
 │   InteractionEvent base + LLM/MCP/ACP event types     │
 │   no-op and pipeline-backed implementations           │
@@ -140,7 +140,7 @@ ACP event payloads must not store turn input, deltas, content, reasoning text, t
                          │
                          ▼
 ┌──────────────────────────────────────────────────────┐
-│                 pkg/metrics/pipeline                  │
+│            internal/observability/pipeline            │
 │   EventPipeline: buffered channel + fan-out           │
 │   SQLiteSink / PrometheusSink / [future: OTel, webhook]│
 └──────────────────────────────────────────────────────┘
@@ -895,13 +895,13 @@ janitor in the SQLite sink.
 ## 11. Package Structure
 
 ```
-pkg/metrics/usage/
+internal/observability/usage/
     event.go         InteractionEvent base; LLMUsageEvent, MCPUsageEvent, ACPUsageEvent
     observer.go      InteractionObserver and InteractionSpan interfaces
     noop.go          no-op observer
     service.go       UsageService wired by caddy/gateway/app.go
 
-pkg/metrics/pipeline/
+internal/observability/pipeline/
     pipeline.go      EventPipeline: buffered input channel, fan-out loop, Sink interface
     sqlite_sink.go   SQLite sink
     prom_sink.go     Prometheus sink
@@ -1018,7 +1018,7 @@ ACP permission params may contain sensitive command details and are not stored i
 
 Goal: durable event capture for LLM, MCP, and ACP traffic plus a real `/admin/metrics` summary.
 
-1. Define `InteractionEvent`, `LLMUsageEvent`, `MCPUsageEvent`, and `ACPUsageEvent` in `pkg/metrics/usage/event.go`.
+1. Define `InteractionEvent`, `LLMUsageEvent`, `MCPUsageEvent`, and `ACPUsageEvent` in `internal/observability/usage/event.go`.
 2. Define `InteractionObserver` and `InteractionSpan`; implement no-op.
 3. Implement `EventPipeline` and `SQLiteSink`.
 4. Add SQLite writer/query helpers and create `llm_usage_events`, `mcp_usage_events`, and `acp_usage_events`.
@@ -1046,8 +1046,9 @@ dropped; event tables remain the source of truth.
 Goal: external exporter integration and protocol-specific refinements.
 
 1. Improve streaming token finalization for providers that expose final usage.
-2. Wire a deployment-supplied OpenTelemetry exporter into the `OpenTelemetrySink`
-   adapter seam.
+2. Wire an OpenTelemetry exporter into the `OpenTelemetrySink` adapter seam, at
+   the `NewEventPipeline` call sites in `caddy/gateway/app.go` and
+   `standalone/server/server.go`.
 3. Implement MCP tool policy so policy-attribution columns are populated.
 4. Implement planned ACP context-token metrics.
 5. Add optional permission-argument capture if a future audit mode requires it.

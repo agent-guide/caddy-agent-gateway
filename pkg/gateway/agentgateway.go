@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
@@ -24,7 +25,6 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"go.uber.org/zap"
 )
 

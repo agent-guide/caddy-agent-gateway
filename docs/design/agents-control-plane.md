@@ -80,7 +80,7 @@ pkg/acp
   - codex/opencode runtime process management
   - sessions, transcript replay, permissions, pooled instances
 
-pkg/metrics
+internal/observability
   - LLM/MCP/ACP usage events
   - interaction traces
   - Prometheus counters
@@ -109,7 +109,7 @@ pkg/agent
   -> pkg/llm/provider + pkg/llm/credentialmgr + pkg/gateway/modelcatalog
   -> pkg/mcp/service + pkg/mcp/runtime
   -> pkg/gateway/virtualkey
-  -> pkg/metrics/usage
+  -> internal/observability/usage
 ```
 
 ## 5. Core Concepts
@@ -715,8 +715,8 @@ Goals:
 - expose linked LLM/MCP/VirtualKey resources
 - add shallow health summary
 
-This phase should reuse `pkg/metrics/usage` and existing managers. It should
-not introduce rollup tables unless query performance requires it.
+This phase should reuse `internal/observability/usage` and existing managers. It
+should not introduce rollup tables unless query performance requires it.
 
 ### P2: External Tasks And Scheduling
 
@@ -951,12 +951,13 @@ P0 (P0a + P0b) and P1 are **implemented**. P2 and P3 remain design-only.
 - additive nullable `agent_id` on the three usage event models, the SQLite
   tables (CREATE + idempotent `ALTER … ADD COLUMN` for existing DBs), partial
   indexes, the writers, and the query filter allowlists.
-- the `AgentAttributor` seam lives in the neutral `pkg/metrics/usage` package
-  (`attribution.go`); `pkg/agent.Manager` implements it structurally, so the
-  lower layers never import `pkg/agent`. A settable `AgentAttribution` holder is
-  injected after bootstrap (`UsageService.Attribution().Set(agentManager)` in the
-  app), and the observer stamps `agent_id` at `Begin` from the route id, only
-  when the mapping is unambiguous.
+- the `AgentAttributor` seam lives in the neutral `internal/observability/usage`
+  package (`attribution.go`); `pkg/agent.Manager` implements it structurally, so
+  the lower layers never import `pkg/agent`. A settable `AgentAttribution`
+  holder is injected after bootstrap
+  (`UsageService.Attribution().Set(agentManager)` in the app), and the observer
+  stamps `agent_id` at `Begin` from the route id, only when the mapping is
+  unambiguous.
 - `GET /admin/agents/{id}/{activity,usage,interactions,resources,health}` and
   `PUT …/resources` are wired. Per-agent metric reads use an `AttributionFilter`
   (`agent_id = ? OR route_id IN (…) OR service_id IN (…)`) so they prefer the

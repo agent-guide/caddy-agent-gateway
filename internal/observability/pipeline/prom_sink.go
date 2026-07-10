@@ -3,7 +3,7 @@ package pipeline
 import (
 	"sync"
 
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 )
 
 // PrometheusSink is a dependency-free in-process sink that keeps counters in a

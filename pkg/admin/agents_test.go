@@ -10,9 +10,9 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 )
 
 type agentConfigStore struct {

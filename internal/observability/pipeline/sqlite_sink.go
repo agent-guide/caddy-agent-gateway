@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"gorm.io/gorm"
 )
 

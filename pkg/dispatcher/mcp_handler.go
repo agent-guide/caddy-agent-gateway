@@ -9,13 +9,13 @@ import (
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	basemcp "github.com/agent-guide/agent-gateway/pkg/mcp"
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
 	"github.com/agent-guide/agent-gateway/pkg/mcp/transport"
-	"github.com/agent-guide/agent-gateway/pkg/metrics/usage"
 	"go.uber.org/zap"
 )
 
