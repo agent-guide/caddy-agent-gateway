@@ -423,6 +423,7 @@ func responsesToChatResponse(resp *provider.ResponsesResponse) *provider.ChatRes
 			Usage: &schema.TokenUsage{
 				PromptTokens:     resp.Usage.InputTokens,
 				CompletionTokens: resp.Usage.OutputTokens,
+				TotalTokens:      resp.Usage.TotalTokens,
 			},
 		}
 	}
@@ -552,6 +553,7 @@ func responsesCompletionMessage(resp *provider.ResponsesResponse) *schema.Messag
 		msg.ResponseMeta.Usage = &schema.TokenUsage{
 			PromptTokens:     resp.Usage.InputTokens,
 			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
 		}
 	}
 	return msg

@@ -963,6 +963,57 @@ func TestStreamChatParsesAnthropicSSE(t *testing.T) {
 	}
 }
 
+func TestStreamChatCapturesFinalUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n")
+		_, _ = io.WriteString(w, "event: content_block_delta\n")
+		_, _ = io.WriteString(w, "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n")
+		_, _ = io.WriteString(w, "event: message_delta\n")
+		_, _ = io.WriteString(w, "data: {\"usage\":{\"output_tokens\":34},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
+	}))
+	defer server.Close()
+
+	prov, err := New(provider.ProviderConfig{
+		BaseURL: server.URL,
+		APIKey:  "sk-ant-api-fallback",
+		Network: httpclient.NetworkConfig{RequestTimeoutSeconds: 5},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	stream, err := prov.StreamChat(context.Background(), &provider.ChatRequest{
+		Model:    "claude-sonnet-4-20250514",
+		Messages: []*schema.Message{schema.UserMessage("hello")},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+	defer stream.Close()
+
+	var finalUsage *schema.TokenUsage
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		if msg.ResponseMeta != nil && msg.ResponseMeta.Usage != nil {
+			finalUsage = msg.ResponseMeta.Usage
+		}
+	}
+	if finalUsage == nil {
+		t.Fatal("final streamed usage = nil, want token usage on message_delta")
+	}
+	if finalUsage.PromptTokens != 12 || finalUsage.CompletionTokens != 34 {
+		t.Fatalf("usage = %+v, want prompt=12 completion=34", finalUsage)
+	}
+}
+
 func TestStreamChatMapsCodexToolNamesForClaudeCode(t *testing.T) {
 	var reqBody messagesRequest
 

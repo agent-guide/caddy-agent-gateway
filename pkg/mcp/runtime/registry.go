@@ -11,10 +11,10 @@ import (
 const historyCapacity = 1000
 
 type Registry struct {
-	mu         sync.Mutex
-	inFlight   map[string]*InFlightRequest
-	progresses map[string]ProgressNotification
-	history    []CompletedRequest
+	mu          sync.Mutex
+	inFlight    map[string]*InFlightRequest
+	progresses  map[string]ProgressNotification
+	history     []CompletedRequest
 	historyHead int
 	historyLen  int
 }

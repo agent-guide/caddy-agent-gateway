@@ -716,6 +716,11 @@ func TestResponsesEventStreamToMessageStreamCompletesOnResponseCompleted(t *test
 	sw.Send(&provider.ResponsesStreamEvent{
 		Type: "response.completed",
 		Response: &provider.ResponsesResponse{
+			Usage: &provider.ResponsesResponseUsage{
+				InputTokens:  12,
+				OutputTokens: 34,
+				TotalTokens:  46,
+			},
 			Output: []provider.ResponsesResponseOutput{{
 				Type: "message",
 				Role: "assistant",
@@ -740,6 +745,12 @@ func TestResponsesEventStreamToMessageStreamCompletesOnResponseCompleted(t *test
 	}
 	if msg.ResponseMeta == nil || msg.ResponseMeta.FinishReason != "stop" {
 		t.Fatalf("response meta = %+v, want stop", msg.ResponseMeta)
+	}
+	if msg.ResponseMeta.Usage == nil {
+		t.Fatal("final streamed usage = nil, want token usage on response.completed")
+	}
+	if msg.ResponseMeta.Usage.PromptTokens != 12 || msg.ResponseMeta.Usage.CompletionTokens != 34 || msg.ResponseMeta.Usage.TotalTokens != 46 {
+		t.Fatalf("usage = %+v, want prompt=12 completion=34 total=46", msg.ResponseMeta.Usage)
 	}
 	if _, err := stream.Recv(); err != io.EOF {
 		t.Fatalf("third Recv() error = %v, want EOF", err)

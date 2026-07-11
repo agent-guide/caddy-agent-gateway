@@ -12,7 +12,7 @@ The current primary LLM path is:
 5. in logical-model routes, the model catalog resolves the logical model to one concrete `(provider_id, upstream_model)` binding
 6. the selected provider executes `Generate` or `Stream`
 
-MCP is also active now through `agent_route_dispatcher` with MCP enabled, `pkg/gateway/mcproute`, `pkg/mcp/service`, and MCP Admin APIs. ACP is being implemented natively through `pkg/acp`, `pkg/gateway/acproute`, dispatcher turn handling, and ACP Admin APIs. Metrics now persist LLM/MCP/ACP usage events (with optional `agent_id` attribution) and expose Admin summaries/events. The agent control plane is active through `pkg/agent`, the `agents` config store, and `/admin/agents` Admin APIs (P0 + P1); memory remains an earlier-stage subsystem.
+MCP is also active now through `agent_route_dispatcher` with MCP enabled, `pkg/gateway/mcproute`, `pkg/mcp/service`, and MCP Admin APIs. ACP is being implemented natively through `pkg/acp`, `pkg/gateway/acproute`, dispatcher turn handling, and ACP Admin APIs. Metrics now persist LLM/MCP/ACP usage events (with optional `agent_id` attribution) and expose Admin summaries/events. The agent control plane is active through `pkg/agent`, the `agents` config store, and `/admin/agents` Admin APIs (P0 + P1). Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
 
 ## Change Policy
 
@@ -293,6 +293,7 @@ Built-in provider runtime packages:
 - `openai`
 - `anthropic`
 - `claudecode`
+- `codex`
 - `gemini`
 - `ollama`
 - `openrouter`
@@ -507,7 +508,7 @@ Implemented agent families:
 
 Stubbed families currently return `501 Not Implemented`:
 
-- `/admin/memory/...`
+- `/admin/memory/...` (reserved; memory is not shipped in v0.4.x)
 
 ## Files To Check Before Large Changes
 

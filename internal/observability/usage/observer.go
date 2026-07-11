@@ -59,8 +59,11 @@ func NewObserverWithAttribution(sink EventSink, attribution *AgentAttribution) O
 }
 
 func (o Observer) Begin(ctx context.Context, dims InteractionDimensions) (InteractionSpan, context.Context) {
+	if dims.TraceID == "" {
+		dims.TraceID = GenerateTraceID()
+	}
 	if dims.SpanID == "" {
-		dims.SpanID = uuid.NewString()
+		dims.SpanID = GenerateSpanID()
 	}
 	agentID := dims.AgentID
 	if agentID == "" && o.attribution != nil {

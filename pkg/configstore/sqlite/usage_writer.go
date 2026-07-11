@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"encoding/json"
+	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"gorm.io/gorm"
@@ -12,16 +13,33 @@ import (
 // arguments that include secrets or PII, so they are truncated before storage.
 const maxUsagePayloadBytes = 4096
 
+var llmUsageInsertColumns = []string{
+	"event_id", "trace_id", "span_id", "parent_span_id", "agent_depth", "started_at", "finished_at",
+	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
+	"llm_api", "api_operation", "provider_id", "provider_type", "logical_model", "upstream_model",
+	"credential_source", "credential_id", "stream", "input_tokens", "output_tokens", "total_tokens",
+	"usage_finalized", "request_tool_count", "request_tool_names", "tool_call_count", "tool_names", "agent_id",
+}
+
+var mcpUsageInsertColumns = []string{
+	"event_id", "trace_id", "span_id", "parent_span_id", "agent_depth", "started_at", "finished_at",
+	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
+	"request_id", "service_id", "method", "tool_name", "presented_tool_name", "executed_tool_name",
+	"execution_mode", "policy_action", "resource_uri", "prompt_name", "completion_ref_type", "completion_argument",
+	"arg_count", "result_status", "cancelled", "tool_args_json", "agent_id",
+}
+
+var acpUsageInsertColumns = []string{
+	"event_id", "trace_id", "span_id", "parent_span_id", "agent_depth", "started_at", "finished_at",
+	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
+	"service_id", "agent_type", "operation", "thread_id", "session_id", "permission_request_id", "fresh_session",
+	"event_counts_json", "usage_json", "result_status", "agent_id",
+}
+
 func InsertLLMUsageEvent(db *gorm.DB, ev usage.LLMUsageEvent) error {
 	names, _ := json.Marshal(ev.RequestToolNames)
 	toolNames, _ := json.Marshal(ev.ToolNames)
-	return db.Exec(`INSERT INTO llm_usage_events (
-		event_id, trace_id, span_id, parent_span_id, agent_depth, started_at, finished_at,
-		route_id, route_kind, route_protocol, virtual_key_id, success, status_code, error_type, latency_ms,
-		llm_api, api_operation, provider_id, provider_type, logical_model, upstream_model,
-		credential_source, credential_id, stream, input_tokens, output_tokens, total_tokens,
-		usage_finalized, request_tool_count, request_tool_names, tool_call_count, tool_names, agent_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	return db.Exec(usageInsertSQL("llm_usage_events", llmUsageInsertColumns),
 		ev.EventID, ev.TraceID, ev.SpanID, ev.ParentSpanID, ev.AgentDepth, unixMillis(ev.StartedAt), unixMillis(ev.FinishedAt),
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
 		ev.LLMAPI, ev.APIOperation, ev.ProviderID, ev.ProviderType, ev.LogicalModel, ev.UpstreamModel,
@@ -31,13 +49,7 @@ func InsertLLMUsageEvent(db *gorm.DB, ev usage.LLMUsageEvent) error {
 }
 
 func InsertMCPUsageEvent(db *gorm.DB, ev usage.MCPUsageEvent) error {
-	return db.Exec(`INSERT INTO mcp_usage_events (
-		event_id, trace_id, span_id, parent_span_id, agent_depth, started_at, finished_at,
-		route_id, route_kind, route_protocol, virtual_key_id, success, status_code, error_type, latency_ms,
-		request_id, service_id, method, tool_name, presented_tool_name, executed_tool_name,
-		execution_mode, policy_action, resource_uri, prompt_name, completion_ref_type, completion_argument,
-		arg_count, result_status, cancelled, tool_args_json, agent_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	return db.Exec(usageInsertSQL("mcp_usage_events", mcpUsageInsertColumns),
 		ev.EventID, ev.TraceID, ev.SpanID, ev.ParentSpanID, ev.AgentDepth, unixMillis(ev.StartedAt), unixMillis(ev.FinishedAt),
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
 		ev.RequestID, ev.ServiceID, ev.Method, ev.ToolName, ev.PresentedToolName, ev.ExecutedToolName,
@@ -52,17 +64,23 @@ func InsertACPUsageEvent(db *gorm.DB, ev usage.ACPUsageEvent) error {
 	if ev.FreshSession != nil {
 		fresh = boolInt(*ev.FreshSession)
 	}
-	return db.Exec(`INSERT INTO acp_usage_events (
-		event_id, trace_id, span_id, parent_span_id, agent_depth, started_at, finished_at,
-		route_id, route_kind, route_protocol, virtual_key_id, success, status_code, error_type, latency_ms,
-		service_id, agent_type, operation, thread_id, session_id, permission_request_id, fresh_session,
-		event_counts_json, usage_json, result_status, agent_id
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	return db.Exec(usageInsertSQL("acp_usage_events", acpUsageInsertColumns),
 		ev.EventID, ev.TraceID, ev.SpanID, ev.ParentSpanID, ev.AgentDepth, unixMillis(ev.StartedAt), unixMillis(ev.FinishedAt),
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
 		ev.ServiceID, ev.AgentType, ev.Operation, ev.ThreadID, ev.SessionID, ev.PermissionRequestID, fresh,
 		string(counts), truncatePayload(ev.UsageJSON), ev.ResultStatus, nullString(ev.AgentID),
 	).Error
+}
+
+func usageInsertSQL(table string, columns []string) string {
+	return "INSERT INTO " + table + " (" + strings.Join(columns, ", ") + ") VALUES (" + placeholders(len(columns)) + ")"
+}
+
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimRight(strings.Repeat("?, ", n), ", ")
 }
 
 func truncatePayload(s string) string {

@@ -57,7 +57,6 @@ This design does not attempt to:
 - store raw MCP tool arguments by default
 - replace provider-native billing systems
 - introduce an external observability stack dependency
-- guarantee accurate streaming token counts in phase 1
 - implement real-time push or webhook delivery of events
 - replace the existing MCP and ACP runtime inspection endpoints
 
@@ -215,17 +214,35 @@ The gateway extracts agent chain context from inbound HTTP headers on every matc
 | Header | Stored field | Purpose |
 |--------|-------------|---------|
 | `traceparent` / `tracestate` | `trace_id`, `parent_span_id` | Preferred W3C Trace Context carrier |
-| `X-Trace-ID` | `trace_id` | Compatibility correlation ID |
-| `X-Span-ID` | `parent_span_id` | Compatibility caller span ID |
+| `X-Trace-ID` | `trace_id` | Compatibility carrier for a W3C-shaped trace id |
+| `X-Span-ID` | `parent_span_id` | Compatibility carrier for a W3C-shaped caller span id |
 | `X-Agent-Depth` | `agent_depth` | Hop count from the originating caller |
 
 Request extraction precedence is:
 
-1. parse `traceparent` and `tracestate` when present
-2. otherwise fall back to `X-Trace-ID` and `X-Span-ID`
-3. if neither is present, generate a new trace context locally
+1. when a `traceparent` header is present, parse it, along with `tracestate`
+2. when no `traceparent` header is present, fall back to `X-Trace-ID` and `X-Span-ID`
+3. otherwise generate a new trace context locally
 
-The gateway always generates a new `span_id` for the current operation. When a valid `traceparent` is present, the generated IDs must remain compatible with W3C Trace Context. The gateway emits `traceparent` and `tracestate` response headers, and may also emit `X-Trace-ID`, `X-Span-ID`, and `X-Agent-Depth` as compatibility headers. `X-Agent-Depth` is returned as `agent_depth + 1`.
+Every inbound id is validated against the W3C shape — lowercase hex of the
+required length (32 for a trace id, 16 for a span id) and not all zeroes — and
+rejected rather than normalized. This applies to the `X-*` compatibility headers
+too: they carry the same ids in the same format as `traceparent`, they are just
+a different envelope, so an `X-Trace-ID` that is a UUID or a free-form
+correlation string is **discarded**, not stored. The gateway echoes `trace_id`
+back in its own `traceparent` response header and writes it to the `trace_id`
+usage column, and neither may carry an id that no W3C-speaking consumer can
+parse.
+
+A malformed inbound trace context is never silently repaired. A `traceparent`
+that fails validation starts a fresh trace and suppresses the `X-*` fallback
+entirely: the caller declared W3C propagation, and mixing in an `X-*` id it did
+not intend as an alternative would fabricate a parent link that does not exist.
+Rejecting the whole context also drops `tracestate` and leaves `parent_span_id`
+empty. Trace flags are honored: an inbound unsampled traceparent (flags `00`)
+is echoed as unsampled rather than upgraded to sampled.
+
+The gateway always generates a new `span_id` for the current operation. The gateway emits `traceparent` and `tracestate` response headers, and may also emit `X-Trace-ID`, `X-Span-ID`, and `X-Agent-Depth` as compatibility headers. `X-Agent-Depth` is returned as `agent_depth + 1`.
 
 Agent depth enforcement is implemented as an optional policy gate through the
 `metrics` Caddyfile block and `agwd --max-agent-depth`. A value of `0` disables
@@ -480,7 +497,10 @@ ACP `turn` requests are SSE operations. The event is recorded when `ServeTurn` r
 
 ### 8.2 Planned ACP Token Metrics
 
-Status: planned follow-up, not implemented in the current schema or event model.
+Status: not implemented in v0.4.x; deferred to v0.5.x. The current
+`acp_usage_events` schema stores the final raw ACP usage payload in bounded
+`usage_json` when the runtime exposes one, but it does not expose queryable
+context-token columns or Prometheus context-token counters.
 
 ACP token metrics should follow the ACP `usage_update` semantics. The protocol reports
 **session context occupancy** (a gauge), not per-model request accounting. This
@@ -518,9 +538,9 @@ different update from `session_info_update`, which codex does *not* emit, so the
 missing session *title* does not imply missing *token* data — and `opencode`
 emits one per turn too, with the same `used`/`size` plus an extra nested `cost`
 object the parser ignores.
-An adapter that emits no parseable `usage_update` leaves the token columns null
-for its turns; document per-adapter emission rather than assuming uniform
-coverage.
+An adapter that emits no parseable `usage_update` leaves only the raw
+`usage_json` evidence for its turns; document per-adapter emission rather than
+assuming uniform coverage when the v0.5.x token columns are added.
 
 **Turn-start replay must be excluded.** At the start of every turn the runtime
 replays the cached session metadata, including the last `usage` snapshot, as a
@@ -564,12 +584,10 @@ wall-clock turn start; rapid concurrent turns on one session can therefore order
 imprecisely, which is acceptable for an approximate signal but is another reason
 not to treat the totals as exact.
 
-Only the final live `usage_update` of a turn is retained: the dispatcher
-overwrites the parsed values on each live (non-replay) `usage` SSE event, so
-intra-turn fluctuation is not preserved. The dispatcher parses only live `usage`
-SSE events and only the known ACP fields; malformed or unknown usage payloads
-must not fail the turn, and the raw bounded `usage_json` continues to be stored
-for inspection.
+In v0.4.x only the raw bounded `usage_json` is retained for inspection. The
+planned v0.5.x context-token implementation must parse only live (non-replay)
+`usage` SSE events and only the known ACP fields; malformed or unknown usage
+payloads must not fail the turn.
 
 Route-scoped `sessions` and `transcript` requests and service-scoped Admin ACP session/transcript requests are separate surfaces. Route-scoped ACP traffic is recorded through `agent_route_dispatcher`; ACP Admin runtime/session/transcript operator calls are recorded as management-plane audit spans with the synthetic route `/admin/acp` and `route_protocol=admin`.
 
@@ -754,7 +772,7 @@ CREATE TABLE llm_usage_events (
     input_tokens       INTEGER,
     output_tokens      INTEGER,
     total_tokens       INTEGER,
-    usage_finalized    INTEGER NOT NULL DEFAULT 1,
+    usage_finalized    INTEGER NOT NULL,
     request_tool_count INTEGER NOT NULL DEFAULT 0,
     request_tool_names TEXT,
     tool_call_count    INTEGER NOT NULL DEFAULT 0,
@@ -817,6 +835,11 @@ CREATE INDEX idx_mcp_events_trace ON mcp_usage_events (trace_id, started_at)
 CREATE INDEX idx_mcp_events_tool ON mcp_usage_events (tool_name, started_at)
     WHERE tool_name IS NOT NULL;
 ```
+
+`presented_tool_name`, `executed_tool_name`, `execution_mode`, and
+`policy_action` are reserved for a future MCP tool-policy layer. They are
+created in v0.4.x but remain null because no v0.4.x code populates policy
+attribution.
 
 ### 10.3 ACP Usage Events Table
 
@@ -1045,13 +1068,12 @@ dropped; event tables remain the source of truth.
 
 Goal: external exporter integration and protocol-specific refinements.
 
-1. Improve streaming token finalization for providers that expose final usage.
-2. Wire an OpenTelemetry exporter into the `OpenTelemetrySink` adapter seam, at
+1. Wire an OpenTelemetry exporter into the `OpenTelemetrySink` adapter seam, at
    the `NewEventPipeline` call sites in `caddy/gateway/app.go` and
    `standalone/server/server.go`.
-3. Implement MCP tool policy so policy-attribution columns are populated.
-4. Implement planned ACP context-token metrics.
-5. Add optional permission-argument capture if a future audit mode requires it.
+2. Implement MCP tool policy so policy-attribution columns are populated.
+3. Implement planned ACP context-token metrics.
+4. Add optional permission-argument capture if a future audit mode requires it.
 
 ## 15. Relationship To Existing Documents
 

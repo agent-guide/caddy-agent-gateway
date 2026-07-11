@@ -480,6 +480,8 @@ func (h *Handler) beginACPAdminAudit(r *http.Request, serviceID, operation, sess
 	if observer == nil {
 		return usage.NoopSpan{}
 	}
+	// An admin request carries no inbound traceparent, so the observer generates a
+	// fresh W3C trace and span id for it.
 	span, _ := observer.Begin(r.Context(), usage.InteractionDimensions{
 		RouteID:       "/admin/acp",
 		RouteKind:     "acp",

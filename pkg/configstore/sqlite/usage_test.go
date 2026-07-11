@@ -1,11 +1,165 @@
 package sqlite
 
 import (
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
+	"gorm.io/gorm"
 )
+
+func TestUsageFinalizedHasNoSQLDefault(t *testing.T) {
+	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	db := backend.UsageDB()
+	if err := MigrateUsageTables(db); err != nil {
+		t.Fatalf("MigrateUsageTables() error = %v", err)
+	}
+
+	err = db.Exec(`INSERT INTO llm_usage_events (event_id, span_id, started_at, finished_at) VALUES (?, ?, ?, ?)`,
+		"missing-usage-finalized", "span-1", int64(1), int64(2)).Error
+	if err == nil {
+		t.Fatal("insert without usage_finalized succeeded, want NOT NULL failure")
+	}
+}
+
+func TestUsageWriterColumnsMatchSchema(t *testing.T) {
+	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	db := backend.UsageDB()
+	if err := MigrateUsageTables(db); err != nil {
+		t.Fatalf("MigrateUsageTables() error = %v", err)
+	}
+
+	for _, tt := range []struct {
+		table   string
+		columns []string
+	}{
+		{table: "llm_usage_events", columns: llmUsageInsertColumns},
+		{table: "mcp_usage_events", columns: mcpUsageInsertColumns},
+		{table: "acp_usage_events", columns: acpUsageInsertColumns},
+	} {
+		t.Run(tt.table, func(t *testing.T) {
+			got, err := tableColumns(db, tt.table)
+			if err != nil {
+				t.Fatalf("tableColumns() error = %v", err)
+			}
+			if !slices.Equal(got, tt.columns) {
+				t.Fatalf("writer columns do not match schema\nschema: %#v\nwriter: %#v", got, tt.columns)
+			}
+		})
+	}
+}
+
+func tableColumns(db interface {
+	Raw(string, ...any) *gorm.DB
+}, table string) ([]string, error) {
+	rows, err := db.Raw("PRAGMA table_info(" + table + ")").Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// legacyLLMUsageEventsDDL is the pre-v0.4 llm_usage_events shape: usage_finalized
+// carries a SQL default and agent_id does not exist yet.
+const legacyLLMUsageEventsDDL = `CREATE TABLE llm_usage_events (
+	event_id TEXT PRIMARY KEY, trace_id TEXT, span_id TEXT NOT NULL, parent_span_id TEXT,
+	agent_depth INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL,
+	route_id TEXT, route_kind TEXT NOT NULL DEFAULT 'llm', route_protocol TEXT, virtual_key_id TEXT,
+	success INTEGER NOT NULL DEFAULT 0, status_code INTEGER, error_type TEXT, latency_ms INTEGER,
+	llm_api TEXT, api_operation TEXT, provider_id TEXT, provider_type TEXT,
+	logical_model TEXT, upstream_model TEXT, credential_source TEXT, credential_id TEXT,
+	stream INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER,
+	usage_finalized INTEGER NOT NULL DEFAULT 1, request_tool_count INTEGER NOT NULL DEFAULT 0,
+	request_tool_names TEXT, tool_call_count INTEGER NOT NULL DEFAULT 0, tool_names TEXT
+)`
+
+func TestMigrateUsageTablesRebuildsLegacyLLMTable(t *testing.T) {
+	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	db := backend.UsageDB()
+	if err := db.Exec(legacyLLMUsageEventsDDL).Error; err != nil {
+		t.Fatalf("create legacy table: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO llm_usage_events (event_id, span_id, started_at, finished_at, route_id, input_tokens) VALUES (?, ?, ?, ?, ?, ?)`,
+		"legacy-1", "s1", int64(1), int64(2), "r1", 7).Error; err != nil {
+		t.Fatalf("seed legacy row: %v", err)
+	}
+
+	if err := MigrateUsageTables(db); err != nil {
+		t.Fatalf("MigrateUsageTables() error = %v", err)
+	}
+
+	hasDefault, err := columnHasDefault(db, "llm_usage_events", "usage_finalized")
+	if err != nil {
+		t.Fatalf("columnHasDefault() error = %v", err)
+	}
+	if hasDefault {
+		t.Fatal("usage_finalized still carries a SQL default after migration")
+	}
+
+	// The rebuild must carry the pre-existing rows and their values across, and
+	// the column list must still match what the writer inserts.
+	got, err := tableColumns(db, "llm_usage_events")
+	if err != nil {
+		t.Fatalf("tableColumns() error = %v", err)
+	}
+	if !slices.Equal(got, llmUsageInsertColumns) {
+		t.Fatalf("columns after rebuild = %#v, want %#v", got, llmUsageInsertColumns)
+	}
+	var row struct {
+		EventID     string
+		InputTokens int
+	}
+	if err := db.Raw(`SELECT event_id, input_tokens FROM llm_usage_events`).Scan(&row).Error; err != nil {
+		t.Fatalf("read migrated row: %v", err)
+	}
+	if row.EventID != "legacy-1" || row.InputTokens != 7 {
+		t.Fatalf("migrated row = %#v, want legacy-1 with input_tokens=7", row)
+	}
+
+	// The indexes dropped along with the old table must be back.
+	var indexCount int64
+	if err := db.Raw(`SELECT count(*) FROM sqlite_master WHERE type='index' AND tbl_name='llm_usage_events' AND name LIKE 'idx_llm_events_%'`).Scan(&indexCount).Error; err != nil {
+		t.Fatalf("count indexes: %v", err)
+	}
+	if indexCount != 6 {
+		t.Fatalf("llm_usage_events indexes = %d, want 6", indexCount)
+	}
+
+	// Migration is idempotent: a second pass is a no-op, not a second rebuild.
+	if err := MigrateUsageTables(db); err != nil {
+		t.Fatalf("second MigrateUsageTables() error = %v", err)
+	}
+	var rowCount int64
+	if err := db.Raw(`SELECT count(*) FROM llm_usage_events`).Scan(&rowCount).Error; err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("rows after second migration = %d, want 1", rowCount)
+	}
+}
 
 func TestUsageAgentIDRoundTrip(t *testing.T) {
 	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)

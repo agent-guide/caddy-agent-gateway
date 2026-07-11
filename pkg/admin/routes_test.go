@@ -65,6 +65,15 @@ func (s *recordingSpan) Finish(outcome usage.InteractionOutcome) {
 	}
 }
 
+type adminCaptureSink struct {
+	events []any
+}
+
+func (s *adminCaptureSink) Enqueue(v any) bool {
+	s.events = append(s.events, v)
+	return true
+}
+
 func newTestAgentGateway(configStoreBackend configstore.ConfigStoreBackend, cliauthMgr *cliauth.Manager, cliauthRefresher *cliauth.AutoRefresher, staticRoutes []llmroutepkg.LLMRoute, _ []virtualkeypkg.VirtualKey, staticProviders ...map[string]provider.Provider) *gateway.AgentGateway {
 	var providers map[string]provider.Provider
 	if len(staticProviders) > 0 {
@@ -2283,6 +2292,33 @@ func TestResolveACPPermissionDecodeErrorRecordsFailedAudit(t *testing.T) {
 	}
 	if observer.span.outcome.StatusCode != http.StatusBadRequest || observer.span.outcome.ErrorType != "invalid_request" {
 		t.Fatalf("audit outcome = %+v, want status=400 error_type=invalid_request", observer.span.outcome)
+	}
+}
+
+func TestACPAdminAuditRecordsTraceID(t *testing.T) {
+	sink := &adminCaptureSink{}
+	observer := usage.NewObserver(sink)
+	handler := &Handler{usageObserver: observer}
+
+	req := httptest.NewRequest(http.MethodGet, "/admin/acp/runtime/inflight", nil)
+	rec := httptest.NewRecorder()
+	handler.handleListACPInFlight(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", rec.Code, rec.Body.String())
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("events = %d, want 1", len(sink.events))
+	}
+	ev, ok := sink.events[0].(usage.ACPUsageEvent)
+	if !ok {
+		t.Fatalf("event type = %T, want ACPUsageEvent", sink.events[0])
+	}
+	if !usage.ValidTraceID(ev.TraceID) {
+		t.Fatalf("trace_id = %q, want generated W3C trace id", ev.TraceID)
+	}
+	if !usage.ValidSpanID(ev.SpanID) {
+		t.Fatalf("span_id = %q, want generated W3C span id", ev.SpanID)
 	}
 }
 

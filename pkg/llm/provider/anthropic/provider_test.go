@@ -403,6 +403,7 @@ func TestStreamChatCapturesInputTokens(t *testing.T) {
 	defer stream.Close()
 
 	var prompt, completion int
+	var finalUsage *schema.TokenUsage
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -419,7 +420,11 @@ func TestStreamChatCapturesInputTokens(t *testing.T) {
 		}
 		if msg.ResponseMeta.Usage.CompletionTokens > 0 {
 			completion = msg.ResponseMeta.Usage.CompletionTokens
+			finalUsage = msg.ResponseMeta.Usage
 		}
+	}
+	if finalUsage == nil {
+		t.Fatal("final streamed usage = nil, want token usage on message_delta")
 	}
 	if prompt != 42 {
 		t.Fatalf("prompt tokens = %d, want 42 from message_start", prompt)

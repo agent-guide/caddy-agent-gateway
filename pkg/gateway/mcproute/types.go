@@ -37,7 +37,7 @@ type MCPRouteConfig struct {
 
 type MCPRoute struct {
 	AgentRouteConfig
-	ServiceID string `json:"service_id"`
+	ServiceID string        `json:"service_id"`
 	State     MCPRouteState `json:"-"`
 }
 

@@ -251,7 +251,10 @@ Steps (design §5.2, §12.1):
 
 1. After `h.gateway.Match` and VirtualKey validation, extract trace context:
    precedence `traceparent`/`tracestate` → `X-Trace-ID`/`X-Span-ID` → generate.
-   Always generate a fresh `span_id`. Parse `X-Agent-Depth`.
+   Every inbound id is validated against the W3C shape and rejected rather than
+   normalized, `X-*` included; a `traceparent` that is present but malformed
+   starts a fresh trace and suppresses the `X-*` fallback. Inbound trace flags
+   are preserved. Always generate a fresh `span_id`. Parse `X-Agent-Depth`.
 2. Build `InteractionDimensions` from the resolved route + virtual key + trace
    context; call `h.gateway.UsageObserver().Begin(ctx, dims)` to get a span and a
    derived context. Thread that context into `dispatchLLM/MCP/ACP`.
@@ -265,6 +268,8 @@ Steps (design §5.2, §12.1):
 Verification:
 
 - unit test: header precedence (traceparent wins; X-* fallback; generation).
+- unit test: malformed inbound ids (bad version, wrong length, uppercase, all
+  zeroes) never reach the response `traceparent` or the `trace_id` column.
 - unit test: response carries `traceparent` and `X-Agent-Depth = depth+1`.
 - unit test: unmatched request produces no event and calls `next`.
 
@@ -356,6 +361,11 @@ Verification:
 
 ## 9.1 Remaining Follow-up - ACP Token Metrics
 
+Status: not implemented in v0.4.x; deferred to v0.5.x. v0.4.x stores the raw
+bounded ACP usage payload in `acp_usage_events.usage_json` when available, but
+does not add queryable context-token fields, token deltas, or Prometheus
+context-token counters.
+
 Design source: `observability.md` §8.2.
 
 ACP `usage_update` reports session context occupancy (a gauge), not LLM-style
@@ -373,13 +383,14 @@ Emission is agent-specific but verified for both current adapters (live captures
 - `opencode`: `{"sessionUpdate":"usage_update","used":11102,"size":200000,"cost":{"amount":0,"currency":"USD"}}`
   — same `used`/`size` plus a nested `cost` object.
 
-So codex turns DO get token columns. (codex only lacks `session_info_update`, an
-unrelated update that affects the session title, not token data.) The parser must
-extract only `used`/`size` and tolerate extra/nested fields like opencode's
-`cost`; `cost` is not persisted (and was `0` in the capture, so it is not a
-billing source). An adapter that emits no parseable `usage_update` simply leaves
-the token columns null for its turns; document per-adapter emission rather than
-assuming uniform coverage.
+So codex turns do expose raw usage payloads. (codex only lacks
+`session_info_update`, an unrelated update that affects the session title, not
+token data.) The future parser must extract only `used`/`size` and tolerate
+extra/nested fields like opencode's `cost`; `cost` is not persisted (and was `0`
+in the capture, so it is not a billing source). In v0.4.x an adapter that emits
+no parseable `usage_update` simply leaves no structured token evidence beyond
+the raw `usage_json`; document per-adapter emission rather than assuming uniform
+coverage.
 
 Targets:
 
@@ -509,13 +520,12 @@ Implemented follow-ons:
 
 Remaining work:
 
-1. improve streaming token finalization for providers exposing final usage.
-2. wire a push exporter into the `OpenTelemetrySink` adapter seam, at the
+1. wire a push exporter into the `OpenTelemetrySink` adapter seam, at the
    `NewEventPipeline` call sites in `caddy/gateway/app.go` and
    `standalone/server/server.go`.
-3. implement MCP tool policy so `presented_tool_name`, `executed_tool_name`,
+2. implement MCP tool policy so `presented_tool_name`, `executed_tool_name`,
    `execution_mode`, and `policy_action` are populated.
-4. implement ACP token metrics as described in §9.1.
+3. implement ACP token metrics as described in §9.1.
 
 ## 14. Cross-Cutting Test Strategy
 
