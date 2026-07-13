@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>行业方案 — AgentGuide</title>
+<meta name="description" content="建立在 AgentGuide 已交付运行时底座与编排路线图上的目标方案蓝图：软件交付、证据充分的审核、金融治理和客户交付后台。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/solutions.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/solutions.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/solutions.html">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html" aria-current="page">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="../solutions.html" lang="en" hreflang="en">EN</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">行业方案</p>
+      <h1>企业问题是组织化的，答案也应该是。</h1>
+      <p class="lede">
+        没有哪个单独的 agent 能上线一个产品、通过一次临床审核、批准一笔贷款，
+        或者独自打理一整批客户项目。
+        这些蓝图展示专家 agent 团队如何在 AgentGuide 上组合、治理与观测。
+        它们把 v0.5 已交付的运行时底座与路线图中的任务、跨 Agent workflow、
+        Artifact、记忆和合规控制组合在一起，是目标架构，而非预制产品。
+      </p>
+      <div class="chip-row">
+        <span class="chip chip-accent">已交付底座</span>
+        <span class="chip">下一阶段</span>
+        <span class="chip">方案愿景</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="software-factory">
+    <div class="wrap">
+      <p class="eyebrow">软件研发</p>
+      <h2>一座由 Agent 组成的软件工厂。</h2>
+      <p class="lede">
+        目标流程从需求一直延伸到发布：规划 agent 定义工作，托管的编码 agent 实现它，
+        评审 agent 提出质疑 —— 没有人点头，任何东西都上不了线。
+      </p>
+
+      <div class="pipeline" role="img" aria-label="流水线：PRD，然后架构设计，然后前后端并行编码，然后 QA，然后安全审查，最后人工发布审批">
+        <span class="p-step">PRD<small>planner</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">架构设计<small>design</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-par">
+          <span class="p-step">后端编码<small>acp · codex</small></span>
+          <span class="p-step">前端编码<small>acp · opencode</small></span>
+        </span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">QA<small>tests</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">安全审查<small>audit</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step p-human">发布审批<small>human</small></span>
+      </div>
+      <p class="pipeline-caption">琥珀色 = 人工决策点 · 虚线 = 并行扇出</p>
+
+      <ul class="feature-list">
+        <li><b>编码 agent 受托管</b> Codex 与 OpenCode 以 ACP agent 运行 —— 进程池化、会话可续接、转录可回放、文件系统边界由你划定。</li>
+        <li><b>组合边界</b> builtin supervisor 与 plan-execute 今天可以协调内联角色；把工作交给独立 ACP Codex/OpenCode agent 仍需要跨 Agent workflow。</li>
+        <li><b>审批积木</b> builtin MCP 操作可以挂起等待交互式审批；ACP agent 发起的权限请求也能交给运营者，并在超时后 fail-closed。</li>
+        <li><b>按环节看 token</b> 可归因事件提供 prompt、completion、缓存与推理 token；金额成本与预算强制执行仍在路线图上。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="clinical-review">
+    <div class="wrap">
+      <p class="eyebrow">生命科学</p>
+      <h2>面向证据充分的临床审核蓝图。</h2>
+      <p class="lede">
+        受监管的审核工作正是 agent 系统最容易失败的地方：不是败在能力，而是败在证据。
+        AgentGuide 已交付的事件与 trace 底座可以捕获经网关路由的模型和工具活动；
+        合规级、不可篡改的审计账本仍在路线图上，而最终裁决权始终在人手里。
+      </p>
+
+      <div class="pipeline" role="img" aria-label="流水线：方案解析、医学编码、源数据核查、统计审查、合规检查，最后人工签核">
+        <span class="p-step">方案解析<small>parse</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">医学编码<small>meddra</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">源数据核查<small>sdv</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">统计审查<small>analysis</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">合规检查<small>gxp</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step p-human">签核<small>human</small></span>
+      </div>
+      <p class="pipeline-caption">琥珀色 = 人工决策点</p>
+
+      <ul class="feature-list">
+        <li><b>运行证据</b> 四类用量事件与交互 span 记录路由、工具、模型、时延、结果，以及归属明确时的 agent 身份。</li>
+        <li><b>有边界的 builtin 审核员</b> builtin 定义强制使用所选模型路由与声明的 MCP 工具；全平台能力策略属于后续控制面。</li>
+        <li><b>人工签核积木</b> 被门禁的 builtin MCP 操作与 ACP 权限请求在未回应时 fail-closed。</li>
+        <li><b>数据不出门</b> 自托管、单二进制；模型端点由你选择 —— 最敏感的材料可以走 Ollama 本地模型。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="financial-governance">
+    <div class="wrap">
+      <p class="eyebrow">金融服务</p>
+      <h2>可追踪风控决策的目标架构。</h2>
+      <p class="lede">
+        KYC、风险、反欺诈、合规各司其职；网关可以让联合决策更可解释。
+        当前 trace 覆盖经路由的交互；可回放的决策血缘与合规审计属于 workflow 和 Artifact 路线图。
+      </p>
+
+      <div class="pipeline" role="img" aria-label="流水线：KYC，然后风险评分与欺诈筛查并行，然后合规检查，然后人工审批，最后决策存档">
+        <span class="p-step">KYC<small>identity</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-par">
+          <span class="p-step">风险评分<small>models</small></span>
+          <span class="p-step">欺诈筛查<small>patterns</small></span>
+        </span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">合规检查<small>policy</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step p-human">人工审批<small>human</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">决策存档<small>record</small></span>
+      </div>
+      <p class="pipeline-caption">琥珀色 = 人工决策点 · 虚线 = 并行扇出</p>
+
+      <ul class="feature-list">
+        <li><b>双人复核积木</b> 选定的工具操作可以要求交互式人工审批，并在超时后 fail-closed。</li>
+        <li><b>运行归因</b> Agent 归属明确时，相关事件携带责任 agent；故障区分客户端、上游与内部三类。</li>
+        <li><b>爆炸半径受控</b> 递归深度限制掐断 agent 套 agent 的循环；按 agent 的并发上限与超时直接拒绝而非排队。</li>
+        <li><b>按业务台发密钥</b> 每个团队或应用一把虚拟密钥 —— 限定可访问路由、设置过期或禁用，并集中吊销访问。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="client-delivery">
+    <div class="wrap">
+      <p class="eyebrow">专业服务</p>
+      <h2>给一人公司配一个交付后台。</h2>
+      <p class="lede">
+        独立顾问、独立开发者和一人工作室的时间，大量耗在项目建档、会议跟进、
+        客户周报与问题回复上 —— 必要，却不产生收入。让一支角色 agent 团队接管这层运营工作，
+        而任何东西到达客户之前，都要先过你的最后一眼。
+      </p>
+
+      <div class="pipeline" role="img" aria-label="流水线：上下文检索，然后进展分析，然后客户周报与回复草稿并行起草，然后质量审阅，最后人工审阅发送">
+        <span class="p-step">上下文检索<small>knowledge</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">进展分析<small>pm</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-par">
+          <span class="p-step">客户周报<small>writer</small></span>
+          <span class="p-step">回复草稿<small>writer</small></span>
+        </span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">质量审阅<small>review</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step p-human">审阅发送<small>human</small></span>
+      </div>
+      <p class="pipeline-caption">琥珀色 = 人工决策点 · 虚线 = 并行扇出</p>
+
+      <ul class="feature-list">
+        <li><b>一支角色团队，而非一批人头</b> 内联的规划、检索、撰写、审阅角色今天可以组成 builtin supervisor 拓扑。Codex 今天可以作为托管 ACP agent 运行；让两种运行时加入同一条持久流程仍需要跨 Agent workflow。</li>
+        <li><b>接你已有的工具</b> 邮件、文档、日历、代码仓库可以作为 MCP 服务接入；builtin 角色在执行时只获得定义中声明的工具。</li>
+        <li><b>默认只出草稿</b> 任何内容发给客户之前都要经过交互式人工审批 —— 未回应就是不发送。</li>
+        <li><b>知识越攒越厚</b> 项目 FAQ、模板与历史周报沉淀成可复用的资产库 —— 在路线图上，经由工件总线与共享记忆实现。</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <p class="eyebrow">蓝图之外</p>
+      <h2>同样的模式，适配你的行业。</h2>
+      <p class="lede">
+        上面每个蓝图都是同一个目标形状：专家 agent、有边界的资源、关键决策上的人工门禁，
+        以及关联的运行证据。它可以向下适配一人公司，也能向上服务大型组织。
+        在路线图上，持久审计、工件血缘与能力组合会让这些流程变成声明式的
+        —— 说出你要的结果，平台替你组建团队。
+      </p>
+      <div class="cta-row" style="margin-top: 32px;">
+        <a class="btn btn-primary" href="agents.html#topologies">看看积木本身</a>
+        <a class="btn btn-ghost" href="why.html#vision">未来的方向</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — AI Agent 网关
+    </div>
+    <nav class="footer-links" aria-label="页脚导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,6 +1,8 @@
 # agent-gateway
 
-`agent-gateway` is an AI gateway for LLM, MCP, and native ACP workloads. It provides OpenAI-compatible and Anthropic-compatible ingress, route-based provider dispatch, VirtualKey authentication, dynamic config backed by SQLite, and Admin APIs for gateway operations.
+`agent-gateway` is the open-source core (Apache 2.0) of **[AgentGuide](https://agentguide.online)** — the control plane for enterprise agent systems: observe, govern, and orchestrate AI agents through one self-hosted gateway. AgentGuide is the product name; `agent-gateway` is this repository and the gateway engine it builds.
+
+The gateway serves LLM, MCP, and native ACP workloads. It provides OpenAI-compatible and Anthropic-compatible ingress, route-based provider dispatch, VirtualKey authentication, dynamic config backed by SQLite, and Admin APIs for gateway operations.
 
 This repository builds three binaries:
 

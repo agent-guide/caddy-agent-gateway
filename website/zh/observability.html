@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>观测与治理 — AgentGuide</title>
+<meta name="description" content="为经网关路由的 LLM、MCP、ACP 与 builtin 流量提供类型化用量事件、trace 和条件式 Agent 归因，并实施 fail-closed 运行控制。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/observability.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/observability.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/observability.html">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html" aria-current="page">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="../observability.html" lang="en" hreflang="en">EN</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">观测与治理</p>
+      <h1>只要 Agent 流量经过网关，就能追踪。</h1>
+      <p class="lede">
+        对经 AgentGuide 路由的模型调用、工具执行与 agent 轮次，可观测性是流量本身的属性，
+        而不是要求每个团队接入的 SDK。同样的位置也让网关支持的控制成为强制执行，
+        而不是善意建议。
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="events">
+    <div class="wrap">
+      <p class="eyebrow">用量事件</p>
+      <h2>四类事件，一套归因模型。</h2>
+      <p class="lede">
+        LLM、MCP、ACP 与 builtin 流量各自产生持久化的类型化用量事件。
+        归属明确的 Agent 流量携带 agent id，builtin 轮次显式写入身份；
+        未绑定的网关流量仍然可见，但不会虚构归属。
+      </p>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>类型</th>
+              <th>agent</th>
+              <th>目标</th>
+              <th>tokens 入 / 出</th>
+              <th>时延</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono-cell">14:02:11</td>
+              <td><span class="tag">llm</span></td>
+              <td class="mono-cell">support-triage</td>
+              <td class="mono-cell">anthropic · claude-sonnet-5</td>
+              <td class="num">8,412 / 1,203</td>
+              <td class="num"><span class="ok-dot"></span>2.1s</td>
+            </tr>
+            <tr>
+              <td class="mono-cell">14:02:13</td>
+              <td><span class="tag">mcp</span></td>
+              <td class="mono-cell">support-triage</td>
+              <td class="mono-cell">crm-tools · lookup_account</td>
+              <td class="num">—</td>
+              <td class="num"><span class="ok-dot"></span>340ms</td>
+            </tr>
+            <tr>
+              <td class="mono-cell">14:02:19</td>
+              <td><span class="tag">builtin</span></td>
+              <td class="mono-cell">report-writer</td>
+              <td class="mono-cell">turn · plan-execute</td>
+              <td class="num">31,908 / 4,551</td>
+              <td class="num"><span class="ok-dot"></span>18.7s</td>
+            </tr>
+            <tr>
+              <td class="mono-cell">14:02:24</td>
+              <td><span class="tag">acp</span></td>
+              <td class="mono-cell">codex-dev</td>
+              <td class="mono-cell">turn · session 7f3a</td>
+              <td class="num">12,050 / 2,340</td>
+              <td class="num"><span class="err-dot"></span>timeout</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card-grid" style="margin-top: 28px;">
+        <div class="card">
+          <span class="kicker">token 经济账</span>
+          <h3>对账级的 token 明细</h3>
+          <p>
+            prompt、completion、缓存与推理 token 分别记录
+            —— 这才是解释账单、调优缓存真正需要的数字。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">调用链</span>
+          <h3>span，而不只是计数器</h3>
+          <p>
+            agent 轮次打开交互 span，内部模型调用与工具执行嵌套其下。稳定 run id
+            贯穿 builtin HITL 分段；恢复与过期分段在 OTLP 中 link 回产生检查点的 trace。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">诚实的错误</span>
+          <h3>故障分门别类</h3>
+          <p>
+            客户端错误、上游故障与内部异常在每条事件上区分开
+            —— agent 的失误与提供商的宕机永远不会混为一谈。
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="analytics">
+    <div class="wrap">
+      <p class="eyebrow">分析与集成</p>
+      <h2>就地查询，随处聚合。</h2>
+      <div class="feature-row">
+        <div>
+          <span class="kicker">内置</span>
+          <h3>指标 Admin API</h3>
+          <p>
+            带管道健康计数的汇总、按协议的时间序列与维度分解、近期交互事件，
+            以及按 agent 的用量与活动视图 —— 网关一启动即可查询。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>按 agent 汇总</b> 每个注册 agent 的用量、活动、交互与健康。</li>
+          <li><b>Prometheus 暴露</b> 直接抓取网关；趋势与告警交给 Grafana。</li>
+          <li><b>OpenTelemetry 导出</b> 通过 OTLP gRPC 或 HTTP 导出重建的交互 span，并可选导出 eino component span。</li>
+          <li><b>保留期控制</b> 可配置的数据保留与自动清理 —— 不吃垮你存储的可观测性。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="governance">
+    <div class="wrap">
+      <p class="eyebrow">治理</p>
+      <h2>在唯一绕不过去的位置执行策略。</h2>
+      <p class="lede">
+        Wiki 里的规范拦不住凌晨三点的 agent，网关上的控制可以。
+        AgentGuide 的治理是结构性的：流量不满足策略，就到不了模型、工具或 agent。
+      </p>
+      <div class="card-grid cols-2">
+        <div class="card">
+          <span class="kicker">访问</span>
+          <h3>身份与密钥</h3>
+          <ul>
+            <li>按应用、团队或 agent 发放虚拟密钥 —— 集中签发、轮换、吊销</li>
+            <li>上游密钥永远不出网关</li>
+            <li>路由级鉴权要求，fail-closed</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="kicker">操作</span>
+          <h3>审批门禁</h3>
+          <ul>
+            <li>默认拒绝；安全处自动批准；关键处交互式人工审批</li>
+            <li>未回应的请求超时即拒绝</li>
+            <li>权限请求、恢复、取消与过期共享关联标识；专用的合规审计账本仍在路线图上</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="kicker">爆炸半径</span>
+          <h3>失控防护</h3>
+          <ul>
+            <li>agent 递归深度限制，在网关处掐断 agent 套 agent 的循环</li>
+            <li>按 agent 的并发上限与轮次超时，拒绝而非排队</li>
+            <li>panic 隔离：一个坏轮次永远拖不垮网关</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="kicker">资源</span>
+          <h3>能力有边界</h3>
+          <ul>
+            <li>builtin 定义强制使用所选模型路由与声明的 MCP 工具；通用资源关联是管理视图</li>
+            <li>ACP 会话只能从配置许可的根目录下启动；操作系统级 sandbox 仍由部署方负责</li>
+            <li>缺失的工具大声报错 —— 没有静默降级</li>
+            <li>一条路由只属于一个 agent：归因始终无歧义</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section cta-final">
+    <div class="wrap">
+      <p class="eyebrow">把你的 Agent 放上雷达</p>
+      <h2>在扩编队伍之前，先学会观测。</h2>
+      <p class="lede">
+        能把多 agent 系统做成的团队，都是先看清了单个 agent 的团队。
+        部署网关，把一个 agent 的流量接进来，画面自然会浮现。
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="platform.html#deploy">部署 AgentGuide</a>
+        <a class="btn btn-ghost" href="agents.html">探索 Agent 运行时</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — AI Agent 网关
+    </div>
+    <nav class="footer-links" aria-label="页脚导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

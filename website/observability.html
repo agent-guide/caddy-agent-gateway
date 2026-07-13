@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observability &amp; Governance — AgentGuide</title>
+<meta name="description" content="Typed usage events, traces, and conditional agent attribution for gateway-routed LLM, MCP, ACP, and builtin traffic — plus fail-closed runtime controls.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/observability.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/observability.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/observability.html">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html" aria-current="page">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="zh/observability.html" lang="zh" hreflang="zh">中文</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">Observability &amp; governance</p>
+      <h1>If agent traffic crosses the gateway, you can trace it.</h1>
+      <p class="lede">
+        For model calls, tool invocations, and agent turns routed through AgentGuide,
+        observability is a property of the traffic rather than an SDK each team must
+        integrate. The same position makes supported gateway controls enforceable,
+        not advisory.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="events">
+    <div class="wrap">
+      <p class="eyebrow">Usage events</p>
+      <h2>Four event families, one attribution model.</h2>
+      <p class="lede">
+        LLM, MCP, ACP, and builtin traffic each produce persisted, typed usage events.
+        Agent-bound events carry an agent id when ownership is unambiguous; builtin
+        turns are stamped explicitly. Unbound gateway traffic remains visible without
+        inventing an owner.
+      </p>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>time</th>
+              <th>kind</th>
+              <th>agent</th>
+              <th>target</th>
+              <th>tokens in / out</th>
+              <th>latency</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono-cell">14:02:11</td>
+              <td><span class="tag">llm</span></td>
+              <td class="mono-cell">support-triage</td>
+              <td class="mono-cell">anthropic · claude-sonnet-5</td>
+              <td class="num">8,412 / 1,203</td>
+              <td class="num"><span class="ok-dot"></span>2.1s</td>
+            </tr>
+            <tr>
+              <td class="mono-cell">14:02:13</td>
+              <td><span class="tag">mcp</span></td>
+              <td class="mono-cell">support-triage</td>
+              <td class="mono-cell">crm-tools · lookup_account</td>
+              <td class="num">—</td>
+              <td class="num"><span class="ok-dot"></span>340ms</td>
+            </tr>
+            <tr>
+              <td class="mono-cell">14:02:19</td>
+              <td><span class="tag">builtin</span></td>
+              <td class="mono-cell">report-writer</td>
+              <td class="mono-cell">turn · plan-execute</td>
+              <td class="num">31,908 / 4,551</td>
+              <td class="num"><span class="ok-dot"></span>18.7s</td>
+            </tr>
+            <tr>
+              <td class="mono-cell">14:02:24</td>
+              <td><span class="tag">acp</span></td>
+              <td class="mono-cell">codex-dev</td>
+              <td class="mono-cell">turn · session 7f3a</td>
+              <td class="num">12,050 / 2,340</td>
+              <td class="num"><span class="err-dot"></span>timeout</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card-grid" style="margin-top: 28px;">
+        <div class="card">
+          <span class="kicker">token economics</span>
+          <h3>Cost-grade token detail</h3>
+          <p>
+            Prompt, completion, cached, and reasoning tokens are recorded separately —
+            the numbers you actually need to explain a bill or tune a cache.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">call chains</span>
+          <h3>Spans, not just counters</h3>
+          <p>
+            Agent turns open interaction spans; inner model calls and tool executions
+            nest underneath. A stable run id connects builtin HITL segments, while
+            resumed and expired segments link to the checkpoint-producing trace in OTLP.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">honest errors</span>
+          <h3>Failures classified</h3>
+          <p>
+            Client errors, upstream failures, and internal faults are distinguished
+            per event — so an agent misbehaving and a provider outage never blur together.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="analytics">
+    <div class="wrap">
+      <p class="eyebrow">Analytics &amp; integration</p>
+      <h2>Query it here. Aggregate it anywhere.</h2>
+      <div class="feature-row">
+        <div>
+          <span class="kicker">built in</span>
+          <h3>Metrics Admin API</h3>
+          <p>
+            Summaries with pipeline health, per-protocol timeseries and breakdowns,
+            recent interaction events, and per-agent usage and activity views —
+            queryable the moment the gateway is running.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Per-agent rollups</b> Usage, activity, interactions, and health per registered agent.</li>
+          <li><b>Prometheus exposition</b> Scrape the gateway; build trends and alerting in Grafana.</li>
+          <li><b>OpenTelemetry export</b> Send reconstructed interaction spans over OTLP gRPC or HTTP, with optional eino component spans.</li>
+          <li><b>Retention control</b> Configurable retention with automatic cleanup — observability that respects your storage.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="governance">
+    <div class="wrap">
+      <p class="eyebrow">Governance</p>
+      <h2>Enforcement at the only place it can't be skipped.</h2>
+      <p class="lede">
+        Guidelines in a wiki don't stop an agent at 3 a.m. Controls at the gateway do.
+        AgentGuide's governance is structural: if traffic doesn't satisfy policy,
+        it doesn't reach the model, the tool, or the agent.
+      </p>
+      <div class="card-grid cols-2">
+        <div class="card">
+          <span class="kicker">access</span>
+          <h3>Identity &amp; keys</h3>
+          <ul>
+            <li>Virtual keys per app, team, or agent — issue, rotate, revoke centrally</li>
+            <li>Upstream secrets never leave the gateway</li>
+            <li>Route-level auth requirements, fail-closed</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="kicker">actions</span>
+          <h3>Permission gates</h3>
+          <ul>
+            <li>Deny by default; auto-approve where safe; interactive human approval where it counts</li>
+            <li>Unanswered requests time out to denial</li>
+            <li>Permission requests, resumptions, cancellations, and expiries share correlation ids; a dedicated compliance audit ledger remains roadmap work</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="kicker">blast radius</span>
+          <h3>Runaway protection</h3>
+          <ul>
+            <li>Agent recursion-depth limits stop agent-calls-agent loops at the gate</li>
+            <li>Per-agent concurrency caps and turn timeouts reject rather than queue</li>
+            <li>Panic containment: one bad turn never takes down the gateway</li>
+          </ul>
+        </div>
+        <div class="card">
+          <span class="kicker">resources</span>
+          <h3>Scoped capability</h3>
+          <ul>
+            <li>Builtin definitions enforce their selected model route and declared MCP tools; generic resource links are a management view</li>
+            <li>ACP sessions may start only under configured allowed roots; OS-level sandboxing remains the deployer's responsibility</li>
+            <li>Missing tools fail loudly — no silent fallback behavior</li>
+            <li>One route, one owning agent: attribution stays unambiguous</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section cta-final">
+    <div class="wrap">
+      <p class="eyebrow">Put your agents on the radar</p>
+      <h2>Start observing before you scale to a fleet.</h2>
+      <p class="lede">
+        The teams that succeed with multi-agent systems are the ones that could see
+        their single agents first. Deploy the gateway, route one agent through it,
+        and watch the picture appear.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="platform.html#deploy">Deploy AgentGuide</a>
+        <a class="btn btn-ghost" href="agents.html">Explore agent runtimes</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — the AI agent gateway
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

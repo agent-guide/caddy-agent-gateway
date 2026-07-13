@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>平台 — AgentGuide</title>
+<meta name="description" content="AgentGuide 平台：具备逻辑模型路由与凭据池的 LLM 网关、治理工具访问的 MCP 网关，以及自托管、配置即代码的控制平面。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/platform.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/platform.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/platform.html">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html" aria-current="page">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="../platform.html" lang="en" hreflang="en">EN</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">平台</p>
+      <h1>你的 Agent 站立其上的网关。</h1>
+      <p class="lede">
+        AgentGuide 是一个自托管二进制，覆盖 agent 技术栈的每一层：
+        LLM 网关负责模型访问，MCP 网关负责工具访问，agent 运行时负责执行
+        —— 共用同一个控制平面、同一个配置存储、同一条事件流。
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="llm">
+    <div class="wrap">
+      <p class="eyebrow">LLM 网关</p>
+      <h2>一个 API，所有提供商，不再有密钥泛滥。</h2>
+      <p class="lede">
+        应用只面对一个端点和一把虚拟密钥。由网关决定这次请求真正由哪个提供商、
+        哪个上游模型、哪条凭据来服务 —— 并精确记录发生了什么。
+      </p>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">routing</span>
+          <h3>逻辑模型路由</h3>
+          <p>
+            发布一个模型名（例如 <code>chat-default</code>），在它背后绑定多个候选提供商与上游模型。
+            模型目录会用发现到的提供商模型校验候选项，失败时自动落到下一个候选。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>模型目标路由</b> 一个逻辑名、多个提供商绑定、自动回退与重试策略。</li>
+          <li><b>直连提供商路由</b> 需要零间接层时，把路由钉死在一个提供商上。</li>
+          <li><b>模型目录</b> 提供商模型发现叠加受管模型覆盖；需要工具的场景强制只绑定支持工具调用的候选。</li>
+          <li><b>协议适配</b> OpenAI 兼容、Anthropic 兼容与 Claude Code 即插即用 CLI profile，由每条路由选择。</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">credentials</span>
+          <h3>池化、调度、自动刷新</h3>
+          <p>
+            上游凭据是受管对象，而不是应用配置里的字符串。
+            每个提供商可池化多条凭据并在其间调度，OAuth 类 CLI 凭据由网关在后台保持新鲜。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>凭据池</b> 每个提供商多条凭据，带选择状态与调度。</li>
+          <li><b>内置 CLI 登录</b> 用 Codex、Claude Code 或 Gemini CLI 订阅登录；网关代跑登录流程并自动刷新 token。</li>
+          <li><b>虚拟密钥</b> 消费方永远接触不到上游密钥 —— 按应用或团队签发、轮换、吊销网关自有密钥。</li>
+          <li><b>fail-closed 鉴权</b> 路由可强制要求虚拟密钥；未鉴权的流量到不了任何提供商。</li>
+        </ul>
+      </div>
+
+      <p class="kicker" style="margin-top: 40px;">支持的提供商</p>
+      <div class="chip-row" style="margin-top: 14px;">
+        <span class="chip">openai</span>
+        <span class="chip">anthropic</span>
+        <span class="chip">gemini</span>
+        <span class="chip">deepseek</span>
+        <span class="chip">qwen</span>
+        <span class="chip">zhipu</span>
+        <span class="chip">openrouter</span>
+        <span class="chip">ollama</span>
+        <span class="chip">codex (cli)</span>
+        <span class="chip">claude code (cli)</span>
+        <span class="chip chip-accent">+ 可插拔的 provider SPI</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="mcp">
+    <div class="wrap">
+      <p class="eyebrow">MCP 网关</p>
+      <h2>工具成为受治理的基础设施。</h2>
+      <p class="lede">
+        Model Context Protocol 服务器注册一次成为服务，再经由带鉴权策略的路由对外暴露。
+        agent 和应用获得工具访问；运营者获得一份清单、一个策略执行点和可查询的运行事件历史。
+      </p>
+      <div class="card-grid">
+        <div class="card">
+          <span class="kicker">catalog</span>
+          <h3>服务注册中心</h3>
+          <p>
+            集中注册 MCP 服务并发现其工具。任何 agent 能触达的每一个工具都在同一份清单里
+            —— 而不是 N 份服务器配置散落在 N 个 agent 中。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">policy</span>
+          <h3>经路由的受控访问</h3>
+          <p>
+            MCP 路由与其他路由一样携带鉴权策略和虚拟密钥校验。
+            工具选择是 fail-closed 的：未显式可用的工具是错误，绝不静默跳过。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">operations</span>
+          <h3>运行时实时巡检</h3>
+          <p>
+            通过管理端运行时视图查看在途 MCP 请求与进度；
+            事后查询已持久化的工具调用用量事件；路由归属明确时同时携带 agent 归因。
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="control-plane">
+    <div class="wrap">
+      <p class="eyebrow">控制平面</p>
+      <h2>一切皆 API 对象，配置即代码。</h2>
+      <p class="lede">
+        提供商、路由、凭据、虚拟密钥、MCP/ACP 服务和 agent 都是持久化配置对象，
+        Admin API 提供完整 CRUD —— 还有面向 GitOps 工作流的声明式 bundle 格式。
+      </p>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">admin api</span>
+          <h3>远程运营一切</h3>
+          <p>
+            完整的 Admin API 覆盖整个对象模型，外加运行时表面：
+            模型发现与刷新、CLI 登录流程、MCP/ACP 运行时状态、待裁决的权限请求、指标查询。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>完整 CRUD</b> 提供商、路由、虚拟密钥、凭据、MCP/ACP 服务、agent。</li>
+          <li><b>运行时视图</b> 池化 agent 实例、在途轮次与请求、待裁决权限。</li>
+          <li><b>指标 API</b> 汇总、按协议时间序列、维度分解、近期事件、Prometheus 暴露端点。</li>
+          <li><b>可插拔鉴权</b> 挂在 basic auth、mTLS 或你的反向代理认证器之后。</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">agwctl + bundles</span>
+          <h3>默认声明式</h3>
+          <p>
+            用一份可评审的 bundle 描述整个网关 —— 提供商、路由、服务、agent。
+            本地校验、按依赖顺序应用、把线上状态导出回来。配置可以进入版本控制；
+            apply 不是跨对象事务。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>agwctl apply</b> 一条命令推送完整的期望状态。</li>
+          <li><b>agwctl validate</b> 在上线前拦住失效引用和非法定义。</li>
+          <li><b>agwctl export</b> 快照线上配置，用于评审、diff 和备份。</li>
+          <li><b>变更可评审</b> 如果符合你的运营方式，可让 agent 与路由变更通过 Pull Request 管理。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="deploy">
+    <div class="wrap">
+      <p class="eyebrow">部署</p>
+      <h2>一个二进制，五分钟，跑在你的网络里。</h2>
+      <p class="lede">
+        基于 Caddy 服务器内核构建：生产级 HTTP、自动 TLS、优雅热加载全部白送。
+        以 Caddy 应用或独立守护进程运行 —— 除一个 SQLite 文件外没有外部依赖。
+        引擎完全开源：<code>agent-gateway</code>，Apache 2.0。
+      </p>
+      <div class="code-block"><pre><span class="c"># Caddyfile — one block, a working gateway</span>
+{
+    <span class="k">agent_gateway</span> {
+        <span class="k">config_store</span> sqlite {
+            path ./data/configstore.db
+        }
+        <span class="k">provider</span> openai-main {
+            provider_type openai
+            api_key <span class="s">{$OPENAI_API_KEY}</span>
+            default_model gpt-4.1
+        }
+        <span class="k">route</span> openai-chat {
+            protocol openai
+            path_prefix /
+            require_virtual_key
+            target provider openai-main
+        }
+    }
+}
+
+http://127.0.0.1:8080 {
+    <span class="k">agent_route_dispatcher</span> {
+        llm_api openai
+        llm_api anthropic
+        mcp
+        acp
+        builtin
+    }
+}</pre></div>
+      <div class="cta-row" style="margin-top: 32px;">
+        <a class="btn btn-primary" href="agents.html">下一步：Agent 运行时 →</a>
+        <a class="btn btn-ghost" href="https://github.com/agent-guide/agent-gateway">GitHub 源码</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — AI Agent 网关
+    </div>
+    <nav class="footer-links" aria-label="页脚导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

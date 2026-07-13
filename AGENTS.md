@@ -14,6 +14,18 @@ The current primary LLM path is:
 
 MCP is also active now through `agent_route_dispatcher` with MCP enabled, `pkg/gateway/mcproute`, `pkg/mcp/service`, and MCP Admin APIs. ACP is being implemented natively through `pkg/acp`, `pkg/gateway/acproute`, dispatcher turn handling, and ACP Admin APIs. The builtin agent runtime is active: agents with `runtime.type = "builtin"` are persisted definitions materialized by the in-process eino ADK host (`pkg/agent/builtin`) and exposed through builtin routes (`pkg/gateway/builtinroute`, dispatcher `builtin` enablement, `POST /<builtin-route>/turn` SSE). Metrics now persist LLM/MCP/ACP/builtin usage events (with optional `agent_id` attribution) and expose Admin summaries/events. The agent control plane is active through `pkg/agent`, the `agents` config store, and `/admin/agents` Admin APIs (P0 + P1 + PB1). Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
 
+## Product Site
+
+`website/` holds the static product marketing site for https://agentguide.online
+(plain HTML + one shared stylesheet `website/assets/site.css`, no build step).
+It is not part of the gateway binary or its tests. Pages: `index.html`,
+`platform.html`, `agents.html`, `solutions.html`, `observability.html`,
+`why.html`, each with a Chinese translation under `website/zh/` (same file
+names, `lang="zh-CN"`, `hreflang` alternates, nav language switcher). A content
+change to any page must be applied to both language versions. Keep marketing
+claims in sync with actual capabilities; features that are not implemented yet
+must be labeled as roadmap on the pages.
+
 ## Change Policy
 
 - by default, changes in this repository do not preserve backward compatibility

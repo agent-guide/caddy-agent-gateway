@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solutions — AgentGuide</title>
+<meta name="description" content="Target solution blueprints on AgentGuide's shipping runtime foundations and orchestration roadmap: software delivery, evidence-rich review, financial governance, and a client-delivery back office.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/solutions.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/solutions.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/solutions.html">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html" aria-current="page">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="zh/solutions.html" lang="zh" hreflang="zh">中文</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">Solutions</p>
+      <h1>Enterprise problems are organizational. So are the answers.</h1>
+      <p class="lede">
+        No single agent ships a product, clears a trial, approves a loan, or
+        runs a client portfolio alone.
+        These blueprints show how teams of specialist agents could be composed,
+        governed, and observed on AgentGuide. They combine shipping v0.5 runtime
+        foundations with roadmap tasks, cross-agent workflows, artifacts, memory,
+        and compliance controls. They are target architectures, not prebuilt products.
+      </p>
+      <div class="chip-row">
+        <span class="chip chip-accent">shipping foundation</span>
+        <span class="chip">building next</span>
+        <span class="chip">solution vision</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="software-factory">
+    <div class="wrap">
+      <p class="eyebrow">Software delivery</p>
+      <h2>A software factory, staffed by agents.</h2>
+      <p class="lede">
+        The target flow runs from requirement to release: planning agents shape the
+        work, managed coding agents build it, review agents push back, and nothing
+        deploys without a human saying so.
+      </p>
+
+      <div class="pipeline" role="img" aria-label="Pipeline: PRD, then architecture, then backend and frontend coding in parallel, then QA, then security review, then human release approval">
+        <span class="p-step">PRD<small>planner</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Architecture<small>design</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-par">
+          <span class="p-step">Backend coder<small>acp · codex</small></span>
+          <span class="p-step">Frontend coder<small>acp · opencode</small></span>
+        </span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">QA<small>tests</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Security review<small>audit</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step p-human">Release approval<small>human</small></span>
+      </div>
+      <p class="pipeline-caption">amber = human decision point · dashed = parallel fan-out</p>
+
+      <ul class="feature-list">
+        <li><b>Coding agents, managed</b> Codex and OpenCode run as ACP agents — pooled processes, resumable sessions, replayable transcripts, filesystem roots you define.</li>
+        <li><b>Composition boundary</b> Builtin supervisor and plan-execute topologies coordinate inline roles today. Handing work to independent ACP Codex/OpenCode agents requires the cross-agent workflow roadmap.</li>
+        <li><b>Approval building block</b> Builtin MCP actions can suspend for interactive approval; ACP agent permission requests can also route to an operator and time out fail-closed.</li>
+        <li><b>Token usage per stage</b> Attributed events expose prompt, completion, cached, and reasoning tokens. Monetary costing and enforceable budgets remain roadmap work.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="clinical-review">
+    <div class="wrap">
+      <p class="eyebrow">Life sciences</p>
+      <h2>A blueprint for evidence-rich clinical review.</h2>
+      <p class="lede">
+        Regulated review work is exactly where agent systems usually fail: not on
+        capability, but on evidence. AgentGuide's shipping event and trace foundation
+        can capture gateway-routed model and tool activity; a compliance-grade,
+        immutable audit ledger is a roadmap capability. Final judgment stays human.
+      </p>
+
+      <div class="pipeline" role="img" aria-label="Pipeline: protocol intake, medical coding, source data verification, statistical review, compliance check, then human sign-off">
+        <span class="p-step">Protocol intake<small>parse</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Medical coding<small>meddra</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Source data verification<small>sdv</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Statistical review<small>analysis</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Compliance<small>gxp</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step p-human">Sign-off<small>human</small></span>
+      </div>
+      <p class="pipeline-caption">amber = human decision point</p>
+
+      <ul class="feature-list">
+        <li><b>Operational evidence</b> Four usage-event families plus interaction spans capture route, tool, model, latency, result, and agent attribution when ownership is unambiguous.</li>
+        <li><b>Scoped builtin reviewers</b> Builtin definitions enforce their selected model route and declared MCP tools; platform-wide capability policy is a later control-plane layer.</li>
+        <li><b>Human sign-off building block</b> Gated builtin MCP actions and ACP permission requests fail closed when unanswered.</li>
+        <li><b>Data stays home</b> Self-hosted, single binary; you choose the model endpoints — including local models via Ollama for the most sensitive material.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="financial-governance">
+    <div class="wrap">
+      <p class="eyebrow">Financial services</p>
+      <h2>A target architecture for traceable risk decisions.</h2>
+      <p class="lede">
+        KYC, risk, fraud, and compliance agents each do one job well; the gateway
+        can make their combined decision explainable. Current traces cover routed
+        interactions; replayable decision lineage and compliance audit remain part
+        of the workflow and artifact roadmap.
+      </p>
+
+      <div class="pipeline" role="img" aria-label="Pipeline: KYC, then risk scoring and fraud screening in parallel, then compliance check, then human approval, then decision issued">
+        <span class="p-step">KYC<small>identity</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-par">
+          <span class="p-step">Risk scoring<small>models</small></span>
+          <span class="p-step">Fraud screening<small>patterns</small></span>
+        </span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Compliance<small>policy</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step p-human">Approval<small>human</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Decision issued<small>record</small></span>
+      </div>
+      <p class="pipeline-caption">amber = human decision point · dashed = parallel fan-out</p>
+
+      <ul class="feature-list">
+        <li><b>Four-eyes building block</b> Selected tool actions can require interactive human approval with a fail-closed timeout.</li>
+        <li><b>Operational attribution</b> Agent-bound events carry the responsible agent when ownership is unambiguous; failures are classified as client, upstream, or internal.</li>
+        <li><b>Contained blast radius</b> Recursion-depth limits stop agent-calls-agent loops; per-agent concurrency caps and timeouts reject rather than queue.</li>
+        <li><b>Keys per desk</b> Each team or application gets its own virtual key — scope it to routes, expire or disable it, and revoke access centrally.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="client-delivery">
+    <div class="wrap">
+      <p class="eyebrow">Professional services</p>
+      <h2>A delivery back office for a company of one.</h2>
+      <p class="lede">
+        Independent consultants, developers, and one-person studios lose their
+        week to project intake, meeting follow-ups, status reports, and client
+        replies — necessary work that earns nothing. A team of role agents runs
+        that operations layer, and nothing reaches a client until you hit send.
+      </p>
+
+      <div class="pipeline" role="img" aria-label="Pipeline: context retrieval, then progress analysis, then status report and client replies drafted in parallel, then quality review, then human review and send">
+        <span class="p-step">Context retrieval<small>knowledge</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Progress analysis<small>pm</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-par">
+          <span class="p-step">Status report<small>writer</small></span>
+          <span class="p-step">Client replies<small>writer</small></span>
+        </span>
+        <span class="p-arrow">→</span>
+        <span class="p-step">Quality review<small>review</small></span>
+        <span class="p-arrow">→</span>
+        <span class="p-step p-human">Review &amp; send<small>human</small></span>
+      </div>
+      <p class="pipeline-caption">amber = human decision point · dashed = parallel fan-out</p>
+
+      <ul class="feature-list">
+        <li><b>A staff of roles, not headcount</b> Inline planner, researcher, writer, and reviewer roles can compose in a builtin supervisor topology today. Codex runs as a managed ACP agent today; joining both runtimes in one durable flow requires the cross-agent workflow layer.</li>
+        <li><b>Your tools, scoped for builtin roles</b> Email, documents, calendars, and repositories can connect as MCP services; builtin roles receive only the tools declared in their definitions.</li>
+        <li><b>Drafts by default</b> Nothing goes out to a client without an interactive human approval — unanswered means undelivered.</li>
+        <li><b>Knowledge that compounds</b> Project FAQs, templates, and past reports settling into a reusable asset base — on the roadmap, via the artifact bus and shared memory.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <p class="eyebrow">Beyond the blueprints</p>
+      <h2>The same pattern fits your industry.</h2>
+      <p class="lede">
+        Every blueprint above is the same target shape: specialist agents, scoped
+        resources, human gates at the decisions that matter, and correlated
+        operational evidence underneath. It scales down as well as up. On the
+        roadmap, durable audit, artifact lineage, and
+        capability composition make these flows declarative — ask for the
+        outcome, and the platform assembles the team.
+      </p>
+      <div class="cta-row" style="margin-top: 32px;">
+        <a class="btn btn-primary" href="agents.html#topologies">See the building blocks</a>
+        <a class="btn btn-ghost" href="why.html#vision">Where this is going</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — the AI agent gateway
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

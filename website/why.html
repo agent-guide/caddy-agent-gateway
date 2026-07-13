@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Why AgentGuide — a control plane, not another framework</title>
+<meta name="description" content="How AgentGuide relates to LangGraph, AutoGen, and Dify: frameworks build agents; AgentGuide runs the agent organization — and where the platform is heading.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/why.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/why.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/why.html">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html" aria-current="page">Why AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="zh/why.html" lang="zh" hreflang="zh">中文</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">Why AgentGuide</p>
+      <h1>A control plane, not another agent framework.</h1>
+      <p class="lede">
+        LangGraph, AutoGen, and CrewAI answer "how should an agent think?"
+        AgentGuide answers a different question: "how does an organization run
+        agents?" — who may call them, what they may touch, what they cost, and
+        how they combine into larger capabilities. One builds agents. The other
+        operates the agent estate.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="distinction">
+    <div class="wrap">
+      <p class="eyebrow">The distinction</p>
+      <h2>Frameworks orchestrate reasoning. AgentGuide is building the agent control plane.</h2>
+      <p class="lede">
+        A framework's workflow lives inside one agent process: plan, call a tool,
+        reflect, retry. AgentGuide's control lives outside the agent: identity,
+        lifecycle, sessions, policy, and attribution today, with external tasks,
+        scheduling, and workflows next. The relationship is the one
+        between a container runtime and Kubernetes — different layers, both needed.
+      </p>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Agent frameworks<br>(LangGraph, AutoGen, CrewAI…)</th>
+              <th>AgentGuide<br>(control plane)</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Orchestrates</td>
+              <td>Reasoning steps inside one agent</td>
+              <td>Agents as units: lifecycle, routing, coordination</td>
+            </tr>
+            <tr>
+              <td>Sees the agent as</td>
+              <td>Code you write</td>
+              <td>A registered, governed black box behind a protocol</td>
+            </tr>
+            <tr>
+              <td>Core concerns</td>
+              <td>Prompts, memory, planning, reflection</td>
+              <td>Identity, sessions, policy, approvals; scheduling, cost enforcement, and audit on the roadmap</td>
+            </tr>
+            <tr>
+              <td>State lives</td>
+              <td>Inside the agent process</td>
+              <td>In the gateway: registry, events, transcripts, permissions</td>
+            </tr>
+            <tr>
+              <td>Analogy</td>
+              <td>The program</td>
+              <td>The operating system it runs on</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="feature-row" style="margin-top: 20px;">
+        <div>
+          <span class="kicker">better together</span>
+          <h3>Keep your framework. Gain a control plane.</h3>
+          <p>
+            AgentGuide is deliberately not a competitor to your framework — it's
+            where framework-built agents go to run in production. The builtin
+            runtime itself embeds an agent framework for its topologies; the
+            gateway's job stays the same either way: definition, lifecycle,
+            governance, resources, and observation.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Builtin runtime</b> Declarative agents on an embedded framework — proof the two layers compose.</li>
+          <li><b>ACP runtime</b> Codex, OpenCode, and other protocol-speaking agents, managed as black boxes.</li>
+          <li><b>HTTP identity</b> LangGraph, ADK, or custom services can register now; direct HTTP task dispatch is roadmap work.</li>
+          <li><b>Protocol boundary</b> ACP agents run as managed black boxes; external HTTP agents keep their implementation stack.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="layers">
+    <div class="wrap">
+      <p class="eyebrow">The platform, layer by layer</p>
+      <h2>An honest map of what ships today.</h2>
+      <p class="lede">
+        Six layers make up an enterprise agent platform. Here is where AgentGuide
+        stands on each — what you can deploy now, what is being built, and where
+        the platform is heading.
+      </p>
+      <div class="layer-stack">
+        <div class="layer">
+          <b>Capability composition</b>
+          <p>Declare target capabilities; the platform assembles the agents. Artifact contracts, capability graphs.</p>
+          <span class="tag tag-dim">vision</span>
+        </div>
+        <div class="layer">
+          <b>Orchestration</b>
+          <p>Multi-agent topologies inside one governed turn ship today; cross-agent tasks, scheduling, and workflows are on the roadmap.</p>
+          <span class="tag">shipping + expanding</span>
+        </div>
+        <div class="layer">
+          <b>Governance</b>
+          <p>Virtual keys, permission gates with human approval, recursion-depth limits, fail-closed concurrency and timeouts.</p>
+          <span class="tag tag-good">shipping</span>
+        </div>
+        <div class="layer">
+          <b>Observability</b>
+          <p>Conditional agent attribution for LLM/MCP/ACP traffic, explicit builtin attribution, interaction spans, Prometheus, and OTLP export.</p>
+          <span class="tag tag-good">shipping</span>
+        </div>
+        <div class="layer">
+          <b>Agent runtime</b>
+          <p>Builtin in-process host, managed ACP lifecycles with sessions and transcripts, plus HTTP agent identity with execution deferred.</p>
+          <span class="tag tag-good">shipping</span>
+        </div>
+        <div class="layer">
+          <b>Connectivity</b>
+          <p>LLM gateway with logical model routing and credential pooling; MCP gateway; protocol adapters.</p>
+          <span class="tag tag-good">shipping</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="vision">
+    <div class="wrap">
+      <p class="eyebrow">Where this is going</p>
+      <h2>From governed agents to an enterprise capability network.</h2>
+      <p class="lede">
+        The layers above are the foundation for a bigger idea: enterprises won't
+        buy one agent, they'll operate an organization of them. These are the
+        abstractions we're building toward — on the roadmap, not in the box today.
+      </p>
+      <div class="card-grid cols-2">
+        <div class="card">
+          <span class="kicker">vision · artifact bus</span>
+          <h3>Work products, not prompt chains</h3>
+          <p>
+            Agents exchange versioned, auditable artifacts — a PRD, an architecture,
+            a patch, a review — instead of raw text. Every artifact has a producer,
+            consumers, versions, and an approval state, forming a lineage graph that
+            answers "why did this fail?" in one query.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">vision · capability composition</span>
+          <h3>Ask for outcomes, not agents</h3>
+          <p>
+            Declare the capability you need — "review this contract", "release this
+            service" — and let the platform resolve which agents combine to deliver
+            it, wired together by the artifact types they consume and produce.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">vision · agent teams</span>
+          <h3>Invoke a team, not an agent</h3>
+          <p>
+            Named teams — PM, architect, coder, reviewer — as first-class objects
+            with role routing and supervisor policy. The in-process supervisor and
+            plan-execute topologies that ship today are the first step.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">vision · shared memory</span>
+          <h3>A blackboard for the fleet</h3>
+          <p>
+            Workspace-scoped memory that collaborating agents read and write —
+            long-lived context that outlives any single session, governed like
+            every other resource.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section cta-final">
+    <div class="wrap">
+      <p class="eyebrow">Start where the value is</p>
+      <h2>The control plane pays off from the first agent.</h2>
+      <p class="lede">
+        You don't need a fleet to benefit: route one agent through AgentGuide and
+        you get attribution, keys, and approvals on day one. The orchestration
+        layers arrive on a foundation you already trust.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="platform.html#deploy">Deploy AgentGuide</a>
+        <a class="btn btn-ghost" href="agents.html">Explore the runtimes</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — the AI agent gateway
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

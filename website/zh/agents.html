@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent 与编排 — AgentGuide</title>
+<meta name="description" content="用声明式拓扑运行 builtin agent，统一管理 ACP agent 与外部身份，并在同一控制面上规划跨 Agent 任务和 workflow。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/agents.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/agents.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/agents.html">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html" aria-current="page">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="../agents.html" lang="en" hreflang="en">EN</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">Agent 与编排</p>
+      <h1>注册、发布、授权、协同。</h1>
+      <p class="lede">
+        真正的问题从来不是代理某个协议，而是把 agent 当作一支受管的队伍来运营：
+        注册它们、安全地对外发布、分配模型与工具、盯住它们在做什么、裁决人工审批、
+        再协调它们跨 agent 协作。这就是 AgentGuide 控制平面的职责。
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="runtimes">
+    <div class="wrap">
+      <p class="eyebrow">运行时</p>
+      <h2>两种执行运行时，加一种外部身份模型。</h2>
+      <p class="lede">
+        agent 是一等对象，拥有路由、资源、策略、用量与健康状况
+        —— builtin 与 ACP 今天由网关执行；HTTP 定义外部 agent 形态，直接任务分发仍在路线图上。
+      </p>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">runtime · builtin</span>
+          <h3>Builtin — Agent 即配置</h3>
+          <p>
+            声明一个 agent —— 它的模型路由、MCP 工具、拓扑 —— 网关就在进程内
+            基于内嵌的 agent 框架把它物化出来。不用构建容器，不用部署服务。
+            定义更新在下一轮生效，在途工作优雅收尾。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>最深的可观测性</b> 每一轮内部的模型调用与工具执行都有独立的追踪 span。</li>
+          <li><b>结构性治理</b> agent 的模型走你的 LLM 路由、工具走你的 MCP 服务，此外什么都碰不到。</li>
+          <li><b>fail-closed 限制</b> 按 agent 的并发上限与轮次超时直接拒绝而非排队；每一轮都有 panic 隔离。</li>
+          <li><b>能力感知的"大脑"</b> 带工具的节点只绑定支持工具调用的模型；plan-execute 各角色可各配模型 —— 便宜的做规划，强的做执行。</li>
+          <li><b>会话连续性</b> 同会话的轮次安全串行，进行中的对话绝不会被容量驱逐清掉历史。</li>
+          <li><b>检查点审批</b> 交互式 MCP 调用挂起时不占槽位，恢复后沿用稳定 run 身份，并通过 link 关联 trace 分段。</li>
+          <li><b>运行控制</b> 对瞬态模型故障进行节点级重试，并可强制取消或优雅停止在途轮次。</li>
+          <li><b>上下文中间件</b> 可选摘要、裁减、工具搜索、内联 skill、plan task 与虚拟 AGENTS.md 指引。</li>
+          <li><b>自定义 Go agent</b> 把你自己的 agent 工厂编译进二进制，用声明的方式选用。</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">runtime · acp</span>
+          <h3>ACP — 托管编码 Agent</h3>
+          <p>
+            网关托管 Agent Client Protocol agent（如 Codex 与 OpenCode）的生命周期：
+            进程池化、SSE 流式轮次、转录回放，权限请求经由你的策略裁决
+            —— 拒绝、自动批准或交互式人工决定。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>进程池</b> 空闲回收、实例上限、死实例驱逐、会话感知复用。</li>
+          <li><b>会话与转录</b> 列出会话、回放完整对话、续接线程。</li>
+          <li><b>人在环中</b> 权限请求出现在实时流上、经 API 裁决 —— 超时即拒绝（fail-closed）。</li>
+          <li><b>流式轮次 API</b> 增量、推理、计划、工具调用与用量，皆为类型化 SSE 事件。</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">identity · http · 执行路线图</span>
+          <h3>HTTP — 注册你的外部 Agent</h3>
+          <p>
+            用任意框架构建、运行在你自己基础设施上的 agent，今天可以注册端点与管理身份；
+            调用该端点的任务后端将随网关持有的 external task 一同实现。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>同一套身份模型</b> 路由、资源、策略、用量与健康，与其他运行时一致。</li>
+          <li><b>归因引用</b> 路由归属明确时，绑定路由的流量会归因到该 agent。</li>
+          <li><b>执行边界</b> v0.5 存储并校验身份，但尚不分发 HTTP agent 任务。</li>
+          <li><b>无锁定</b> LangChain、ADK、自研栈 —— 网关一视同仁。</li>
+        </ul>
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>运行时</th>
+              <th>进程归属</th>
+              <th>适合场景</th>
+              <th>编排</th>
+              <th>观测深度</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Builtin</td>
+              <td>网关（进程内）</td>
+              <td>可组合的企业 agent、多 agent 拓扑</td>
+              <td><span class="tag">声明式拓扑</span></td>
+              <td>轮次 + 内部模型与工具 span</td>
+            </tr>
+            <tr>
+              <td>ACP</td>
+              <td>网关（托管进程）</td>
+              <td>编码 agent：Codex、OpenCode</td>
+              <td><span class="tag-steel tag">会话与权限</span></td>
+              <td>轮次事件、转录、用量</td>
+            </tr>
+            <tr>
+              <td>HTTP</td>
+              <td>你（外部服务）</td>
+              <td>任意框架上的存量 agent</td>
+              <td><span class="tag-steel tag">任务后端路线图</span></td>
+              <td>路由归属明确时归因</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="registry">
+    <div class="wrap">
+      <p class="eyebrow">注册与发布</p>
+      <h2>你的 Agent 资产，登记在册、产品化输出。</h2>
+      <p class="lede">
+        大多数组织答不上来"我们有哪些 agent、谁能调用它们？"
+        AgentGuide 让这两个问题变得无聊：一个盘点所有 agent 的注册中心，
+        和一套把 agent 发布成受治理 API 产品的路由。
+      </p>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">agent registry</span>
+          <h3>一份完整的 agent 资产清单</h3>
+          <p>
+            每个 agent —— builtin、ACP 或 HTTP —— 都是有声明式管理形态的注册对象：
+            关联的模型与 MCP 资源、入口路由、策略和健康状态。builtin 定义还会在执行时
+            强制使用所选模型路由与工具。workspace 视图把这些汇聚在一个页面里。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>声明式能力</b> 模型与工具绑定是 agent 定义的一部分 —— 可发现，而不是口口相传。</li>
+          <li><b>实时状态</b> 物化状态、池化实例、在途轮次、待裁决审批。</li>
+          <li><b>健康与活动</b> 按 agent 的健康状况、用量汇总与交互历史。</li>
+          <li><b>归属无歧义</b> 一条路由或运行时服务至多属于一个 agent —— 归因不可能含糊。</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">agent as a product</span>
+          <h3>像发布 API 一样发布 Agent</h3>
+          <p>
+            路由之后的 builtin 或 ACP agent 是一个有稳定端点的企业能力：消费方拿到一个 URL 和一把虚拟密钥；
+            你保有版本化的定义、按消费方的计量，以及一处吊销访问的权力。
+            像交付服务一样向内部团队交付 agent。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>稳定端点</b> 网关路由之后的流式轮次 API —— 消费方永远不直接接触运行时。</li>
+          <li><b>按密钥授权</b> 每个消费团队或应用一把虚拟密钥，集中轮换与吊销。</li>
+          <li><b>用量计量</b> VirtualKey 与 agent 维度支持按消费方和按 agent 查询用量。</li>
+          <li><b>零停机更新</b> builtin 定义变更在下一轮生效，在途工作优雅收尾。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="topologies">
+    <div class="wrap">
+      <p class="eyebrow">Builtin 拓扑</p>
+      <h2>多 Agent 协作模式，声明出来而不是写出来。</h2>
+      <p class="lede">
+        builtin agent 的拓扑是其定义的一部分。把子 agent 组合成经过验证的协作模式
+        —— 配置时校验，运行时物化。
+      </p>
+      <div class="card-grid cols-4">
+        <div class="card">
+          <h3>Single</h3>
+          <p>单模型，可选工具，可选对话摘要。</p>
+        </div>
+        <div class="card">
+          <h3>Sequential</h3>
+          <p>子 agent 流水线，逐级精炼上一步的结果。</p>
+        </div>
+        <div class="card">
+          <h3>Parallel</h3>
+          <p>把工作扇出到多个子 agent，再合并返回结果。</p>
+        </div>
+        <div class="card">
+          <h3>Loop</h3>
+          <p>迭代直至结果收敛或到达上限。</p>
+        </div>
+        <div class="card">
+          <h3>Supervisor</h3>
+          <p>会调用工具的"主管"，向专家子 agent 委派任务。</p>
+        </div>
+        <div class="card">
+          <h3>Plan-Execute</h3>
+          <p>规划、执行、重规划三种角色 —— 可各配不同模型，只有执行者携带工具。</p>
+        </div>
+        <div class="card">
+          <h3>Deep</h3>
+          <p>研究型"主脑"，递归下钻到子 agent 获取深度。</p>
+        </div>
+        <div class="card">
+          <h3>Custom</h3>
+          <p>你自己的 Go 工厂，编译进二进制、按名称选用。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="orchestration">
+    <div class="wrap">
+      <p class="eyebrow">Workspace 与 Workflow</p>
+      <h2>从单个 Agent，到一支协同作战的队伍。</h2>
+      <p class="lede">
+        终局是多个 agent 协作交付大型复杂任务 —— 网关既是调度器、也是策略引擎、
+        还是"飞行记录仪"。整个平台都在为这一层打地基。
+      </p>
+
+      <div class="card-grid cols-2">
+        <div class="card">
+          <span class="kicker">现已可用</span>
+          <h3>Agent workspace</h3>
+          <p>
+            每个 agent 一块单面板：定义与运行时状态、存活实例与在途轮次、
+            待裁决的权限请求、会话与转录索引、绑定的模型与工具资源，以及用量与交互历史。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">现已可用</span>
+          <h3>拓扑级的团队协作</h3>
+          <p>
+            builtin 拓扑已经能让内联子 agent 在同一个任务上协作 —— supervisor 委派、
+            plan-execute 循环与并行扇出，都在一个受治理轮次内完成。独立的
+            ACP/HTTP/builtin agent 之间仍需要下面的 workflow 层。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">roadmap · tasks</span>
+          <h3>任务与调度</h3>
+          <p>
+            由网关持有的工作单元：立即在某个 agent 上执行 prompt、续接会话、
+            定时任务、从 agent A 交接到 agent B —— 具备持久状态、重试、取消与审计元数据。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">roadmap · workflows</span>
+          <h3>跨 Agent 工作流</h3>
+          <p>
+            横跨独立 agent 的工作流定义与运行：交接与依赖语义、拓扑视图、人工检查点
+            —— 把企业级任务分解到整支 agent 舰队。
+          </p>
+        </div>
+      </div>
+
+      <div class="cta-row" style="margin-top: 36px;">
+        <a class="btn btn-primary" href="observability.html">每一步都被观测 →</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow">人在环中</p>
+      <h2>自主执行，但保留审批通道。</h2>
+      <p class="lede">
+        重要的 agent 操作 —— 写文件、跑命令、碰生产 —— 都可以要求人来拍板。
+        权限请求实时推送给运营者、经 API 裁决；没有回应就等于拒绝，永远如此。
+        默认拒绝，安全处自动批准，关键处必须问人。
+      </p>
+      <div class="chip-row">
+        <span class="chip">deny（默认）</span>
+        <span class="chip chip-accent">交互式审批</span>
+        <span class="chip">auto-approve</span>
+        <span class="chip">超时即拒（fail-closed）</span>
+        <span class="chip">请求生命周期可关联</span>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — AI Agent 网关
+    </div>
+    <nav class="footer-links" aria-label="页脚导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

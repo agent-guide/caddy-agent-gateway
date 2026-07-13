@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>为什么选 AgentGuide — 控制平面，而非又一个框架</title>
+<meta name="description" content="AgentGuide 与 LangGraph、AutoGen、Dify 的关系：框架构建 agent，AgentGuide 运营 agent 组织 —— 以及平台的未来方向。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/why.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/why.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/why.html">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html" aria-current="page">为什么选 AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="../why.html" lang="en" hreflang="en">EN</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">为什么选 AgentGuide</p>
+      <h1>一个控制平面，而不是又一个 Agent 框架。</h1>
+      <p class="lede">
+        LangGraph、AutoGen、CrewAI 回答的是"agent 该怎么思考？"
+        AgentGuide 回答的是另一个问题："组织该怎么运营 agent？"
+        —— 谁可以调用它们、它们能触碰什么、花了多少钱、如何组合成更大的能力。
+        一个负责造 agent，另一个负责运营 agent 资产。
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="distinction">
+    <div class="wrap">
+      <p class="eyebrow">本质区别</p>
+      <h2>框架编排推理，AgentGuide 构建 Agent 控制平面。</h2>
+      <p class="lede">
+        框架的工作流活在单个 agent 进程内部：规划、调用工具、反思、重试。
+        AgentGuide 的控制在 agent 外部：今天覆盖身份、生命周期、会话、策略与归因，
+        下一步扩展外部任务、调度与 workflow。两者的关系就像容器运行时之于
+        Kubernetes —— 不同的层，缺一不可。
+      </p>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Agent 框架<br>（LangGraph、AutoGen、CrewAI…）</th>
+              <th>AgentGuide<br>（控制平面）</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>编排对象</td>
+              <td>单个 agent 内部的推理步骤</td>
+              <td>agent 作为单元：生命周期、路由、协同</td>
+            </tr>
+            <tr>
+              <td>看待 agent</td>
+              <td>你写的代码</td>
+              <td>协议之后一个已注册、受治理的黑盒</td>
+            </tr>
+            <tr>
+              <td>核心关注</td>
+              <td>prompt、记忆、规划、反思</td>
+              <td>身份、会话、策略、审批；调度、成本执行与审计在路线图上</td>
+            </tr>
+            <tr>
+              <td>状态所在</td>
+              <td>agent 进程内部</td>
+              <td>网关：注册中心、事件、转录、权限</td>
+            </tr>
+            <tr>
+              <td>类比</td>
+              <td>程序本身</td>
+              <td>程序运行其上的操作系统</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="feature-row" style="margin-top: 20px;">
+        <div>
+          <span class="kicker">相辅相成</span>
+          <h3>留下你的框架，补上控制平面。</h3>
+          <p>
+            AgentGuide 刻意不做你框架的竞争者 —— 它是框架造出来的 agent
+            走向生产的地方。builtin 运行时本身就内嵌了一个 agent 框架来支撑拓扑；
+            而网关的职责始终不变：定义、生命周期、治理、资源与观测。
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Builtin 运行时</b> 内嵌框架之上的声明式 agent —— 两层可以共存的活证据。</li>
+          <li><b>ACP 运行时</b> Codex、OpenCode 等讲协议的 agent，以黑盒方式托管。</li>
+          <li><b>HTTP 身份</b> LangGraph、ADK 或自研服务今天可以注册；直接 HTTP 任务分发仍在路线图上。</li>
+          <li><b>协议边界</b> ACP agent 作为受管黑盒运行；外部 HTTP agent 保留自己的实现栈。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="layers">
+    <div class="wrap">
+      <p class="eyebrow">平台分层</p>
+      <h2>一张诚实的现状地图。</h2>
+      <p class="lede">
+        企业级 agent 平台由六层组成。这是 AgentGuide 在每一层的位置
+        —— 今天能部署什么、正在建设什么、未来通向哪里。
+      </p>
+      <div class="layer-stack">
+        <div class="layer">
+          <b>能力组合</b>
+          <p>声明目标能力，由平台组装 agent。工件契约、能力图。</p>
+          <span class="tag tag-dim">vision</span>
+        </div>
+        <div class="layer">
+          <b>编排</b>
+          <p>单个受治理轮次内的多 agent 拓扑今天已交付；跨 agent 的任务、调度与工作流在路线图上。</p>
+          <span class="tag">shipping + expanding</span>
+        </div>
+        <div class="layer">
+          <b>治理</b>
+          <p>虚拟密钥、带人工审批的权限门禁、递归深度限制、fail-closed 的并发与超时。</p>
+          <span class="tag tag-good">shipping</span>
+        </div>
+        <div class="layer">
+          <b>观测</b>
+          <p>LLM/MCP/ACP 流量的条件式归因、builtin 显式归因、交互 span、Prometheus 与 OTLP 导出。</p>
+          <span class="tag tag-good">shipping</span>
+        </div>
+        <div class="layer">
+          <b>Agent 运行时</b>
+          <p>builtin 进程内宿主、带会话与转录的 ACP 生命周期托管，以及执行尚未实现的 HTTP agent 身份。</p>
+          <span class="tag tag-good">shipping</span>
+        </div>
+        <div class="layer">
+          <b>连接</b>
+          <p>带逻辑模型路由与凭据池的 LLM 网关；MCP 网关；协议适配器。</p>
+          <span class="tag tag-good">shipping</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="vision">
+    <div class="wrap">
+      <p class="eyebrow">未来的方向</p>
+      <h2>从受治理的 Agent，到企业能力网络。</h2>
+      <p class="lede">
+        上面的层是为一个更大的想法打的地基：企业最终买的不是一个 agent，
+        而是运营一整个 agent 组织。以下是我们正在构建的抽象
+        —— 在路线图上，而不在今天的交付里。
+      </p>
+      <div class="card-grid cols-2">
+        <div class="card">
+          <span class="kicker">vision · artifact bus</span>
+          <h3>流转工作成果，而不是 prompt 链</h3>
+          <p>
+            agent 之间交换的是有版本、可审计的工件 —— PRD、架构、patch、评审 ——
+            而不是裸文本。每个工件都有生产者、消费者、版本与审批状态，
+            连成一张血缘图，一次查询就能回答"为什么失败了？"
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">vision · 能力组合</span>
+          <h3>要结果，不点名 Agent</h3>
+          <p>
+            声明你需要的能力 —— "审这份合同"、"发布这个服务" ——
+            由平台决定哪些 agent 组合起来交付它，靠它们消费与产出的工件类型自动连线。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">vision · agent teams</span>
+          <h3>调用一支团队，而不是一个 Agent</h3>
+          <p>
+            具名团队 —— PM、架构师、编码、评审 —— 成为一等对象，
+            带角色路由与 supervisor 策略。今天已交付的进程内 supervisor 与
+            plan-execute 拓扑是第一步。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">vision · 共享记忆</span>
+          <h3>整个舰队的黑板</h3>
+          <p>
+            workspace 级的共享记忆，供协作中的 agent 读写 ——
+            比任何单个会话都长寿的上下文，和其他资源一样受治理。
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section cta-final">
+    <div class="wrap">
+      <p class="eyebrow">从价值所在开始</p>
+      <h2>控制平面从第一个 Agent 就开始回本。</h2>
+      <p class="lede">
+        不需要先有一支舰队：把一个 agent 的流量接进 AgentGuide，
+        第一天你就拿到归因、密钥与审批。编排层会建在一个你已经信任的地基上。
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="platform.html#deploy">部署 AgentGuide</a>
+        <a class="btn btn-ghost" href="agents.html">探索运行时</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — AI Agent 网关
+    </div>
+    <nav class="footer-links" aria-label="页脚导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

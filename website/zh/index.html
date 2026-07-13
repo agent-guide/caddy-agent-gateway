@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentGuide — AI Agent 的观测、治理与编排</title>
+<meta name="description" content="AgentGuide 是自托管的 AI Agent 网关，为 LLM、MCP 工具与 agent 提供已交付的运行时、治理和可观测性底座，并规划跨 Agent 编排能力。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/">
+<link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="index.html" aria-current="page">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="../index.html" lang="en" hreflang="en">EN</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div class="wrap hero-grid">
+      <div>
+        <p class="eyebrow">企业级 Agent 系统的控制平面</p>
+        <h1>给你的 AI <em>Agent</em>，一座空管塔台。</h1>
+        <p class="lede">
+          AgentGuide 把注册的 agent 与经网关路由的模型、工具流量放到同一块雷达屏上。
+          看清一切、用策略治理、把 agent 编排成建制化的队伍去完成真正的企业任务
+          —— 全部通过一个由你自己部署的网关完成。
+        </p>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="agents.html">探索 Agent 编排</a>
+          <a class="btn btn-ghost" href="platform.html">了解平台</a>
+        </div>
+      </div>
+      <div class="diagram-frame">
+        <span class="kicker">live traffic — one control plane</span>
+        <svg viewBox="0 0 640 360" role="img" aria-label="示意图：消费方经 AgentGuide 网关驱动 agent；agent 再经同一网关回调 LLM 与 MCP 资源">
+          <!-- left: consumers -->
+          <rect class="dg-box" x="10" y="52" width="130" height="40" rx="4"></rect>
+          <text class="dg-label dg-label-strong" x="26" y="76">Applications</text>
+          <rect class="dg-box" x="10" y="140" width="130" height="40" rx="4"></rect>
+          <text class="dg-label dg-label-strong" x="26" y="164">Coding CLIs</text>
+          <rect class="dg-box" x="10" y="228" width="130" height="40" rx="4"></rect>
+          <text class="dg-label dg-label-strong" x="26" y="252">Services</text>
+
+          <!-- center: gateway core -->
+          <rect class="dg-core" x="230" y="40" width="180" height="250" rx="6"></rect>
+          <text class="dg-label dg-label-accent" x="252" y="70" style="font-weight:600">AGENTGUIDE</text>
+          <line x1="252" y1="82" x2="388" y2="82" stroke="currentColor" opacity="0.18"></line>
+          <text class="dg-label" x="252" y="106">route + virtual keys</text>
+          <text class="dg-label" x="252" y="130">credential pool</text>
+          <text class="dg-label" x="252" y="154">builtin agent host</text>
+          <text class="dg-label" x="252" y="178">policy + limits</text>
+          <text class="dg-label dg-label-accent" x="252" y="220">observe · govern</text>
+          <text class="dg-label dg-label-accent" x="252" y="242">orchestrate</text>
+          <text class="dg-label" x="252" y="272">usage events + traces</text>
+
+          <!-- right: agents — driven by the gateway, calling back through it -->
+          <text class="dg-label dg-group" x="500" y="30">agents</text>
+          <rect class="dg-box" x="500" y="38" width="130" height="40" rx="4"></rect>
+          <text class="dg-label dg-label-strong" x="516" y="56">ACP agents</text>
+          <text class="dg-label" x="516" y="70">codex · opencode</text>
+          <rect class="dg-box" x="500" y="88" width="130" height="40" rx="4"></rect>
+          <text class="dg-label dg-label-strong" x="516" y="106">HTTP agents</text>
+          <text class="dg-label" x="516" y="120">your own services</text>
+
+          <!-- right: resources — call-back targets -->
+          <text class="dg-label dg-group" x="500" y="168">resources</text>
+          <rect class="dg-box" x="500" y="176" width="130" height="40" rx="4"></rect>
+          <text class="dg-label dg-label-strong" x="516" y="194">LLM providers</text>
+          <text class="dg-label" x="516" y="208">openai, claude, …</text>
+          <rect class="dg-box" x="500" y="226" width="130" height="40" rx="4"></rect>
+          <text class="dg-label dg-label-strong" x="516" y="244">MCP tools</text>
+          <text class="dg-label" x="516" y="258">governed services</text>
+
+          <!-- flows ①②: consumers drive agents -->
+          <path class="dg-flow" d="M140 72 C 185 72, 190 100, 230 105"></path>
+          <path class="dg-flow" d="M140 160 C 185 160, 185 158, 230 158"></path>
+          <path class="dg-flow" d="M140 248 C 190 248, 190 215, 230 212"></path>
+          <path class="dg-flow" d="M410 105 C 450 105, 455 58, 500 58"></path>
+          <!-- flows ③④: agents call back for LLM / MCP -->
+          <path class="dg-flow dg-flow-b" d="M500 72 C 460 80, 440 160, 412 185"></path>
+          <path class="dg-flow dg-flow-b" d="M500 114 C 465 130, 440 200, 412 205"></path>
+          <path class="dg-flow dg-flow-b" d="M410 232 C 450 232, 455 196, 500 196"></path>
+          <path class="dg-flow dg-flow-b" d="M410 256 C 450 256, 455 246, 500 246"></path>
+
+          <!-- flow numbers -->
+          <text class="dg-num dg-num-a" x="176" y="62">①</text>
+          <text class="dg-num dg-num-a" x="444" y="74">②</text>
+          <text class="dg-num dg-num-b" x="424" y="138">③</text>
+          <text class="dg-num dg-num-b" x="444" y="222">④</text>
+
+          <!-- caption -->
+          <text class="dg-label dg-caption" x="320" y="332">① call the gateway → ② drive an agent → ③ agents call back for LLM / MCP → ④ proxied upstream</text>
+          <text class="dg-label dg-caption" x="320" y="348">builtin agents run ②③ in-process — every hop observed</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <div class="stat-strip">
+    <div class="wrap stat-strip-inner">
+      <div class="stat"><b>2</b><span>种执行运行时 — Builtin 与 ACP</span></div>
+      <div class="stat"><b>10</b><span>种内置 LLM provider 类型</span></div>
+      <div class="stat"><b>8</b><span>种内置编排拓扑</span></div>
+      <div class="stat"><b>4</b><span>类类型化用量事件</span></div>
+    </div>
+  </div>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow">为什么需要网关</p>
+      <h2>启动一个 Agent 很容易，运营它很难。</h2>
+      <p class="lede">
+        当 agent 开始调用模型、执行工具、再派生别的 agent，就没人能回答最基本的问题了：
+        花了多少钱？谁批准了那个操作？是哪个 agent 弄坏了生产环境？
+        AgentGuide 站在经网关路由的调用路径上，把 agent 流量变成看得见、管得住、可组合的资产。
+      </p>
+      <div class="card-grid">
+        <div class="card">
+          <span class="kicker">观测</span>
+          <h3>把网关流量变成结构化证据</h3>
+          <p>
+            LLM 请求、MCP 工具调用和 agent 轮次产生持久化用量事件：token
+            （含缓存与推理 token）、时延和错误。Agent 归属明确时写入归因；
+            builtin 轮次始终显式携带 agent 身份。
+          </p>
+          <a class="more" href="observability.html">观测能力 →</a>
+        </div>
+        <div class="card">
+          <span class="kicker">治理</span>
+          <h3>策略收敛到网关，而不是散落在每个应用里</h3>
+          <p>
+            面向消费方的虚拟密钥、池化调度的上游凭据、agent 操作的交互式审批门禁、
+            递归深度限制，以及 fail-closed 的并发与超时控制。
+          </p>
+          <a class="more" href="observability.html#governance">治理能力 →</a>
+        </div>
+        <div class="card">
+          <span class="kicker">编排</span>
+          <h3>把 agent 组合成真正的工作流</h3>
+          <p>
+            今天即可在网关内用串行、并行、supervisor、plan-execute 等声明式拓扑运行 agent；
+            跨独立 agent 的任务与 workflow 是控制面的下一层。
+          </p>
+          <a class="more" href="agents.html">Agent 与编排 →</a>
+        </div>
+      </div>
+      <p style="margin-top: 28px; font-size: 0.95rem;">
+        AgentGuide 不是又一个 agent 框架 —— 它从外部编排 agent，无论 agent 用什么构建。
+        <a href="why.html">与 LangGraph、AutoGen 等框架的关系 →</a>
+      </p>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow">三种身份模型，一个控制平面</p>
+      <h2>带上你现有的 Agent，或者直接在网关里构建。</h2>
+      <p class="lede">
+        每个注册的 agent —— 无论运行在哪里 —— 都拥有一等公民的身份：路由、资源、策略、
+        用量与健康状况，全部在同一个控制平面里管理。
+      </p>
+      <div class="card-grid">
+        <div class="card">
+          <span class="kicker">runtime · builtin</span>
+          <h3>Builtin agent</h3>
+          <p>
+            以配置的形式声明，在网关进程内物化运行 —— 不需要独立进程。
+            这是最深度的选项：内部模型调用与工具执行逐条追踪，编排拓扑是一等公民。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">runtime · acp</span>
+          <h3>ACP agent</h3>
+          <p>
+            网关托管 Agent Client Protocol agent（如 Codex、OpenCode）的完整生命周期：
+            进程池、会话与转录、流式轮次，以及经由你的策略裁决的权限请求。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">runtime · http</span>
+          <h3>HTTP agent</h3>
+          <p>
+            运行在你自己基础设施上的 agent 可以注册成一等身份，并声明资源与路由引用。
+            直接 HTTP 任务分发属于 external-task 路线图，在 v0.5 中还不是执行后端。
+          </p>
+        </div>
+      </div>
+      <div class="chip-row">
+        <span class="chip chip-accent">统一的 agent 身份</span>
+        <span class="chip">路由</span>
+        <span class="chip">资源</span>
+        <span class="chip">策略</span>
+        <span class="chip">用量</span>
+        <span class="chip">健康</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <p class="eyebrow">产品方向 · 多 Agent 协作</p>
+      <h2>Workspace 与 Workflow，把 Agent 变成一支队伍。</h2>
+      <p class="lede">
+        单个 agent 回答问题，成建制的 agent 交付项目。AgentGuide 正朝后者演进：
+        v0.5 已交付运行时、身份、拓扑、审批与可观测性底座；跨独立 agent 的
+        共享任务 workspace 与 workflow 是下一层。
+      </p>
+      <div class="card-grid">
+        <div class="card">
+          <span class="kicker">现已可用 · workspace 视图</span>
+          <h3>在一个页面看清 Agent</h3>
+          <p>
+            按 agent 聚合定义、运行时状态、关联资源、待裁决权限、用量、交互历史
+            与浅层健康状态。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">现已可用 · builtin 拓扑</span>
+          <h3>在一个受治理轮次内组合</h3>
+          <p>
+            内联子 agent 通过 plan-execute 循环、supervisor 委派与并行扇出协作，
+            模型和工具调用都追踪在轮次之下。
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">下一阶段 · 任务与 workflow</span>
+          <h3>协调独立 Agent</h3>
+          <p>
+            持久任务、调度、跨运行时交接、工件血缘、预算执行与合规级审计属于路线图，
+            将建立在今天已交付的底座之上。
+          </p>
+        </div>
+      </div>
+      <div class="cta-row" style="margin-top: 36px;">
+        <a class="btn btn-primary" href="agents.html#orchestration">编排如何工作</a>
+        <a class="btn btn-ghost" href="solutions.html">行业蓝图</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow">底座</p>
+      <h2>之下是一个严肃的 LLM 与 MCP 网关。</h2>
+      <p class="lede">
+        编排的可信度取决于它脚下的地基。AgentGuide 在同一个二进制里
+        内置了生产级的 LLM 网关与 MCP 网关。
+      </p>
+      <div class="card-grid cols-2">
+        <div class="card">
+          <span class="kicker">llm gateway</span>
+          <h3>一个 API 接入所有提供商</h3>
+          <ul>
+            <li>OpenAI、Anthropic、Gemini、DeepSeek、通义千问、智谱、OpenRouter、Ollama 等</li>
+            <li>OpenAI 与 Anthropic 兼容端点，外加 Claude Code 即插即用的 CLI profile</li>
+            <li>逻辑模型路由：一个模型名、多个候选提供商、自动回退</li>
+            <li>凭据池化调度 —— 包括 CLI 订阅凭据（Codex、Claude Code、Gemini）</li>
+          </ul>
+          <a class="more" href="platform.html">平台详情 →</a>
+        </div>
+        <div class="card">
+          <span class="kicker">mcp gateway</span>
+          <h3>工具成为受治理的基础设施</h3>
+          <ul>
+            <li>MCP 服务注册一次，即可经由带鉴权策略的路由对外暴露</li>
+            <li>工具发现、执行与在途请求巡检</li>
+            <li>fail-closed 的工具选择 —— 缺失的工具是错误，绝不静默跳过</li>
+            <li>已持久化的工具调用共享一套事件模型，归属明确时写入 agent 归因</li>
+          </ul>
+          <a class="more" href="platform.html#mcp">MCP 详情 →</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section cta-final">
+    <div class="wrap">
+      <p class="eyebrow">开始使用</p>
+      <h2>一个二进制文件。你的基础设施。完全掌控。</h2>
+      <p class="lede">
+        AgentGuide 以单个自托管二进制交付 —— 不依赖必选的控制面 SaaS；
+        出站流量只会前往你配置的提供商与服务。
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="platform.html#deploy">部署指南</a>
+        <a class="btn btn-ghost" href="observability.html">看看你能观测到什么</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — AI Agent 网关
+    </div>
+    <nav class="footer-links" aria-label="页脚导航">
+      <a href="index.html">首页</a>
+      <a href="platform.html">平台</a>
+      <a href="agents.html">Agent 与编排</a>
+      <a href="solutions.html">行业方案</a>
+      <a href="observability.html">观测与治理</a>
+      <a href="why.html">为什么选 AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

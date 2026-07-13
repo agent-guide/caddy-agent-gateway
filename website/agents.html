@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agents &amp; Orchestration — AgentGuide</title>
+<meta name="description" content="Run builtin agents with declarative topologies, manage ACP agents and external identities, and build toward cross-agent tasks and workflows on one control plane.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/agents.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/agents.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/agents.html">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html" aria-current="page">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="zh/agents.html" lang="zh" hreflang="zh">中文</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">Agents &amp; orchestration</p>
+      <h1>Register. Expose. Assign. Coordinate.</h1>
+      <p class="lede">
+        The real problem isn't proxying a protocol — it's running agents as a
+        managed workforce: register them, expose them safely, assign their models
+        and tools, watch what they do, resolve human approvals, and coordinate
+        work across agents. That is what the AgentGuide control plane is for.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="runtimes">
+    <div class="wrap">
+      <p class="eyebrow">Runtimes</p>
+      <h2>Two execution runtimes, plus an external identity model.</h2>
+      <p class="lede">
+        An agent is a first-class object with routes, resources, policy, usage, and
+        health. Builtin and ACP agents execute through the gateway today; HTTP defines
+        the external-agent shape while direct task dispatch remains on the roadmap.
+      </p>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">runtime · builtin</span>
+          <h3>Builtin — agents as configuration</h3>
+          <p>
+            Declare an agent — its model route, its MCP tools, its topology — and
+            the gateway materializes it in-process on an embedded agent framework.
+            No container to build, no service to deploy. Definition updates take
+            effect on the next turn while in-flight work drains gracefully.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Deepest observability</b> Inner model calls and tool executions get their own traced spans under each turn.</li>
+          <li><b>Governed by construction</b> The agent's model goes through your LLM routes; its tools through your MCP services. It can't reach anything else.</li>
+          <li><b>Fail-closed limits</b> Per-agent concurrency caps and turn timeouts reject rather than queue; every turn runs under panic containment.</li>
+          <li><b>Capability-aware brains</b> Nodes that carry tools only bind tool-capable models; plan-execute roles can each run a different model — a cheap planner, a strong executor.</li>
+          <li><b>Session continuity</b> Same-session turns serialize safely, and a conversation being continued can never lose its history to capacity eviction.</li>
+          <li><b>Checkpointed approval</b> Interactive MCP calls suspend without holding a slot, then resume under one stable run identity with linked trace segments.</li>
+          <li><b>Operational control</b> Retry transient model failures and force-cancel or gracefully stop an in-flight turn.</li>
+          <li><b>Context middleware</b> Opt into summarization, reduction, tool search, inline skills, plan tasks, and virtual AGENTS.md guidance.</li>
+          <li><b>Custom Go agents</b> Compile your own agent factory into the binary and select it declaratively.</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">runtime · acp</span>
+          <h3>ACP — managed coding agents</h3>
+          <p>
+            The gateway owns the lifecycle of Agent Client Protocol agents such as
+            Codex and OpenCode: it pools processes, streams turns over SSE, replays
+            transcripts, and routes permission requests through your policy —
+            deny, auto-approve, or interactive human decision.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Process pooling</b> Idle reaping, instance caps, dead-instance eviction, session-aware reuse.</li>
+          <li><b>Sessions &amp; transcripts</b> List sessions, replay full conversations, resume threads.</li>
+          <li><b>Human-in-the-loop</b> Permission requests surface on the live stream and resolve via API — with a fail-closed timeout.</li>
+          <li><b>Streaming turn API</b> Deltas, reasoning, plans, tool calls, and usage as typed SSE events.</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">identity · http · execution roadmap</span>
+          <h3>HTTP — register your external agent</h3>
+          <p>
+            Agents built on any framework, running on your own infrastructure,
+            can register an endpoint and management identity today. The task backend
+            that invokes that endpoint is planned with gateway-owned external tasks.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Same identity model</b> Routes, resources, policy, usage, and health like every other runtime.</li>
+          <li><b>Attribution references</b> Bound route traffic is attributed when route ownership is unambiguous.</li>
+          <li><b>Execution boundary</b> v0.5 stores and validates the identity; it does not dispatch HTTP agent tasks.</li>
+          <li><b>No lock-in</b> LangChain, ADK, custom stacks — the gateway doesn't care.</li>
+        </ul>
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Runtime</th>
+              <th>Process owner</th>
+              <th>Best for</th>
+              <th>Orchestration</th>
+              <th>Observability depth</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Builtin</td>
+              <td>Gateway (in-process)</td>
+              <td>Composable enterprise agents, multi-agent topologies</td>
+              <td><span class="tag">declarative topologies</span></td>
+              <td>Turn + inner model &amp; tool spans</td>
+            </tr>
+            <tr>
+              <td>ACP</td>
+              <td>Gateway (managed processes)</td>
+              <td>Coding agents: Codex, OpenCode</td>
+              <td><span class="tag-steel tag">sessions &amp; permissions</span></td>
+              <td>Turn events, transcripts, usage</td>
+            </tr>
+            <tr>
+              <td>HTTP</td>
+              <td>You (external service)</td>
+              <td>Existing agents on any framework</td>
+              <td><span class="tag-steel tag">task backend roadmap</span></td>
+              <td>Conditional route attribution</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="registry">
+    <div class="wrap">
+      <p class="eyebrow">Registry &amp; publishing</p>
+      <h2>Your agents, cataloged and productized.</h2>
+      <p class="lede">
+        Most organizations can't answer "what agents do we have, and who can call
+        them?" AgentGuide makes both questions boring: a registry that inventories
+        every agent, and routes that publish an agent as a governed API product.
+      </p>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">agent registry</span>
+          <h3>One inventory of your agent estate</h3>
+          <p>
+            Every agent — builtin, ACP, or HTTP — is a registered object with a
+            declared management shape: linked model and MCP resources, ingress
+            routes, policy, and health. Builtin definitions additionally enforce
+            their selected model route and tools at execution time.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Declared capabilities</b> Model and tool bindings are part of the agent's definition — discoverable, not tribal knowledge.</li>
+          <li><b>Live state</b> Materialization status, pooled instances, in-flight turns, pending approvals.</li>
+          <li><b>Health &amp; activity</b> Per-agent health, usage rollups, and interaction history.</li>
+          <li><b>Unambiguous ownership</b> A route or runtime service belongs to at most one agent — attribution can't blur.</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">agent as a product</span>
+          <h3>Publish an agent like an API</h3>
+          <p>
+            A builtin or ACP agent behind a route is an enterprise capability with a stable
+            endpoint: consumers get a URL and a virtual key; you keep versioned
+            definitions, per-consumer metering, and the power to revoke access in
+            one place. Ship agents to internal teams the way you ship services.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Stable endpoints</b> Streaming turn APIs behind gateway routes — consumers never touch the runtime.</li>
+          <li><b>Keyed access</b> Issue a virtual key per consuming team or app; rotate and revoke centrally.</li>
+          <li><b>Metered usage</b> Virtual-key and agent dimensions support per-consumer and per-agent usage queries.</li>
+          <li><b>Zero-downtime updates</b> Builtin definition changes apply on the next turn while in-flight work drains.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="topologies">
+    <div class="wrap">
+      <p class="eyebrow">Builtin topologies</p>
+      <h2>Multi-agent patterns, declared not coded.</h2>
+      <p class="lede">
+        A builtin agent's topology is part of its definition. Compose sub-agents
+        into proven coordination patterns — validated at configuration time,
+        materialized at run time.
+      </p>
+      <div class="card-grid cols-4">
+        <div class="card">
+          <h3>Single</h3>
+          <p>One model, optional tools, optional conversation summarization.</p>
+        </div>
+        <div class="card">
+          <h3>Sequential</h3>
+          <p>A pipeline of sub-agents, each refining the previous result.</p>
+        </div>
+        <div class="card">
+          <h3>Parallel</h3>
+          <p>Fan work out across sub-agents and combine what comes back.</p>
+        </div>
+        <div class="card">
+          <h3>Loop</h3>
+          <p>Iterate until the result converges or the bound is reached.</p>
+        </div>
+        <div class="card">
+          <h3>Supervisor</h3>
+          <p>A tool-calling head that delegates to specialist sub-agents.</p>
+        </div>
+        <div class="card">
+          <h3>Plan-Execute</h3>
+          <p>Planner, executor, and replanner roles — each can use a different model; only the executor carries tools.</p>
+        </div>
+        <div class="card">
+          <h3>Deep</h3>
+          <p>A research-style head that recurses into sub-agents for depth.</p>
+        </div>
+        <div class="card">
+          <h3>Custom</h3>
+          <p>Your own Go factory, compiled in and selected by name.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="orchestration">
+    <div class="wrap">
+      <p class="eyebrow">Workspaces &amp; workflows</p>
+      <h2>From single agents to a coordinated workforce.</h2>
+      <p class="lede">
+        The endgame is large, complex tasks delivered by multiple agents working
+        together — with the gateway as the scheduler, the policy engine, and the
+        flight recorder. This is the layer the whole platform builds toward.
+      </p>
+
+      <div class="card-grid cols-2">
+        <div class="card">
+          <span class="kicker">available now</span>
+          <h3>Agent workspace</h3>
+          <p>
+            One pane of glass per agent: its definition and runtime state, live
+            instances and in-flight turns, pending permission decisions, session
+            and transcript references, linked model and tool resources, and its
+            usage and interaction history.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">available now</span>
+          <h3>Composed teams via topology</h3>
+          <p>
+            Builtin topologies coordinate inline sub-agents on one task — supervisor
+            delegation, plan-execute loops, parallel fan-out — inside one governed
+            turn. Independent ACP/HTTP/builtin agents require the workflow layer below.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">roadmap · tasks</span>
+          <h3>Tasks &amp; scheduling</h3>
+          <p>
+            Gateway-owned units of work: run an agent on a prompt now, resume a
+            session, schedule recurring jobs, hand work from agent A to agent B —
+            with durable state, retries, cancellation, and audit metadata.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">roadmap · workflows</span>
+          <h3>Cross-agent workflows</h3>
+          <p>
+            Workflow definitions and runs spanning independent agents: hand-off and
+            dependency semantics, topology views, and human checkpoints — enterprise
+            missions decomposed across the whole fleet.
+          </p>
+        </div>
+      </div>
+
+      <div class="cta-row" style="margin-top: 36px;">
+        <a class="btn btn-primary" href="observability.html">Every step observed →</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow">Human in the loop</p>
+      <h2>Autonomy with an approval path.</h2>
+      <p class="lede">
+        Agent actions that matter — writing files, running commands, touching
+        production — can require a human decision. Permission requests stream to
+        the operator in real time and resolve through the API; no answer means no,
+        every time. Deny by default, auto-approve where safe, ask where it counts.
+      </p>
+      <div class="chip-row">
+        <span class="chip">deny (default)</span>
+        <span class="chip chip-accent">interactive approval</span>
+        <span class="chip">auto-approve</span>
+        <span class="chip">fail-closed timeout</span>
+        <span class="chip">correlated request lifecycle</span>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — the AI agent gateway
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

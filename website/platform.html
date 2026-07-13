@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Platform — AgentGuide</title>
+<meta name="description" content="The AgentGuide platform: an LLM gateway with logical model routing and credential pooling, an MCP gateway for governed tools, and a self-hosted, config-as-code control plane.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700;800&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="alternate" hreflang="en" href="https://agentguide.online/platform.html">
+<link rel="alternate" hreflang="zh" href="https://agentguide.online/zh/platform.html">
+<link rel="alternate" hreflang="x-default" href="https://agentguide.online/platform.html">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true"></span>
+      AgentGuide
+      <span class="brand-domain">agentguide.online</span>
+    </a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html">Home</a>
+      <a href="platform.html" aria-current="page">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+    </nav>
+    <a class="lang-switch" href="zh/platform.html" lang="zh" hreflang="zh">中文</a>
+  </div>
+</header>
+
+<main>
+
+  <section class="page-head">
+    <div class="wrap">
+      <p class="eyebrow">Platform</p>
+      <h1>The gateway your agents stand on.</h1>
+      <p class="lede">
+        AgentGuide is one self-hosted binary that speaks every layer of the agent
+        stack: an LLM gateway for model access, an MCP gateway for tool access,
+        agent runtimes for execution — with a single control plane, a single
+        config store, and a single event stream across all of them.
+      </p>
+    </div>
+  </section>
+
+  <section class="section" id="llm">
+    <div class="wrap">
+      <p class="eyebrow">LLM gateway</p>
+      <h2>One API. Every provider. No key sprawl.</h2>
+      <p class="lede">
+        Applications talk to one endpoint with one virtual key. The gateway decides
+        which provider, which upstream model, and which credential actually serve
+        the request — and records exactly what happened.
+      </p>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">routing</span>
+          <h3>Logical model routing</h3>
+          <p>
+            Publish a model name like <code>chat-default</code>; behind it, bind
+            multiple candidate providers and upstream models. The catalog validates
+            candidates against discovered provider models, and failures fall through
+            to the next candidate automatically.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Model-target routes</b> One logical name, many provider bindings, automatic fallback and retry policy.</li>
+          <li><b>Direct-provider routes</b> Pin a route straight to one provider when you want zero indirection.</li>
+          <li><b>Model catalog</b> Provider model discovery plus managed overlays; tool-capable candidates enforced where tools are required.</li>
+          <li><b>Protocol adapters</b> OpenAI-compatible, Anthropic-compatible, and a Claude Code-ready CLI profile, selected per route.</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">credentials</span>
+          <h3>Pooled, scheduled, refreshed</h3>
+          <p>
+            Upstream credentials are managed objects, not strings in app config.
+            Pool several credentials per provider, schedule across them, and let
+            the gateway keep OAuth-style CLI credentials fresh in the background.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Credential pool</b> Multiple credentials per provider with selection state and scheduling.</li>
+          <li><b>CLI auth built in</b> Sign in with Codex, Claude Code, or Gemini CLI subscriptions; the gateway runs the login flow and auto-refreshes tokens.</li>
+          <li><b>Virtual keys</b> Consumers never see upstream secrets — issue, rotate, and revoke gateway-owned keys per app or team.</li>
+          <li><b>Fail-closed auth</b> Routes can require a virtual key; unauthenticated traffic never reaches a provider.</li>
+        </ul>
+      </div>
+
+      <p class="kicker" style="margin-top: 40px;">supported providers</p>
+      <div class="chip-row" style="margin-top: 14px;">
+        <span class="chip">openai</span>
+        <span class="chip">anthropic</span>
+        <span class="chip">gemini</span>
+        <span class="chip">deepseek</span>
+        <span class="chip">qwen</span>
+        <span class="chip">zhipu</span>
+        <span class="chip">openrouter</span>
+        <span class="chip">ollama</span>
+        <span class="chip">codex (cli)</span>
+        <span class="chip">claude code (cli)</span>
+        <span class="chip chip-accent">+ pluggable provider SPI</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="mcp">
+    <div class="wrap">
+      <p class="eyebrow">MCP gateway</p>
+      <h2>Tools become governed infrastructure.</h2>
+      <p class="lede">
+        Model Context Protocol servers are registered once as services, then exposed
+        through routes with authentication policy. Agents and applications get tool
+        access; operators get an inventory, a policy point, and an operational event history.
+      </p>
+      <div class="card-grid">
+        <div class="card">
+          <span class="kicker">catalog</span>
+          <h3>Service registry</h3>
+          <p>
+            Register MCP services centrally with discovery of their tools. One
+            inventory of every tool any agent can reach — instead of N copies of
+            server config scattered across N agents.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">policy</span>
+          <h3>Routed, authenticated access</h3>
+          <p>
+            MCP routes carry auth policy and virtual-key checks like any other
+            route. Tool selection is fail-closed: a tool that isn't explicitly
+            available is an error, never a silent skip.
+          </p>
+        </div>
+        <div class="card">
+          <span class="kicker">operations</span>
+          <h3>Live runtime inspection</h3>
+          <p>
+            See in-flight MCP requests and progress through the admin runtime view,
+            and query persisted tool-call usage events afterwards, with agent attribution
+            when route ownership is unambiguous.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="control-plane">
+    <div class="wrap">
+      <p class="eyebrow">Control plane</p>
+      <h2>Everything is an API object. Config is code.</h2>
+      <p class="lede">
+        Providers, routes, credentials, virtual keys, MCP and ACP services, and
+        agents are persisted config objects with full CRUD over the Admin API —
+        and a declarative bundle format for GitOps-style workflows.
+      </p>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">admin api</span>
+          <h3>Operate everything remotely</h3>
+          <p>
+            A complete Admin API covers the whole object model, plus runtime
+            surfaces: model discovery and refresh, CLI login flows, MCP/ACP runtime
+            state, pending permission decisions, and metrics queries.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>Full CRUD</b> Providers, routes, virtual keys, credentials, MCP/ACP services, agents.</li>
+          <li><b>Runtime views</b> Pooled agent instances, in-flight turns and requests, pending permissions.</li>
+          <li><b>Metrics API</b> Summaries, per-protocol timeseries, breakdowns, recent events, Prometheus exposition.</li>
+          <li><b>Pluggable auth</b> Mount behind basic auth, mTLS, or your reverse-proxy authenticator.</li>
+        </ul>
+      </div>
+
+      <div class="feature-row">
+        <div>
+          <span class="kicker">agwctl + bundles</span>
+          <h3>Declarative by default</h3>
+          <p>
+            Describe the entire gateway — providers, routes, services, agents — in
+            one reviewable bundle. Validate it locally, apply objects in dependency
+            order, and export the live state back out. Your gateway config can live
+            in version control. Apply is not a cross-object transaction.
+          </p>
+        </div>
+        <ul class="feature-list">
+          <li><b>agwctl apply</b> Push a full desired-state bundle in one command.</li>
+          <li><b>agwctl validate</b> Catch broken references and invalid definitions before they ship.</li>
+          <li><b>agwctl export</b> Snapshot live config for review, diff, and backup.</li>
+          <li><b>Reviewable changes</b> Keep agent and routing changes in pull requests when that matches your operating model.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="deploy">
+    <div class="wrap">
+      <p class="eyebrow">Deployment</p>
+      <h2>One binary, five minutes, your network.</h2>
+      <p class="lede">
+        Built on the Caddy server core: production-grade HTTP, automatic TLS, and
+        graceful reloads for free. Run it as a Caddy app or as a standalone daemon —
+        no external dependencies beyond a SQLite file. The engine is open source:
+        <code>agent-gateway</code>, Apache 2.0.
+      </p>
+      <div class="code-block"><pre><span class="c"># Caddyfile — a working gateway in one block</span>
+{
+    <span class="k">agent_gateway</span> {
+        <span class="k">config_store</span> sqlite {
+            path ./data/configstore.db
+        }
+        <span class="k">provider</span> openai-main {
+            provider_type openai
+            api_key <span class="s">{$OPENAI_API_KEY}</span>
+            default_model gpt-4.1
+        }
+        <span class="k">route</span> openai-chat {
+            protocol openai
+            path_prefix /
+            require_virtual_key
+            target provider openai-main
+        }
+    }
+}
+
+http://127.0.0.1:8080 {
+    <span class="k">agent_route_dispatcher</span> {
+        llm_api openai
+        llm_api anthropic
+        mcp
+        acp
+        builtin
+    }
+}</pre></div>
+      <div class="cta-row" style="margin-top: 32px;">
+        <a class="btn btn-primary" href="agents.html">Next: agent runtimes →</a>
+        <a class="btn btn-ghost" href="https://github.com/agent-guide/agent-gateway">Source on GitHub</a>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap footer-inner">
+    <div>
+      <span class="footer-domain">agentguide.online</span> — the AI agent gateway
+    </div>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="index.html">Home</a>
+      <a href="platform.html">Platform</a>
+      <a href="agents.html">Agents &amp; Orchestration</a>
+      <a href="solutions.html">Solutions</a>
+      <a href="observability.html">Observability &amp; Governance</a>
+      <a href="why.html">Why AgentGuide</a>
+      <a href="https://github.com/agent-guide/agent-gateway">GitHub</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>
