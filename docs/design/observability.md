@@ -322,6 +322,8 @@ stream              bool
 input_tokens
 output_tokens
 total_tokens
+cached_tokens       cache-served subset of input_tokens; 0 when unreported
+reasoning_tokens    reasoning subset of output_tokens; 0 when unreported
 usage_finalized     false if token counts are incomplete
 request_tool_count
 request_tool_names  JSON array, truncated if necessary
@@ -341,9 +343,22 @@ The LLM API handler captures request-side wire metadata before provider executio
 - `pkg/dispatcher/llmapi/anthropic/handler.go` inspects Anthropic messages request tools when present
 - `pkg/dispatcher/llmapi/cc/handler.go` captures the Claude Code-compatible profile as `llm_api=cc`
 
-`pkg/gateway.RoutedProvider` is the provider execution boundary. It owns route target resolution, provider selection, upstream model rewrite, credential scheduling, and provider `Chat` or `StreamChat` execution. It records provider dimensions, latency, token counts, and upstream failures.
+`pkg/gateway.RoutedProvider` is the provider execution boundary. It owns route target resolution, provider selection, upstream model rewrite, credential scheduling, and provider `Chat` or `StreamChat` execution. It records provider dimensions, latency, token counts (including the `cached_tokens`/`reasoning_tokens` breakdown), and upstream failures.
 
 Protocol handlers capture response-side tool calls before rendering final HTTP JSON or while translating stream completion metadata. Streaming events should finish the interaction when the downstream stream completes or fails.
+
+`internal/observability/einotap` is a supplementary capture point: a
+process-global eino callbacks handler (registered once under a `sync.Once`,
+reload-safe) that folds chat-model component detail into the current
+interaction span on the synchronous `OnEnd` timing. It merges via
+`SetExtension` and never enqueues its own event, so it cannot double-count. It
+deliberately skips the stream timings: streaming token detail is read by the
+protocol handlers from `ResponseMeta.Usage` on the primary stream before the
+span finishes, so no stream copies are taken and no late-usage race against
+`span.Finish` exists. The self-implemented providers (`codex`, `claudecode`)
+fire the eino callback aspect functions in their own `Chat`/`StreamChat`
+(via the `provider.OnChat*` helpers), so eino-backed and self-implemented
+providers are observable uniformly.
 
 ### 6.3 Error Categories
 
@@ -724,7 +739,8 @@ so a consumer can name a span by what it did rather than falling back to
 `route_id`: `upstream_model` (LLM), `tool_name` (MCP), `operation` (ACP), plus
 `service_id` and `session_id`. LLM rows also carry the model tool-use and token
 fields `request_tool_count`, `request_tool_names`, `tool_call_count`,
-`tool_names`, `input_tokens`, `output_tokens`, and `total_tokens`. Columns a row
+`tool_names`, `input_tokens`, `output_tokens`, `total_tokens`,
+`cached_tokens`, and `reasoning_tokens`. Columns a row
 does not own are `null` (for example, `tool_name` is `null` on LLM and ACP rows,
 and token fields are `null` on MCP and ACP rows). Management-plane ACP admin
 audit spans carry the synthetic `route_id` `/admin/acp` and `route_protocol`
@@ -772,6 +788,8 @@ CREATE TABLE llm_usage_events (
     input_tokens       INTEGER,
     output_tokens      INTEGER,
     total_tokens       INTEGER,
+    cached_tokens      INTEGER,
+    reasoning_tokens   INTEGER,
     usage_finalized    INTEGER NOT NULL,
     request_tool_count INTEGER NOT NULL DEFAULT 0,
     request_tool_names TEXT,

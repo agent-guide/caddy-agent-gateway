@@ -397,10 +397,7 @@ func (r *MessagesResponse) ToChatResponse() *provider.ChatResponse {
 			ToolCalls: toolCalls,
 			ResponseMeta: &schema.ResponseMeta{
 				FinishReason: r.StopReason,
-				Usage: &schema.TokenUsage{
-					PromptTokens:     r.Usage.InputTokens,
-					CompletionTokens: r.Usage.OutputTokens,
-				},
+				Usage:        r.Usage.TokenUsage(),
 			},
 		},
 	}

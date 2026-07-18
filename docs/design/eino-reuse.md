@@ -16,14 +16,15 @@ eino-ext component versions listed below.
 
 ## 2. Current Baseline
 
-The gateway couples to eino at exactly two core packages plus the eino-ext
-model components. There is no dependency on `compose`, `flow`, `callbacks`,
-or `adk` today.
+The gateway couples to eino at three core packages plus the eino-ext model
+components. There is no dependency on `compose`, `flow`, or `adk` today.
 
 | Layer | What is used |
 |---|---|
 | `eino/schema` | `Message`, `ToolCall`, `ToolInfo`, `ResponseMeta`, `TokenUsage`, `StreamReader`/`Pipe`, tool-choice constants, multimodal input parts |
 | `eino/components/model` | `ToolCallingChatModel`, `Option`, common options, `WrapImplSpecificOptFn`/`GetImplSpecificOptions` (carries gateway-specific request context inside option lists) |
+| `eino/callbacks` | the observability tap (§4.1): a global handler in `internal/observability/einotap`, plus the aspect functions fired by the self-implemented providers |
+| `eino/components/tool` | `InvokableTool`, implemented by the MCP bridge `pkg/mcp/einotool` (§5.3) |
 
 Provider delegation status:
 
@@ -67,7 +68,13 @@ forwarding around that component.
 
 ### 4.1 `eino/callbacks` as an observability tap
 
-Status: planned, not yet wired.
+Status: implemented. `internal/observability/einotap` registers the global
+handler (both `agw` app provision and the standalone server call
+`einotap.Register()`, guarded by a `sync.Once`); `cached_tokens` and
+`reasoning_tokens` are captured end to end (extension → event → SQLite columns
+with additive migration → summary/timeseries/breakdown); `codex` and
+`claudecode` fire the callback aspect functions through the
+`provider.OnChat*` helpers in `pkg/llm/provider/callbackaspects.go`.
 
 Every eino-ext chat model already invokes `callbacks.OnStart` / `OnEnd` /
 `OnError` / `OnEndWithStreamOutput` internally, carrying model name, token
@@ -86,45 +93,52 @@ same context the gateway passed to the provider, so
 `usage.SpanFromContext(ctx)` resolves the current interaction span
 directly; no new correlation mechanism is needed.
 
-The main new signal is token detail the gateway does not capture today:
-`model.CallbackOutput.TokenUsage` carries cached prompt tokens
-(`PromptTokenDetails.CachedTokens`) and reasoning tokens
-(`CompletionTokensDetails.ReasoningTokens`). Wiring the tap should add
-these fields to `usage.LLMExtension` and the LLM usage event.
+The main new signal is token detail the gateway previously dropped: cached
+prompt tokens (`PromptTokenDetails.CachedTokens`) and reasoning tokens
+(`CompletionTokensDetails.ReasoningTokens`). These now flow through
+`usage.LLMExtension`, the LLM usage event, and the `cached_tokens` /
+`reasoning_tokens` SQLite columns, from every capture point: the
+non-streaming path via `provider.UsageFromMessage` in `RoutedProvider`, the
+streaming paths via the protocol handlers, and component-internal calls via
+the tap. The anthropic wire layers (`anthropicbase`, used by `claudecode`)
+were aligned with the eino-ext claude accounting in the process: prompt
+tokens are input + cache read + cache creation, with the cache-read subset
+broken out as `cached_tokens`.
 
-Design constraints for the implementation:
+Design decisions as implemented:
 
-- Coverage boundary: only eino-component-backed providers fire callbacks
-  out of the box. `codex`, `claudecode`, and the openai Responses path do
-  not — but this boundary is closable, see below. Either way the
-  dispatcher/`RoutedProvider` layer stays the authoritative metering
-  point; the callbacks tap only enriches the existing interaction span.
-- Merge, never emit: the handler must fold detail into the current span via
-  `SpanFromContext(ctx).SetExtension(...)`. It must not enqueue a second
+- No stream timings, no race: `schema.TokenUsage` on `ResponseMeta.Usage`
+  already carries the cached/reasoning detail on the primary stream (the
+  acl/openai, claude, and gemini components all populate it), so protocol
+  handlers capture streaming token detail synchronously before the span
+  finishes. The tap's `TimingChecker` requests `OnEnd` only — the framework
+  then never copies streams for it, and the once-feared late-usage race
+  against `span.Finish` is eliminated structurally instead of synchronized
+  around.
+- Merge, never emit: the handler folds detail into the current span via
+  `SpanFromContext(ctx).SetExtension(...)`. It never enqueues a second
   `LLMUsageEvent`, which would double-count every request in metrics and
   Prometheus counters.
-- Registration idempotence under Caddy reload: `AppendGlobalHandlers` is
-  process-global and not thread-safe, while a Caddy config reload rebuilds
-  app instances inside the same process. Register the handler exactly once
-  (`sync.Once`) and have it resolve the active observer/sink through an
-  atomically swappable reference instead of capturing an app instance.
-- Implement `TimingChecker` so unregistered timings skip stream copying,
-  and always close the handler's stream copy in `OnEndWithStreamOutput` —
-  an unclosed copy leaks the whole stream pipeline.
+- Stateless registration under Caddy reload: `AppendGlobalHandlers` is
+  process-global, not thread-safe, and has no unregister, while a Caddy
+  config reload re-runs app provision in the same process. `Register` is
+  guarded by a `sync.Once`, and the handler holds no app reference at all —
+  it resolves the span (which carries its own sink) from the request
+  context.
 
-Closing the coverage gap: the callback aspect functions
-(`callbacks.EnsureRunInfo`, `OnStart`, `OnEnd`, `OnError`,
-`OnEndWithStreamOutput` in `eino/callbacks`) are public API intended for
-component implementers — eino-ext components invoke exactly these. The
-self-implemented providers (`codex`, `claudecode`, the openai Responses
-transport) should call them in their own `Chat`/`StreamChat`, constructing
-`*model.CallbackInput`/`*model.CallbackOutput` payloads (roughly 20–30
-lines per provider). That makes every provider a first-class eino
-observable: the tap and any vendor handler (§4.4) see all providers
-uniformly. This is instrumentation in place — the wire layer stays
-self-implemented; do not rewrite these providers as eino-ext-style
+Closing the coverage gap: the callback aspect functions are public API
+intended for component implementers — eino-ext components invoke exactly
+these. `codex` and `claudecode` call them in their own `Chat`/`StreamChat`
+through the shared `provider.OnChatStart/OnChatEnd/OnChatError/
+OnChatStreamEnd` helpers, so the tap and any vendor handler (§4.4) see all
+chat providers uniformly. This is instrumentation in place — the wire layer
+stays self-implemented; do not rewrite these providers as eino-ext-style
 components, since their value is exactly the gateway-specific auth and
-fingerprint behavior that no upstream component would carry.
+fingerprint behavior that no upstream component would carry. The raw
+Responses passthrough (`openaibase.DoCreateResponses`/`DoStreamResponses`,
+serving the `/v1/responses` protocol surface) is not a chat-model call and
+stays dispatcher-metered; codex's chat path over that transport is
+instrumented.
 
 Trace positioning (context for the constraints above): the gateway keeps
 one flat interaction event per request; `trace_id` / `span_id` /
@@ -274,19 +288,22 @@ design work in `agents-control-plane.md`.
 
 ### 5.3 The two bridges (prerequisites)
 
-First bridge: a `components/tool` (`InvokableTool`) adapter over
-gateway-managed MCP services (`pkg/mcp/service`), so gateway-governed MCP
-tools are directly consumable in-process without an HTTP loopback —
-resource governance stays in the gateway, execution stays in eino. (An
+Status: both landed as standalone libraries (agents-control-plane §7 PB0).
+
+First bridge: `pkg/mcp/einotool` — a `components/tool` (`InvokableTool`)
+adapter over gateway-managed MCP services (`pkg/mcp/service`), so
+gateway-governed MCP tools are directly consumable in-process without an
+HTTP loopback — resource governance stays in the gateway, execution stays
+in eino. Tool selection by name is fail-closed: a referenced tool that the
+service no longer lists is a materialization error, not a silent skip. (An
 external eino agent does not need this bridge: eino-ext's MCP tool
 component can already consume the gateway's MCP routes over HTTP.)
 
-Second bridge: a single generic adapter that presents a gateway
-`provider.Provider` (or better, a `RoutedProvider`, carrying credential
-scheduling and candidate fallback with it) as an eino
-`model.ToolCallingChatModel` (~50 lines mapping `[]*schema.Message` +
-options to `ChatRequest`). That one adapter — not a per-provider rewrite —
-is what lets ADK agents, compose graphs, and
+Second bridge: `pkg/llm/provider/einomodel` — the single generic adapter
+presenting a gateway `provider.Provider` (or better, a `RoutedProvider`,
+carrying credential scheduling and candidate fallback with it) as an eino
+`model.ToolCallingChatModel`. That one adapter — not a per-provider
+rewrite — is what lets ADK agents, compose graphs, and
 `FailoverChatModel`/`RetryChatModel` consume gateway providers directly.
 
 ### 5.4 What builtin is not
@@ -336,14 +353,14 @@ infrastructure surfaces.
 
 ## 8. Adoption Sequence
 
-1. Wire `eino/callbacks` into the observability pipeline, including
+1. ~~Wire `eino/callbacks` into the observability pipeline, including
    instrumenting the self-implemented providers with the callback aspect
-   functions so coverage is uniform (§4.1).
+   functions so coverage is uniform (§4.1).~~ Done.
 2. Use `schema.ConcatMessages` for any new stream-aggregation code (§4.2).
-3. Build the `builtin` agent runtime on ADK (§5): extend the detailed
-   design in `agents-control-plane.md`, then land the MCP tool adapter
-   and the provider → `ToolCallingChatModel` adapter (§5.3), then the
-   generic ADK host and the agent-definition schema (§5.1).
+3. Build the `builtin` agent runtime on ADK (§5): the detailed design lives
+   in `agents-control-plane.md` §5.7 and the two §5.3 bridges have landed
+   (`pkg/mcp/einotool`, `pkg/llm/provider/einomodel`); next is the generic
+   ADK host and the agent-definition schema (§5.1, PB1).
 4. Migrate openai/codex Responses paths to agentic* components after they
    graduate from Beta (§6.1).
 5. Register vendor callbacks handlers (§4.4) when export to an external

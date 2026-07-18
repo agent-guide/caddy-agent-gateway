@@ -463,7 +463,7 @@ func TestServeLLMApiReturnsChatCompletionResponse(t *testing.T) {
 					Usage: &schema.TokenUsage{
 						PromptTokens:     3,
 						CompletionTokens: 5,
-						TotalTokens:      8,
+						TotalTokens:      13,
 					},
 				},
 			},
@@ -508,6 +508,9 @@ func TestServeLLMApiReturnsChatCompletionResponse(t *testing.T) {
 	}
 	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello back" {
 		t.Fatalf("unexpected choices: %+v", resp.Choices)
+	}
+	if resp.Usage.PromptTokens != 3 || resp.Usage.CompletionTokens != 5 || resp.Usage.TotalTokens != 13 {
+		t.Fatalf("usage = %+v, want upstream total 13 preserved", resp.Usage)
 	}
 }
 

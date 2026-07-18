@@ -95,6 +95,21 @@ func New(config provider.ProviderConfig) (provider.Provider, error) {
 }
 
 func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
+	resolved, err := provider.ResolveChatRequest(ctx, p.ProviderConfig, req)
+	if err != nil {
+		return nil, err
+	}
+	ctx = provider.OnChatStart(ctx, "claudecode", resolved.ModelName, resolved.Messages)
+	resp, err := p.chat(ctx, req)
+	if err != nil {
+		provider.OnChatError(ctx, err)
+		return nil, err
+	}
+	provider.OnChatEnd(ctx, resolved.ModelName, resp.Message)
+	return resp, nil
+}
+
+func (p *Provider) chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
 	return provider.RetryProviderCall(p.ProviderConfig.Network, func() (*provider.ChatResponse, error) {
 		state, err := provider.ResolveChatRequest(ctx, p.ProviderConfig, req)
 		if err != nil {
@@ -131,20 +146,26 @@ func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	ctx = provider.OnChatStart(ctx, "claudecode", state.ModelName, state.Messages)
 
 	httpReq, toolNames, err := p.newMessagesRequest(ctx, state, true)
 	if err != nil {
+		provider.OnChatError(ctx, err)
 		return nil, err
 	}
 	httpReq.Header.Set("Accept", "text/event-stream")
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
-		return nil, statuserr.Wrap(fmt.Errorf("claudecode: stream request failed: %w", err), http.StatusBadGateway)
+		err = statuserr.Wrap(fmt.Errorf("claudecode: stream request failed: %w", err), http.StatusBadGateway)
+		provider.OnChatError(ctx, err)
+		return nil, err
 	}
 	if err := provider.CheckResponse(resp); err != nil {
 		resp.Body.Close()
-		return nil, statuserr.Wrap(err, http.StatusBadGateway)
+		err = statuserr.Wrap(err, http.StatusBadGateway)
+		provider.OnChatError(ctx, err)
+		return nil, err
 	}
 
 	sr, sw := schema.Pipe[*schema.Message](16)
@@ -165,7 +186,7 @@ func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*
 			sw.Send(msg, nil)
 		}
 	}()
-	return sr, nil
+	return provider.OnChatStreamEnd(ctx, state.ModelName, sr), nil
 }
 
 func (p *Provider) CreateResponses(ctx context.Context, req *provider.ResponsesRequest) (*provider.ResponsesResponse, error) {

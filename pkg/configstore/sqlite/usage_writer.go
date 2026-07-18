@@ -18,6 +18,7 @@ var llmUsageInsertColumns = []string{
 	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
 	"llm_api", "api_operation", "provider_id", "provider_type", "logical_model", "upstream_model",
 	"credential_source", "credential_id", "stream", "input_tokens", "output_tokens", "total_tokens",
+	"cached_tokens", "reasoning_tokens",
 	"usage_finalized", "request_tool_count", "request_tool_names", "tool_call_count", "tool_names", "agent_id",
 }
 
@@ -44,6 +45,7 @@ func InsertLLMUsageEvent(db *gorm.DB, ev usage.LLMUsageEvent) error {
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
 		ev.LLMAPI, ev.APIOperation, ev.ProviderID, ev.ProviderType, ev.LogicalModel, ev.UpstreamModel,
 		ev.CredentialSource, ev.CredentialID, boolInt(ev.Stream), ev.InputTokens, ev.OutputTokens, ev.TotalTokens,
+		ev.CachedTokens, ev.ReasoningTokens,
 		boolInt(ev.UsageFinalized), ev.RequestToolCount, string(names), ev.ToolCallCount, string(toolNames), nullString(ev.AgentID),
 	).Error
 }

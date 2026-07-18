@@ -356,7 +356,7 @@ func (c *Converter) FromInternal(resp *provider.ChatResponse, model string) *Cha
 		Usage: Usage{
 			PromptTokens:     usage.InputTokens,
 			CompletionTokens: usage.OutputTokens,
-			TotalTokens:      usage.InputTokens + usage.OutputTokens,
+			TotalTokens:      usage.TotalTokens,
 		},
 	}
 }

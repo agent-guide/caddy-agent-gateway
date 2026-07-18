@@ -303,6 +303,21 @@ Built-in provider runtime packages:
 - `zhipu`
 - `qwen`: DashScope OpenAI-compatible mode via the eino-ext `qwen` component; optional `enable_thinking` provider option, per-request reasoning fields override it
 
+eino bridge packages (standalone libraries, the PB0 prerequisites of the
+builtin agent runtime — see `docs/design/agents-control-plane.md` §5.7):
+
+- `pkg/llm/provider/einomodel`: presents a `provider.Provider` (preferably a
+  `*gateway.RoutedProvider`, so credential scheduling, candidate fallback,
+  and usage attribution apply) as an eino `model.ToolCallingChatModel`
+- `pkg/mcp/einotool`: presents gateway-managed MCP service tools
+  (`pkg/mcp/service`) as eino `InvokableTool`s; selecting tools by name is
+  fail-closed (a missing tool is an error, not a silent skip)
+
+Self-implemented chat providers (`codex`, `claudecode`) fire the eino
+callback aspect functions through the `provider.OnChatStart/OnChatEnd/
+OnChatError/OnChatStreamEnd` helpers (`callbackaspects.go`), so registered
+callbacks handlers observe every chat provider uniformly.
+
 Provider registration rules:
 
 - implement the `provider.Provider` interface
@@ -398,8 +413,9 @@ Owns durable usage events and query helpers.
 
 Important packages:
 
-- `internal/observability/usage`: event models (with an optional `agent_id` attribution tag), observer/span interfaces, no-op observer, the `AgentAttributor` seam plus the settable `AgentAttribution` holder, usage service, Prometheus exposition rendering, and metrics config (`retention_days`, `max_agent_depth`)
+- `internal/observability/usage`: event models (with an optional `agent_id` attribution tag and the LLM token detail fields `cached_tokens`/`reasoning_tokens`), observer/span interfaces, no-op observer, the `AgentAttributor` seam plus the settable `AgentAttribution` holder, usage service, Prometheus exposition rendering, and metrics config (`retention_days`, `max_agent_depth`)
 - `internal/observability/pipeline`: buffered event pipeline, SQLite sink (with a background retention janitor), the in-process Prometheus counter sink, and an `OpenTelemetrySink` adapter seam (no exporter is wired; sinks are passed to `NewEventPipeline` in `caddy/gateway/app.go` and `standalone/server/server.go`, so wiring one is an in-tree change)
+- `internal/observability/einotap`: the process-global eino callbacks handler. It folds chat-model component detail into the current interaction span on the synchronous `OnEnd` timing only — merge-never-emit, no stream timings, no stream copies — and `einotap.Register()` is called from both bootstrap paths under a `sync.Once`, so Caddy config reloads cannot double-register it
 
 SQLite usage tables are typed event tables (`llm_usage_events`, `mcp_usage_events`, `acp_usage_events`) created by the metrics sink through the sqlite backend's `UsageDB()` capability. They carry a nullable `agent_id` attribution column, stamped at write time by the observer when the originating route resolves to exactly one agent. They are separate from generic JSON config stores. Time-series and breakdown queries scan these event tables directly; there are no internal rollup tables. Use the Prometheus exposition (`GET /admin/metrics/prometheus`) plus an external system (Prometheus/Grafana) for high-volume aggregation, trends, and alerting.
 

@@ -92,7 +92,13 @@ func (p *RoutedProvider) CreateResponses(ctx context.Context, req *provider.Resp
 			req.Model = cloned.Model
 			out = resp
 			if resp != nil && resp.Usage != nil {
-				recordProviderUsage(ctx, attempt, provider.Usage{InputTokens: resp.Usage.InputTokens, OutputTokens: resp.Usage.OutputTokens})
+				recordProviderUsage(ctx, attempt, provider.Usage{
+					InputTokens:     resp.Usage.InputTokens,
+					OutputTokens:    resp.Usage.OutputTokens,
+					TotalTokens:     resp.Usage.TotalTokens,
+					CachedTokens:    resp.Usage.InputTokensDetails.CachedTokens,
+					ReasoningTokens: resp.Usage.OutputTokensDetails.ReasoningTokens,
+				})
 			} else {
 				recordProviderUsage(ctx, attempt, provider.Usage{})
 			}
@@ -126,6 +132,10 @@ func recordProviderUsage(ctx context.Context, attempt *resolvedAttempt, tokens p
 	if attempt == nil || attempt.target == nil {
 		return
 	}
+	total := tokens.TotalTokens
+	if total == 0 {
+		total = tokens.InputTokens + tokens.OutputTokens
+	}
 	ext := usage.LLMExtension{
 		ProviderID:       attempt.target.ProviderID,
 		ProviderType:     attempt.target.ProviderType,
@@ -133,8 +143,10 @@ func recordProviderUsage(ctx context.Context, attempt *resolvedAttempt, tokens p
 		UpstreamModel:    attempt.target.UpstreamModel,
 		InputTokens:      usage.Int(tokens.InputTokens),
 		OutputTokens:     usage.Int(tokens.OutputTokens),
-		TotalTokens:      usage.Int(tokens.InputTokens + tokens.OutputTokens),
-		UsageFinalized:   usage.Bool(tokens.InputTokens > 0 || tokens.OutputTokens > 0),
+		TotalTokens:      usage.Int(total),
+		CachedTokens:     usage.Int(tokens.CachedTokens),
+		ReasoningTokens:  usage.Int(tokens.ReasoningTokens),
+		UsageFinalized:   usage.Bool(tokens.InputTokens > 0 || tokens.OutputTokens > 0 || total > 0),
 		CredentialSource: "static",
 	}
 	if attempt.cred != nil {

@@ -68,12 +68,16 @@ func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 	if err != nil {
 		return nil, err
 	}
+	ctx = provider.OnChatStart(ctx, "codex", state.ModelName, state.Messages)
 	respReq := chatStateToResponsesRequest(state, false)
 	resp, err := p.CreateResponses(ctx, respReq)
 	if err != nil {
+		provider.OnChatError(ctx, err)
 		return nil, err
 	}
-	return responsesToChatResponse(resp), nil
+	chatResp := responsesToChatResponse(resp)
+	provider.OnChatEnd(ctx, state.ModelName, chatResp.Message)
+	return chatResp, nil
 }
 
 func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*schema.StreamReader[*schema.Message], error) {
@@ -82,12 +86,15 @@ func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	ctx = provider.OnChatStart(ctx, "codex", state.ModelName, state.Messages)
 	respReq := chatStateToResponsesRequest(state, true)
 	eventStream, err := p.StreamResponses(ctx, respReq)
 	if err != nil {
+		provider.OnChatError(ctx, err)
 		return nil, err
 	}
-	return responsesEventStreamToMessageStream(eventStream, p.ccCompat), nil
+	stream := responsesEventStreamToMessageStream(eventStream, p.ccCompat)
+	return provider.OnChatStreamEnd(ctx, state.ModelName, stream), nil
 }
 
 func (p *Provider) ListModels(_ context.Context) ([]provider.ModelInfo, error) {
@@ -420,11 +427,7 @@ func responsesToChatResponse(resp *provider.ResponsesResponse) *provider.ChatRes
 	if resp.Usage != nil {
 		msg.ResponseMeta = &schema.ResponseMeta{
 			FinishReason: "stop",
-			Usage: &schema.TokenUsage{
-				PromptTokens:     resp.Usage.InputTokens,
-				CompletionTokens: resp.Usage.OutputTokens,
-				TotalTokens:      resp.Usage.TotalTokens,
-			},
+			Usage:        responsesTokenUsage(resp.Usage),
 		}
 	}
 	return &provider.ChatResponse{Message: msg}
@@ -550,13 +553,27 @@ func responsesCompletionMessage(resp *provider.ResponsesResponse) *schema.Messag
 		},
 	}
 	if resp != nil && resp.Usage != nil {
-		msg.ResponseMeta.Usage = &schema.TokenUsage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.TotalTokens,
-		}
+		msg.ResponseMeta.Usage = responsesTokenUsage(resp.Usage)
 	}
 	return msg
+}
+
+func responsesTokenUsage(u *provider.ResponsesResponseUsage) *schema.TokenUsage {
+	total := u.TotalTokens
+	if total == 0 {
+		total = u.InputTokens + u.OutputTokens
+	}
+	return &schema.TokenUsage{
+		PromptTokens: u.InputTokens,
+		PromptTokenDetails: schema.PromptTokenDetails{
+			CachedTokens: u.InputTokensDetails.CachedTokens,
+		},
+		CompletionTokens: u.OutputTokens,
+		CompletionTokensDetails: schema.CompletionTokensDetails{
+			ReasoningTokens: u.OutputTokensDetails.ReasoningTokens,
+		},
+		TotalTokens: total,
+	}
 }
 
 func responsesTextFromResponse(resp *provider.ResponsesResponse) string {

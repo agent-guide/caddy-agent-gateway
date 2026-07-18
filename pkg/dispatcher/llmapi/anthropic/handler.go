@@ -242,6 +242,8 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	finalStopReason := "end_turn"
 	finalInputTokens := 0
 	finalOutputTokens := 0
+	finalCachedTokens := 0
+	finalReasoningTokens := 0
 	usageFinalized := false
 	nextBlockIndex := 0
 	emittedToolUse := false
@@ -365,6 +367,12 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 				finalInputTokens = chunk.ResponseMeta.Usage.PromptTokens
 				usageFinalized = true
 			}
+			if chunk.ResponseMeta.Usage != nil && chunk.ResponseMeta.Usage.PromptTokenDetails.CachedTokens > 0 {
+				finalCachedTokens = chunk.ResponseMeta.Usage.PromptTokenDetails.CachedTokens
+			}
+			if chunk.ResponseMeta.Usage != nil && chunk.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+				finalReasoningTokens = chunk.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens
+			}
 		}
 	}
 
@@ -388,10 +396,12 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	flusher.Flush()
 	recordAnthropicToolNameSet(r, toolNames)
 	usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
-		InputTokens:    usage.Int(finalInputTokens),
-		OutputTokens:   usage.Int(finalOutputTokens),
-		TotalTokens:    usage.Int(finalInputTokens + finalOutputTokens),
-		UsageFinalized: usage.Bool(usageFinalized),
+		InputTokens:     usage.Int(finalInputTokens),
+		OutputTokens:    usage.Int(finalOutputTokens),
+		TotalTokens:     usage.Int(finalInputTokens + finalOutputTokens),
+		CachedTokens:    usage.Int(finalCachedTokens),
+		ReasoningTokens: usage.Int(finalReasoningTokens),
+		UsageFinalized:  usage.Bool(usageFinalized),
 	})
 }
 

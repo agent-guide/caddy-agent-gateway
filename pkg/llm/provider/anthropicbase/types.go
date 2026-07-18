@@ -1,7 +1,11 @@
 // Package anthropicbase provides shared Anthropic Messages API wire helpers.
 package anthropicbase
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/cloudwego/eino/schema"
+)
 
 type MessagesRequest struct {
 	Model             string             `json:"model"`
@@ -102,10 +106,33 @@ type ResponseBlock struct {
 type MessagesResponse struct {
 	Content    []ResponseBlock `json:"content"`
 	StopReason string          `json:"stop_reason"`
-	Usage      struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
-	} `json:"usage"`
+	Usage      MessagesUsage   `json:"usage"`
+}
+
+// MessagesUsage is the Anthropic Messages usage payload. input_tokens excludes
+// cache reads and cache writes; the effective prompt size is the sum of all
+// three fields.
+type MessagesUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+}
+
+// TokenUsage converts the wire usage into eino token usage. Prompt tokens are
+// input + cache read + cache creation — the same accounting the eino-ext
+// claude component uses — so the anthropic and claudecode providers meter
+// identically. CachedTokens carries the cache-read subset.
+func (u MessagesUsage) TokenUsage() *schema.TokenUsage {
+	prompt := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+	return &schema.TokenUsage{
+		PromptTokens: prompt,
+		PromptTokenDetails: schema.PromptTokenDetails{
+			CachedTokens: u.CacheReadInputTokens,
+		},
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      prompt + u.OutputTokens,
+	}
 }
 
 type ModelsResponse struct {

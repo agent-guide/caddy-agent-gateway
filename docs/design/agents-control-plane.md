@@ -941,12 +941,13 @@ The builtin runtime ([5.7](#57-builtin-runtime-adk-hosted-agents)) is its own
 track. PB0 has no dependency on P2/P3 and can proceed independently; PB2
 lands with the P2 task layer.
 
-**PB0 — bridge adapters (no agent-model change):**
+**PB0 — bridge adapters (no agent-model change):** implemented.
 
-- MCP → `InvokableTool` adapter over `pkg/mcp/service` (suggested:
-  `pkg/mcp/einotool`)
-- `RoutedProvider` → `model.ToolCallingChatModel` adapter (suggested:
-  `pkg/llm/provider/einomodel`)
+- MCP → `InvokableTool` adapter over `pkg/mcp/service`: `pkg/mcp/einotool`
+  (tool selection by name is fail-closed: a missing tool is an error, not a
+  silent skip)
+- `RoutedProvider` → `model.ToolCallingChatModel` adapter:
+  `pkg/llm/provider/einomodel`
 - both are standalone libraries with tests; they are also independently
   useful to any in-repo eino consumer
 
@@ -1132,8 +1133,10 @@ repeated here.
 
 ## 11. Implementation Status
 
-P0 (P0a + P0b) and P1 are **implemented**. P2, P3, and the PB builtin-runtime
-track (§5.7, §7 PB) remain design-only.
+P0 (P0a + P0b) and P1 are **implemented**. In the PB builtin-runtime track
+(§5.7, §7 PB), PB0 — the two bridge adapters (`pkg/mcp/einotool`,
+`pkg/llm/provider/einomodel`) — is **implemented**; PB1 and PB2 remain
+design-only, as do P2 and P3.
 
 ### 11.1 Landed in P0a — agent object and CRUD
 

@@ -12,7 +12,7 @@ import (
 
 type StreamState struct {
 	pendingToolCalls map[int]*pendingToolCall
-	inputTokens      int
+	usage            MessagesUsage
 }
 
 type pendingToolCall struct {
@@ -66,15 +66,13 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 	case "message_start":
 		var event struct {
 			Message struct {
-				Usage struct {
-					InputTokens int `json:"input_tokens"`
-				} `json:"usage"`
+				Usage MessagesUsage `json:"usage"`
 			} `json:"message"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			return fmt.Errorf("%s: decode message_start: %w", errorPrefix, err)
 		}
-		state.inputTokens = event.Message.Usage.InputTokens
+		state.usage = event.Message.Usage
 
 	case "content_block_start":
 		var event struct {
@@ -157,16 +155,15 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			return fmt.Errorf("%s: decode message delta: %w", errorPrefix, err)
 		}
-		if event.Usage.OutputTokens > 0 || event.Delta.StopReason != "" || state.inputTokens > 0 {
+		if event.Usage.OutputTokens > 0 || event.Delta.StopReason != "" || state.usage != (MessagesUsage{}) {
+			finalUsage := state.usage
+			finalUsage.OutputTokens = event.Usage.OutputTokens
 			sw.Send(&schema.Message{
 				Role:    schema.Assistant,
 				Content: "",
 				ResponseMeta: &schema.ResponseMeta{
 					FinishReason: event.Delta.StopReason,
-					Usage: &schema.TokenUsage{
-						PromptTokens:     state.inputTokens,
-						CompletionTokens: event.Usage.OutputTokens,
-					},
+					Usage:        finalUsage.TokenUsage(),
 				},
 			}, nil)
 		}

@@ -211,6 +211,12 @@ func llmEvent(base InteractionEvent, ext LLMExtension) LLMUsageEvent {
 	if ext.TotalTokens != nil {
 		ev.TotalTokens = *ext.TotalTokens
 	}
+	if ext.CachedTokens != nil {
+		ev.CachedTokens = *ext.CachedTokens
+	}
+	if ext.ReasoningTokens != nil {
+		ev.ReasoningTokens = *ext.ReasoningTokens
+	}
 	if ext.UsageFinalized != nil {
 		ev.UsageFinalized = *ext.UsageFinalized
 	}

@@ -25,6 +25,7 @@ func llmUsageEventsDDL(table string) string {
 		llm_api TEXT, api_operation TEXT, provider_id TEXT, provider_type TEXT,
 		logical_model TEXT, upstream_model TEXT, credential_source TEXT, credential_id TEXT,
 		stream INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER,
+		cached_tokens INTEGER, reasoning_tokens INTEGER,
 		usage_finalized INTEGER NOT NULL, request_tool_count INTEGER NOT NULL DEFAULT 0,
 		request_tool_names TEXT, tool_call_count INTEGER NOT NULL DEFAULT 0, tool_names TEXT,
 		agent_id TEXT
@@ -70,11 +71,22 @@ func MigrateUsageTables(db *gorm.DB) error {
 			return err
 		}
 	}
-	// agent_id is an additive attribution tag. Existing databases created before
-	// agents shipped lack the column; add it idempotently, ignoring the
-	// duplicate-column error on databases that already have it.
-	for _, table := range []string{"llm_usage_events", "mcp_usage_events", "acp_usage_events"} {
-		if err := db.Exec("ALTER TABLE " + table + " ADD COLUMN agent_id TEXT").Error; err != nil {
+	// Additive columns for databases created before the column existed; each is
+	// added idempotently, ignoring the duplicate-column error on databases that
+	// already have it. agent_id is the attribution tag on all three tables;
+	// cached_tokens/reasoning_tokens are the LLM token-detail breakdown.
+	additive := []struct {
+		table  string
+		column string
+	}{
+		{"llm_usage_events", "agent_id TEXT"},
+		{"mcp_usage_events", "agent_id TEXT"},
+		{"acp_usage_events", "agent_id TEXT"},
+		{"llm_usage_events", "cached_tokens INTEGER"},
+		{"llm_usage_events", "reasoning_tokens INTEGER"},
+	}
+	for _, add := range additive {
+		if err := db.Exec("ALTER TABLE " + add.table + " ADD COLUMN " + add.column).Error; err != nil {
 			if !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 				return err
 			}

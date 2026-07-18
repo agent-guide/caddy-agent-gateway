@@ -25,8 +25,9 @@ func (q *UsageQueries) Summary() (usage.Summary, error) {
 		return out, nil
 	}
 	if err := q.db.Raw(`SELECT COUNT(*), COALESCE(SUM(success),0), COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0),
-		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(total_tokens),0), COALESCE(AVG(latency_ms),0)
-		FROM llm_usage_events`).Row().Scan(&out.LLM.RequestCount, &out.LLM.SuccessCount, &out.LLM.FailureCount, &out.LLM.InputTokens, &out.LLM.OutputTokens, &out.LLM.TotalTokens, &out.LLM.AvgLatencyMS); err != nil {
+		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(SUM(total_tokens),0),
+		COALESCE(SUM(cached_tokens),0), COALESCE(SUM(reasoning_tokens),0), COALESCE(AVG(latency_ms),0)
+		FROM llm_usage_events`).Row().Scan(&out.LLM.RequestCount, &out.LLM.SuccessCount, &out.LLM.FailureCount, &out.LLM.InputTokens, &out.LLM.OutputTokens, &out.LLM.TotalTokens, &out.LLM.CachedTokens, &out.LLM.ReasoningTokens, &out.LLM.AvgLatencyMS); err != nil {
 		return out, err
 	}
 	if err := q.db.Raw(`SELECT COUNT(*), COALESCE(SUM(success),0), COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0),
@@ -67,8 +68,8 @@ func (q *UsageQueries) ListInteractions(opts usage.EventListOptions) (usage.Even
 	// they only exist on llm_usage_events, so MCP/ACP branches NULL them out.
 	// Column order must match across every branch; absent columns are NULL
 	// placeholders.
-	llmExtra := `request_tool_count, request_tool_names, tool_call_count, tool_names, input_tokens, output_tokens, total_tokens`
-	nullExtra := `NULL AS request_tool_count, NULL AS request_tool_names, NULL AS tool_call_count, NULL AS tool_names, NULL AS input_tokens, NULL AS output_tokens, NULL AS total_tokens`
+	llmExtra := `request_tool_count, request_tool_names, tool_call_count, tool_names, input_tokens, output_tokens, total_tokens, cached_tokens, reasoning_tokens`
+	nullExtra := `NULL AS request_tool_count, NULL AS request_tool_names, NULL AS tool_call_count, NULL AS tool_names, NULL AS input_tokens, NULL AS output_tokens, NULL AS total_tokens, NULL AS cached_tokens, NULL AS reasoning_tokens`
 	query := "SELECT * FROM (" +
 		"SELECT " + baseCols + ", NULL AS service_id, NULL AS session_id, NULL AS operation, NULL AS tool_name, upstream_model, " + llmExtra + " FROM llm_usage_events UNION ALL " +
 		"SELECT " + baseCols + ", service_id, NULL AS session_id, NULL AS operation, tool_name, NULL AS upstream_model, " + nullExtra + " FROM mcp_usage_events UNION ALL " +
@@ -85,7 +86,9 @@ var (
 	llmMeasures = `COUNT(*) AS request_count, COALESCE(SUM(success),0) AS success_count,
 		COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) AS failure_count,
 		COALESCE(SUM(input_tokens),0) AS input_tokens, COALESCE(SUM(output_tokens),0) AS output_tokens,
-		COALESCE(SUM(total_tokens),0) AS total_tokens, COALESCE(AVG(latency_ms),0) AS avg_latency_ms`
+		COALESCE(SUM(total_tokens),0) AS total_tokens,
+		COALESCE(SUM(cached_tokens),0) AS cached_tokens, COALESCE(SUM(reasoning_tokens),0) AS reasoning_tokens,
+		COALESCE(AVG(latency_ms),0) AS avg_latency_ms`
 
 	mcpGroups = map[string]string{
 		"route_id": "route_id", "service_id": "service_id", "virtual_key_id": "virtual_key_id", "method": "method", "tool_name": "tool_name", "result_status": "result_status",

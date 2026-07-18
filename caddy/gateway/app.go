@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	configstoresqlite "github.com/agent-guide/agent-gateway/caddy/configstore/sqlite"
+	"github.com/agent-guide/agent-gateway/internal/observability/einotap"
 	"github.com/agent-guide/agent-gateway/internal/observability/pipeline"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
@@ -197,6 +198,10 @@ func (a *App) Stop() error {
 }
 
 func (a *App) provisionUsageService() {
+	// The eino callbacks tap is stateless and resolves the active span from the
+	// request context, so registering here (re-run on every Caddy config
+	// reload) is safe: Register is guarded by a process-wide sync.Once.
+	einotap.Register()
 	dbProvider, ok := a.configBackend.(usage.SQLDBProvider)
 	if !ok {
 		a.usageService = usage.NewUsageService(nil, nil)

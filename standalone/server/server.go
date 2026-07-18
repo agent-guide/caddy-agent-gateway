@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/einotap"
 	"github.com/agent-guide/agent-gateway/internal/observability/pipeline"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/admin"
@@ -220,6 +221,7 @@ func bootstrapGateway(ctx context.Context, opts Options, logger *zap.Logger) (*g
 }
 
 func newUsageService(backend configstore.ConfigStoreBackend, logger *zap.Logger, cfg usage.Config) *usage.UsageService {
+	einotap.Register()
 	dbProvider, ok := backend.(usage.SQLDBProvider)
 	if !ok {
 		return usage.NewUsageService(nil, nil)

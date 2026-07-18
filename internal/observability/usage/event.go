@@ -39,6 +39,11 @@ type LLMUsageEvent struct {
 	InputTokens      int
 	OutputTokens     int
 	TotalTokens      int
+	// CachedTokens is the cache-served subset of InputTokens; ReasoningTokens
+	// is the reasoning subset of OutputTokens. Zero when the upstream does not
+	// report the breakdown.
+	CachedTokens     int
+	ReasoningTokens  int
 	UsageFinalized   bool
 	RequestToolCount int
 	RequestToolNames []string
@@ -93,6 +98,8 @@ type LLMExtension struct {
 	InputTokens      *int
 	OutputTokens     *int
 	TotalTokens      *int
+	CachedTokens     *int
+	ReasoningTokens  *int
 	UsageFinalized   *bool
 	RequestToolCount *int
 	RequestToolNames []string

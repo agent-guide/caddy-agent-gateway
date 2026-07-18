@@ -150,9 +150,16 @@ func UsageFromMessage(msg *schema.Message) Usage {
 	}
 
 	usage := msg.ResponseMeta.Usage
+	total := usage.TotalTokens
+	if total == 0 {
+		total = usage.PromptTokens + usage.CompletionTokens
+	}
 	return Usage{
-		InputTokens:  usage.PromptTokens,
-		OutputTokens: usage.CompletionTokens,
+		InputTokens:     usage.PromptTokens,
+		OutputTokens:    usage.CompletionTokens,
+		TotalTokens:     total,
+		CachedTokens:    usage.PromptTokenDetails.CachedTokens,
+		ReasoningTokens: usage.CompletionTokensDetails.ReasoningTokens,
 	}
 }
 

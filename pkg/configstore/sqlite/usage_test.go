@@ -467,7 +467,8 @@ func TestUsageWriterQuerySummaryAndEvents(t *testing.T) {
 			EventID: "ev-1", SpanID: "span-1", StartedAt: now, FinishedAt: now.Add(10 * time.Millisecond),
 			RouteID: "route-1", RouteKind: "llm", RouteProtocol: "openai", Success: true, StatusCode: 200, LatencyMS: 10,
 		},
-		LLMAPI: "openai", ProviderID: "provider-1", UpstreamModel: "gpt-4o", InputTokens: 3, OutputTokens: 4, TotalTokens: 7, UsageFinalized: true,
+		LLMAPI: "openai", ProviderID: "provider-1", UpstreamModel: "gpt-4o", InputTokens: 3, OutputTokens: 4, TotalTokens: 7,
+		CachedTokens: 2, ReasoningTokens: 1, UsageFinalized: true,
 		RequestToolCount: 2, RequestToolNames: []string{"read_file", "write_file"}, ToolCallCount: 1, ToolNames: []string{"read_file"},
 	}); err != nil {
 		t.Fatalf("InsertLLMUsageEvent() error = %v", err)
@@ -480,6 +481,9 @@ func TestUsageWriterQuerySummaryAndEvents(t *testing.T) {
 	if summary.LLM.RequestCount != 1 || summary.LLM.TotalTokens != 7 {
 		t.Fatalf("summary.LLM = %+v, want one request and 7 tokens", summary.LLM)
 	}
+	if summary.LLM.CachedTokens != 2 || summary.LLM.ReasoningTokens != 1 {
+		t.Fatalf("summary.LLM = %+v, want 2 cached and 1 reasoning tokens", summary.LLM)
+	}
 	events, err := q.ListEvents("llm", usage.EventListOptions{
 		Limit:   10,
 		Filters: map[string]string{"provider_id": "provider-1"},
@@ -490,12 +494,18 @@ func TestUsageWriterQuerySummaryAndEvents(t *testing.T) {
 	if len(events.Items) != 1 || events.Items[0]["event_id"] != "ev-1" {
 		t.Fatalf("events = %#v, want ev-1", events.Items)
 	}
+	if events.Items[0]["cached_tokens"] != int64(2) || events.Items[0]["reasoning_tokens"] != int64(1) {
+		t.Fatalf("event token details = %#v, want cached_tokens 2 and reasoning_tokens 1", events.Items[0])
+	}
 	interactions, err := q.ListInteractions(usage.EventListOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("ListInteractions() error = %v", err)
 	}
 	if len(interactions.Items) != 1 || interactions.Items[0]["route_kind"] != "llm" {
 		t.Fatalf("interactions = %#v, want llm interaction", interactions.Items)
+	}
+	if interactions.Items[0]["cached_tokens"] != int64(2) || interactions.Items[0]["reasoning_tokens"] != int64(1) {
+		t.Fatalf("interaction token details = %#v, want cached_tokens 2 and reasoning_tokens 1 projected", interactions.Items[0])
 	}
 	timeseries, err := q.LLMTimeseries(usage.TimeseriesOptions{Bucket: "hour", GroupBy: "provider_id"})
 	if err != nil {

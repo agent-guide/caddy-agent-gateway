@@ -208,13 +208,15 @@ type BreakdownResponse struct {
 }
 
 type LLMSummary struct {
-	RequestCount int64 `json:"request_count"`
-	SuccessCount int64 `json:"success_count"`
-	FailureCount int64 `json:"failure_count"`
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens  int64 `json:"total_tokens"`
-	AvgLatencyMS int64 `json:"avg_latency_ms"`
+	RequestCount    int64 `json:"request_count"`
+	SuccessCount    int64 `json:"success_count"`
+	FailureCount    int64 `json:"failure_count"`
+	InputTokens     int64 `json:"input_tokens"`
+	OutputTokens    int64 `json:"output_tokens"`
+	TotalTokens     int64 `json:"total_tokens"`
+	CachedTokens    int64 `json:"cached_tokens"`
+	ReasoningTokens int64 `json:"reasoning_tokens"`
+	AvgLatencyMS    int64 `json:"avg_latency_ms"`
 }
 
 type MCPSummary struct {

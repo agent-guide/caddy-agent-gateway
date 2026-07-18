@@ -84,9 +84,19 @@ type ResponsesResponseContentPart struct {
 }
 
 type ResponsesResponseUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens         int                        `json:"input_tokens"`
+	OutputTokens        int                        `json:"output_tokens"`
+	TotalTokens         int                        `json:"total_tokens"`
+	InputTokensDetails  ResponsesInputTokensUsage  `json:"input_tokens_details,omitzero"`
+	OutputTokensDetails ResponsesOutputTokensUsage `json:"output_tokens_details,omitzero"`
+}
+
+type ResponsesInputTokensUsage struct {
+	CachedTokens int `json:"cached_tokens,omitempty"`
+}
+
+type ResponsesOutputTokensUsage struct {
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // ResponsesStreamEvent is the minimal event model currently required by the

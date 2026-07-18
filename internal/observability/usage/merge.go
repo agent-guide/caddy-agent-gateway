@@ -40,6 +40,12 @@ func mergeLLM(dst *LLMExtension, src LLMExtension) {
 	if src.TotalTokens != nil {
 		dst.TotalTokens = src.TotalTokens
 	}
+	if src.CachedTokens != nil {
+		dst.CachedTokens = src.CachedTokens
+	}
+	if src.ReasoningTokens != nil {
+		dst.ReasoningTokens = src.ReasoningTokens
+	}
 	if src.UsageFinalized != nil {
 		dst.UsageFinalized = src.UsageFinalized
 	}

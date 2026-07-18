@@ -333,6 +333,8 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	toolNames := map[string]struct{}{}
 	inputTokens := 0
 	outputTokens := 0
+	cachedTokens := 0
+	reasoningTokens := 0
 	usageFinalized := false
 	for {
 		chunk, err := stream.Recv()
@@ -359,6 +361,12 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 			if chunk.ResponseMeta.Usage.CompletionTokens > 0 {
 				outputTokens = chunk.ResponseMeta.Usage.CompletionTokens
 			}
+			if chunk.ResponseMeta.Usage.PromptTokenDetails.CachedTokens > 0 {
+				cachedTokens = chunk.ResponseMeta.Usage.PromptTokenDetails.CachedTokens
+			}
+			if chunk.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
+				reasoningTokens = chunk.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens
+			}
 			usageFinalized = inputTokens > 0 || outputTokens > 0
 		}
 
@@ -380,10 +388,12 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	)
 	recordToolNameSet(r, toolNames)
 	usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
-		InputTokens:    usage.Int(inputTokens),
-		OutputTokens:   usage.Int(outputTokens),
-		TotalTokens:    usage.Int(inputTokens + outputTokens),
-		UsageFinalized: usage.Bool(usageFinalized),
+		InputTokens:     usage.Int(inputTokens),
+		OutputTokens:    usage.Int(outputTokens),
+		TotalTokens:     usage.Int(inputTokens + outputTokens),
+		CachedTokens:    usage.Int(cachedTokens),
+		ReasoningTokens: usage.Int(reasoningTokens),
+		UsageFinalized:  usage.Bool(usageFinalized),
 	})
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -403,6 +413,8 @@ func (h *Handler) writeProviderResponsesStream(w http.ResponseWriter, r *http.Re
 	inputTokens := 0
 	outputTokens := 0
 	totalTokens := 0
+	cachedTokens := 0
+	reasoningTokens := 0
 	usageFinalized := false
 	for {
 		event, err := stream.Recv()
@@ -428,6 +440,8 @@ func (h *Handler) writeProviderResponsesStream(w http.ResponseWriter, r *http.Re
 			inputTokens = event.Response.Usage.InputTokens
 			outputTokens = event.Response.Usage.OutputTokens
 			totalTokens = event.Response.Usage.TotalTokens
+			cachedTokens = event.Response.Usage.InputTokensDetails.CachedTokens
+			reasoningTokens = event.Response.Usage.OutputTokensDetails.ReasoningTokens
 			usageFinalized = totalTokens > 0 || inputTokens > 0 || outputTokens > 0
 		}
 		eventCount++
@@ -450,10 +464,12 @@ func (h *Handler) writeProviderResponsesStream(w http.ResponseWriter, r *http.Re
 		totalTokens = inputTokens + outputTokens
 	}
 	usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
-		InputTokens:    usage.Int(inputTokens),
-		OutputTokens:   usage.Int(outputTokens),
-		TotalTokens:    usage.Int(totalTokens),
-		UsageFinalized: usage.Bool(usageFinalized),
+		InputTokens:     usage.Int(inputTokens),
+		OutputTokens:    usage.Int(outputTokens),
+		TotalTokens:     usage.Int(totalTokens),
+		CachedTokens:    usage.Int(cachedTokens),
+		ReasoningTokens: usage.Int(reasoningTokens),
+		UsageFinalized:  usage.Bool(usageFinalized),
 	})
 }
 
@@ -512,10 +528,12 @@ func recordResponsesUsage(r *http.Request, resp *provider.ResponsesResponse) {
 		totalTokens = resp.Usage.InputTokens + resp.Usage.OutputTokens
 	}
 	usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
-		InputTokens:    usage.Int(resp.Usage.InputTokens),
-		OutputTokens:   usage.Int(resp.Usage.OutputTokens),
-		TotalTokens:    usage.Int(totalTokens),
-		UsageFinalized: usage.Bool(totalTokens > 0 || resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0),
+		InputTokens:     usage.Int(resp.Usage.InputTokens),
+		OutputTokens:    usage.Int(resp.Usage.OutputTokens),
+		TotalTokens:     usage.Int(totalTokens),
+		CachedTokens:    usage.Int(resp.Usage.InputTokensDetails.CachedTokens),
+		ReasoningTokens: usage.Int(resp.Usage.OutputTokensDetails.ReasoningTokens),
+		UsageFinalized:  usage.Bool(totalTokens > 0 || resp.Usage.InputTokens > 0 || resp.Usage.OutputTokens > 0),
 	})
 }
 

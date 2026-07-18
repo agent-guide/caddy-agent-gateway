@@ -848,7 +848,13 @@ func responsesUsageFromMessage(msg *schema.Message) *ResponsesResponseUsage {
 	return &ResponsesResponseUsage{
 		InputTokens:  usage.InputTokens,
 		OutputTokens: usage.OutputTokens,
-		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+		TotalTokens:  usage.TotalTokens,
+		InputTokensDetails: ResponsesInputTokensUsage{
+			CachedTokens: usage.CachedTokens,
+		},
+		OutputTokensDetails: ResponsesOutputTokensUsage{
+			ReasoningTokens: usage.ReasoningTokens,
+		},
 	}
 }
 
