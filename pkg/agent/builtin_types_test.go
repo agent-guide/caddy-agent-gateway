@@ -235,6 +235,48 @@ func TestBuiltinValidationRules(t *testing.T) {
 			wantErr: "toolsearch requires the definition to declare tools",
 		},
 		{
+			name: "model retry bounds",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Model.Retry = &BuiltinModelRetry{MaxRetries: 6}
+			},
+			wantErr: "retry.max_retries must be between 1 and 5",
+		},
+		{
+			name: "model retry rejects zero",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Model.Retry = &BuiltinModelRetry{}
+			},
+			wantErr: "retry.max_retries must be between 1 and 5",
+		},
+		{
+			name: "planexecute root model must not carry retry",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Model.Retry = &BuiltinModelRetry{MaxRetries: 2}
+				a.Runtime.Builtin.Topology = BuiltinTopology{Kind: TopologyKindPlanExecute}
+			},
+			wantErr: "model.retry is not supported when topology.kind is planexecute",
+		},
+		{
+			name: "planexecute role model must not carry retry",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Topology = BuiltinTopology{Kind: TopologyKindPlanExecute, PlanExecute: &BuiltinPlanExecute{
+					Planner: &BuiltinPlanExecuteRole{Model: &BuiltinModel{LLMRouteID: "chat-main", Retry: &BuiltinModelRetry{MaxRetries: 2}}},
+				}}
+			},
+			wantErr: "model.retry is not supported for planexecute roles",
+		},
+		{
+			name: "planexecute sub-agent model must not carry retry",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Topology = BuiltinTopology{Kind: TopologyKindSequential, SubAgents: []BuiltinSubAgent{{
+					Name:     "planner",
+					Model:    &BuiltinModel{LLMRouteID: "chat-main", Retry: &BuiltinModelRetry{MaxRetries: 2}},
+					Topology: &BuiltinTopology{Kind: TopologyKindPlanExecute},
+				}}}
+			},
+			wantErr: "model.retry is not supported when topology.kind is planexecute",
+		},
+		{
 			name: "permissions mode must be a known value",
 			mutate: func(a *Agent) {
 				a.Runtime.Builtin.Permissions = &BuiltinPermissions{Mode: "ask"}

@@ -80,8 +80,29 @@ func (p *BuiltinPermissions) Interactive() bool {
 // routes, upstream model in direct-provider routes); empty falls back to the
 // route's default resolution.
 type BuiltinModel struct {
-	LLMRouteID string `json:"llm_route_id"`
-	Model      string `json:"model,omitempty"`
+	LLMRouteID string             `json:"llm_route_id"`
+	Model      string             `json:"model,omitempty"`
+	Retry      *BuiltinModelRetry `json:"retry,omitempty"`
+}
+
+// maxBuiltinModelRetries caps per-call retry attempts: every retry re-runs
+// the whole RoutedProvider candidate/credential fallback underneath, so the
+// worst-case upstream call count is bounded by both layers multiplied.
+const maxBuiltinModelRetries = 5
+
+// BuiltinModelRetry enables node-level model-call retry through the ADK
+// retry wrapper (eino-reuse.md §4.3). It complements — not replaces — the
+// gateway's candidate fallback: RoutedProvider advances between candidates
+// within one call, while this retries the whole call after that fallback is
+// exhausted. Retryability mirrors the gateway's failure classification (429
+// and 5xx retry; client-correctable errors fail immediately), and backoff
+// keeps the ADK default. Sub-agents inherit it with the model reference.
+// Not supported on planexecute role models: the eino prebuilt exposes no
+// retry seam there, and a silent no-op is worse than a validation error.
+type BuiltinModelRetry struct {
+	// MaxRetries is the number of retry attempts after the initial call
+	// (1..5).
+	MaxRetries int `json:"max_retries"`
 }
 
 type BuiltinGeneration struct {
@@ -387,6 +408,11 @@ func (a Agent) validateBuiltin() error {
 	if b.Generation != nil && b.Generation.MaxTokens < 0 {
 		return fmt.Errorf("runtime.builtin.generation.max_tokens must be non-negative")
 	}
+	if b.Topology.Kind == TopologyKindPlanExecute && b.Model.Retry != nil {
+		// The planexecute prebuilt exposes no retry seam; the roles would
+		// silently inherit and drop the block otherwise.
+		return fmt.Errorf("runtime.builtin model.retry is not supported when topology.kind is planexecute; roles inherit the node model")
+	}
 	if err := validateBuiltinTopology(&b.Topology, llmRoutes, mcpServices, 1); err != nil {
 		return err
 	}
@@ -570,6 +596,11 @@ func validateBuiltinModel(m *BuiltinModel, required bool, llmRoutes map[string]s
 	if _, ok := llmRoutes[m.LLMRouteID]; !ok {
 		return fmt.Errorf("runtime.builtin model route %q must appear in routes.llm_route_ids", m.LLMRouteID)
 	}
+	if r := m.Retry; r != nil {
+		if r.MaxRetries < 1 || r.MaxRetries > maxBuiltinModelRetries {
+			return fmt.Errorf("runtime.builtin model retry.max_retries must be between 1 and %d", maxBuiltinModelRetries)
+		}
+	}
 	return nil
 }
 
@@ -666,6 +697,9 @@ func validateBuiltinTopology(t *BuiltinTopology, llmRoutes, mcpServices map[stri
 		if err := validateBuiltinModel(sub.Model, false, llmRoutes); err != nil {
 			return err
 		}
+		if sub.Topology != nil && sub.Topology.Kind == TopologyKindPlanExecute && sub.Model != nil && sub.Model.Retry != nil {
+			return fmt.Errorf("sub_agent %q: model.retry is not supported when topology.kind is planexecute; roles inherit the node model", sub.Name)
+		}
 		if err := validateBuiltinTools(sub.Tools, mcpServices); err != nil {
 			return err
 		}
@@ -698,6 +732,9 @@ func validateBuiltinPlanExecute(pe *BuiltinPlanExecute, llmRoutes, mcpServices m
 		}
 		if err := validateBuiltinModel(r.role.Model, false, llmRoutes); err != nil {
 			return fmt.Errorf("plan_execute.%s: %w", r.name, err)
+		}
+		if r.role.Model != nil && r.role.Model.Retry != nil {
+			return fmt.Errorf("plan_execute.%s: model.retry is not supported for planexecute roles", r.name)
 		}
 		if r.role.Generation != nil && r.role.Generation.MaxTokens < 0 {
 			return fmt.Errorf("plan_execute.%s generation.max_tokens must be non-negative", r.name)

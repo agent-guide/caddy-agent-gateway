@@ -395,7 +395,10 @@ Important files:
   ADK host). LLM and MCP are `resources`, not runtime types. `policy` is
   runtime-agnostic; ACP operational config stays on the ACP service.
 - `builtin_types.go`: the `runtime.builtin` definition schema — model resolved
-  through an LLM route (must appear in `routes.llm_route_ids`), tools referencing
+  through an LLM route (must appear in `routes.llm_route_ids`) with an
+  optional `retry` block (`max_retries` 1–5, node-level ADK retry over the
+  route's own candidate fallback; 429/5xx only; rejected on planexecute
+  roles, which expose no retry seam), tools referencing
   MCP services (must appear in `resources.mcp_service_ids`), topology kinds
   `single`/`sequential`/`parallel`/`loop`/`supervisor`/`planexecute`/`deep`/
   `custom` (`planexecute` configures roles through the optional
@@ -447,7 +450,11 @@ every builtin agent:
   (and every tool-calling head: the supervisor head, the deep head, and the
   planexecute planner/replanner) resolves with `RequireTools`, so
   logical-model routes only bind tool-capable candidates; MCP tools come
-  through the `einotool` bridge (fail-closed name selection)
+  through the `einotool` bridge (fail-closed name selection); a `model.retry`
+  block maps onto `ChatModelAgentConfig.ModelRetryConfig` (and `deep.Config`),
+  retrying the whole routed call — including its internal candidate fallback —
+  on 429/5xx with the ADK default backoff, mirroring
+  `RoutedProvider.classifyFailure` via `internal/statuserr`
 - every turn runs under panic recovery; `max_concurrent_turns` and
   `turn_timeout_seconds` are fail-closed (reject, not queue); a disabled agent
   rejects turns as a client-correctable error

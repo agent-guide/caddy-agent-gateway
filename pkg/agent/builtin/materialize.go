@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 
 	"github.com/cloudwego/eino/adk"
@@ -21,6 +22,7 @@ import (
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	"github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/mcp/einotool"
 )
@@ -167,10 +169,11 @@ func (h *Host) buildChatModelAgent(ctx context.Context, agentID string, spec nod
 		return nil, err
 	}
 	cfg := &adk.ChatModelAgentConfig{
-		Name:        spec.name,
-		Description: spec.description,
-		Instruction: spec.systemPrompt,
-		Model:       chatModel,
+		Name:             spec.name,
+		Description:      spec.description,
+		Instruction:      spec.systemPrompt,
+		Model:            chatModel,
+		ModelRetryConfig: modelRetryConfig(modelRef.Retry),
 	}
 	handlers, toolsDynamic, err := middlewareHandlers(ctx, spec.middlewares, chatModel, tools)
 	if err != nil {
@@ -332,6 +335,14 @@ func (h *Host) buildPlanExecute(ctx context.Context, agentID string, spec nodeSp
 		if modelRef == nil || modelRef.LLMRouteID == "" {
 			return nil, fmt.Errorf("plan_execute role %q of node %q has no model route to resolve", name, spec.name)
 		}
+		if modelRef.Retry != nil {
+			// Validation rejects directly-declared retry on planexecute
+			// nodes/roles; this backstops the inherited path (a sub-agent
+			// planexecute node inheriting a retry-carrying parent model).
+			// The eino prebuilt exposes no retry seam, and a silent no-op
+			// would misreport the definition's behavior.
+			return nil, fmt.Errorf("plan_execute role %q of node %q: model.retry is not supported for planexecute roles", name, spec.name)
+		}
 		return h.resolveModel(ctx, agentID, modelRef, gen, requireTools)
 	}
 
@@ -411,12 +422,13 @@ func (h *Host) buildDeep(ctx context.Context, agentID string, spec nodeSpec, inh
 		return nil, err
 	}
 	cfg := &deep.Config{
-		Name:         spec.name,
-		Description:  spec.description,
-		ChatModel:    chatModel,
-		Instruction:  spec.systemPrompt,
-		SubAgents:    children,
-		MaxIteration: spec.topology.MaxIterations,
+		Name:             spec.name,
+		Description:      spec.description,
+		ChatModel:        chatModel,
+		Instruction:      spec.systemPrompt,
+		SubAgents:        children,
+		MaxIteration:     spec.topology.MaxIterations,
+		ModelRetryConfig: modelRetryConfig(modelRef.Retry),
 	}
 	handlers, toolsDynamic, err := middlewareHandlers(ctx, spec.middlewares, chatModel, tools)
 	if err != nil {
@@ -497,6 +509,30 @@ func generationOptions(gen *agent.BuiltinGeneration) []einomodel.Option {
 		opts = append(opts, einomodel.WithTopP(*gen.TopP))
 	}
 	return opts
+}
+
+// modelRetryConfig maps the definition's retry block onto the ADK retry
+// wrapper. Backoff keeps the ADK default (exponential, 100ms base, 10s cap).
+func modelRetryConfig(r *agent.BuiltinModelRetry) *adk.ModelRetryConfig {
+	if r == nil || r.MaxRetries <= 0 {
+		return nil
+	}
+	return &adk.ModelRetryConfig{
+		MaxRetries:  r.MaxRetries,
+		IsRetryAble: retryableModelError,
+	}
+}
+
+// retryableModelError mirrors RoutedProvider.classifyFailure: only statuses
+// that indicate a transient upstream condition retry (429 and 5xx); a
+// client-correctable error fails the call immediately instead of burning
+// retry attempts on a request that cannot succeed.
+func retryableModelError(_ context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	status := statuserr.StatusCode(err, http.StatusBadGateway)
+	return status == http.StatusTooManyRequests || status >= 500
 }
 
 // optionedModel prepends definition-level generation options to every call;

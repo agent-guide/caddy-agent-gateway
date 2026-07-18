@@ -162,22 +162,29 @@ gateway code that aggregates a streamed response into one final message
 of hand-written merging — it correctly handles incremental tool-call
 argument concatenation, `ReasoningContent`, and `ResponseMeta` merging.
 
-### 4.3 `adk.FailoverChatModel` / `adk.RetryChatModel`
+### 4.3 ADK model retry / failover
 
-Status: not needed for gateway routing; only relevant inside a future ADK
-runtime.
+Status: retry adopted for builtin nodes; failover not adopted.
 
-Model-level failover (added v0.9.7) and retry wrappers around
-`ToolCallingChatModel`. The gateway already has model-level failover:
+In v0.9.12 both ship as `ChatModelAgentConfig` fields (`ModelRetryConfig` /
+`ModelFailoverConfig`, also exposed by the `deep` prebuilt) rather than the
+standalone wrappers of v0.9.7. The builtin definition's `model.retry` block
+(`max_retries`) maps onto `ModelRetryConfig` with an `IsRetryAble` mirroring
+`RoutedProvider.classifyFailure` (429/5xx only), so a node-level retry
+re-runs the whole routed call — credential scheduling and candidate fallback
+included — after the gateway's own fallback is exhausted. The planexecute
+prebuilt exposes no retry seam, so `model.retry` is rejected there
+(validation plus a materialization backstop for the inherited path) instead
+of silently dropped.
+
+Failover stays out: the gateway already has model-level failover:
 logical-model routes advance to the next untried
 `(provider_id, upstream_model)` candidate within the same request
 (`executeWithFallback` in `pkg/gateway/routedprovider.go`), integrated with
 credential scheduling, failure classification (4xx does not trigger a
-switch), and per-attempt usage attribution. `FailoverChatModel` is a static
-two-model wrapper that knows none of that, so it is not a replacement. Its
-only sensible place is inside a future ADK builtin runtime (§5), where an
-eino agent needs self-contained failover without the gateway routing
-layer.
+switch), and per-attempt usage attribution. `ModelFailoverConfig` is a
+static model list that knows none of that, so it is not a replacement and
+stays unadopted.
 
 ### 4.4 eino-ext callbacks handlers for platform export
 
@@ -405,8 +412,8 @@ infrastructure surfaces.
    `metrics.otlp.endpoint` is configured. Vendor callbacks handlers stay
    on-request for platforms that need component-level detail beyond the
    usage-event grain.
-6. `FailoverChatModel`/`RetryChatModel` only if and when an ADK builtin
-   runtime lands (§4.3, §5).
+6. ~~ADK model retry for builtin nodes (§4.3).~~ Done: the definition's
+   `model.retry` block; failover stays unadopted by design.
 
 ## 9. Known Integration Gotchas
 

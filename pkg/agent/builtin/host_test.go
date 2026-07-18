@@ -30,7 +30,9 @@ type fakeChatModel struct {
 	// visible on this call: the per-call model.WithTools option when present
 	// (how ADK applies middleware-filtered tool lists), else the bound tools.
 	toolAwareScript func(input []*schema.Message, visible []*schema.ToolInfo) *schema.Message
-	block           chan struct{} // when non-nil, Generate blocks until closed
+	// scriptErr, when set, wins over both and may fail the call (retry tests).
+	scriptErr func(input []*schema.Message) (*schema.Message, error)
+	block     chan struct{} // when non-nil, Generate blocks until closed
 }
 
 func (m *fakeChatModel) Generate(_ context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
@@ -40,6 +42,9 @@ func (m *fakeChatModel) Generate(_ context.Context, input []*schema.Message, opt
 	m.mu.Lock()
 	m.requests = append(m.requests, input)
 	m.mu.Unlock()
+	if m.scriptErr != nil {
+		return m.scriptErr(input)
+	}
 	if m.toolAwareScript != nil {
 		visible := m.tools
 		if o := einomodel.GetCommonOptions(&einomodel.Options{}, opts...); o.Tools != nil {
@@ -62,7 +67,7 @@ func (m *fakeChatModel) Stream(ctx context.Context, input []*schema.Message, opt
 }
 
 func (m *fakeChatModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
-	bound := &fakeChatModel{script: m.script, toolAwareScript: m.toolAwareScript, block: m.block}
+	bound := &fakeChatModel{script: m.script, toolAwareScript: m.toolAwareScript, scriptErr: m.scriptErr, block: m.block}
 	bound.tools = tools
 	// Share request recording with the root model so tests can inspect it.
 	bound.mu = sync.Mutex{}

@@ -553,7 +553,8 @@ compile-time capability, runtime configuration.
 "runtime": {
   "type": "builtin",
   "builtin": {
-    "model": { "llm_route_id": "chat-main", "model": "smart" },
+    "model": { "llm_route_id": "chat-main", "model": "smart",
+               "retry": { "max_retries": 2 } },
     "system_prompt": "You are a triage agent...",
     "generation": { "max_tokens": 8192, "temperature": 0.2 },
     "tools": [
@@ -590,7 +591,15 @@ Schema rules:
   route's `RoutedProvider`, so credential scheduling, candidate fallback,
   retry classification, and LLM usage events apply unchanged. The referenced
   route must appear in `routes.llm_route_ids` (route-binding uniqueness then
-  keeps attribution unambiguous, per [5.6](#56-agent-attribution)).
+  keeps attribution unambiguous, per [5.6](#56-agent-attribution)). The
+  optional `retry` block (`max_retries`, 1–5) adds node-level ADK retry on
+  top: RoutedProvider's fallback advances between candidates within one
+  call, and `retry` re-runs the whole call after that fallback is exhausted,
+  with retryability mirroring the gateway's failure classification (429 and
+  5xx only) and the ADK default backoff. Sub-agents inherit it with the
+  model reference; planexecute role models reject it (the eino prebuilt
+  exposes no retry seam — validated at apply time, backstopped at
+  materialization for the inherited path).
 - **`tools` reference gateway-managed MCP services** and enter ADK via the
   MCP → `InvokableTool` adapter over `pkg/mcp/service` — in-process, no HTTP
   loopback. MCP tool policy applies exactly as it does for route-dispatched

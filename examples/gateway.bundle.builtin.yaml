@@ -102,6 +102,10 @@ agents:
           # model (direct-provider routes); the provider default applies when
           # omitted.
           # model: deepseek-chat
+          # Optional node-level retry after the route's own candidate
+          # fallback is exhausted; transient upstream errors only (429/5xx).
+          # retry:
+          #   max_retries: 2
         system_prompt: You are a concise support agent for the agent-gateway project.
         generation:
           max_tokens: 2048
