@@ -3,8 +3,15 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/middlewares/agentsmd"
+	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
+	"github.com/cloudwego/eino/adk/middlewares/patchtoolcalls"
+	"github.com/cloudwego/eino/adk/middlewares/plantask"
+	"github.com/cloudwego/eino/adk/middlewares/reduction"
+	"github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
 	"github.com/cloudwego/eino/adk/prebuilt/deep"
 	"github.com/cloudwego/eino/adk/prebuilt/planexecute"
@@ -160,32 +167,137 @@ func (h *Host) buildChatModelAgent(ctx context.Context, agentID string, spec nod
 		Instruction: spec.systemPrompt,
 		Model:       chatModel,
 	}
-	if len(tools) > 0 {
-		cfg.ToolsConfig = adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}}
-	}
-	sum, err := summarizationHandler(ctx, spec.middlewares, chatModel)
+	handlers, toolsDynamic, err := middlewareHandlers(ctx, spec.middlewares, chatModel, tools)
 	if err != nil {
 		return nil, err
 	}
-	if sum != nil {
-		cfg.Handlers = append(cfg.Handlers, sum)
+	if len(tools) > 0 && !toolsDynamic {
+		cfg.ToolsConfig = adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}}
 	}
+	cfg.Handlers = append(cfg.Handlers, handlers...)
 	return adk.NewChatModelAgent(ctx, cfg)
 }
 
-func summarizationHandler(ctx context.Context, mw *agent.BuiltinMiddlewares, chatModel einomodel.ToolCallingChatModel) (adk.ChatModelAgentMiddleware, error) {
-	if mw == nil || mw.Summarization == nil || !mw.Summarization.Enabled {
-		return nil, nil
+// middlewareHandlers assembles the enabled ADK middlewares. ADK runs handlers
+// in registration order, and the order here is deliberate: patchtoolcalls
+// completes dangling tool exchanges before anything else reads the history,
+// reduction clears tool-output bloat before summarization counts tokens,
+// skill and plantask contribute their tools (always statically visible —
+// toolsearch only gates the node's own MCP tools), toolsearch manages tool
+// visibility after the context managers settle the history, and agentsmd
+// injects last so its content is invisible to all of them — transient per
+// model call, never part of what gets compacted or cleared.
+//
+// nodeTools are the node's resolved MCP tools. When toolsearch is enabled
+// they become the middleware's dynamic tools and toolsDynamic is true — the
+// caller must then leave them out of ToolsConfig, or the model would see
+// every tool statically and BeforeAgent would register each one twice.
+func middlewareHandlers(ctx context.Context, mw *agent.BuiltinMiddlewares, chatModel einomodel.ToolCallingChatModel, nodeTools []tool.BaseTool) (handlers []adk.ChatModelAgentMiddleware, toolsDynamic bool, err error) {
+	if mw == nil {
+		return nil, false, nil
 	}
-	sumCfg := &summarization.Config{Model: chatModel}
-	if mw.Summarization.TriggerTokens > 0 {
-		sumCfg.Trigger = &summarization.TriggerCondition{ContextTokens: mw.Summarization.TriggerTokens}
+	toolSearchOn := mw.ToolSearch != nil && mw.ToolSearch.Enabled
+	if ptc := mw.PatchToolCalls; ptc != nil && ptc.Enabled {
+		// First so the history is structurally complete (every tool call has a
+		// result) before reduction scans tool exchanges and before
+		// summarization hands the history to the model.
+		patched, err := patchtoolcalls.New(ctx, &patchtoolcalls.Config{})
+		if err != nil {
+			return nil, false, fmt.Errorf("configure patchtoolcalls middleware: %w", err)
+		}
+		handlers = append(handlers, patched)
 	}
-	sum, err := summarization.New(ctx, sumCfg)
-	if err != nil {
-		return nil, fmt.Errorf("configure summarization middleware: %w", err)
+	if rd := mw.Reduction; rd != nil && rd.Enabled {
+		// Clear-only: a builtin agent has no file backend to offload cleared
+		// content to (and no read_file tool to hand the model), so the
+		// truncation/offload phase stays disabled and cleared tool outputs
+		// become placeholders.
+		excludeTools := rd.ClearExcludeTools
+		if toolSearchOn {
+			// toolsearch re-derives tool visibility from tool_search results in
+			// the history; clearing them would silently hide loaded tools again.
+			excludeTools = appendMissing(excludeTools, "tool_search")
+		}
+		red, err := reduction.New(ctx, &reduction.Config{
+			SkipTruncation:            true,
+			MaxTokensForClear:         int64(rd.MaxTokensForClear),
+			ClearRetentionSuffixLimit: rd.ClearRetentionSuffixLimit,
+			ClearExcludeTools:         excludeTools,
+		})
+		if err != nil {
+			return nil, false, fmt.Errorf("configure reduction middleware: %w", err)
+		}
+		handlers = append(handlers, red)
 	}
-	return sum, nil
+	if s := mw.Summarization; s != nil && s.Enabled {
+		sumCfg := &summarization.Config{Model: chatModel}
+		if s.TriggerTokens > 0 {
+			sumCfg.Trigger = &summarization.TriggerCondition{ContextTokens: s.TriggerTokens}
+		}
+		sum, err := summarization.New(ctx, sumCfg)
+		if err != nil {
+			return nil, false, fmt.Errorf("configure summarization middleware: %w", err)
+		}
+		handlers = append(handlers, sum)
+	}
+	if sk := mw.Skill; sk != nil && sk.Enabled {
+		// Definition validation rejects an enabled skill block without skills,
+		// but a definition persisted around it must fail materialization, not
+		// silently expose an empty skill tool.
+		if len(sk.Skills) == 0 {
+			return nil, false, fmt.Errorf("configure skill middleware: at least one skill is required")
+		}
+		skm, err := skill.NewMiddleware(ctx, &skill.Config{Backend: newSkillDocs(sk.Skills)})
+		if err != nil {
+			return nil, false, fmt.Errorf("configure skill middleware: %w", err)
+		}
+		handlers = append(handlers, skm)
+	}
+	if pt := mw.PlanTask; pt != nil && pt.Enabled {
+		// The backend reads the session task board from the turn context
+		// (ServeTurn binds it), so one cached middleware instance serves every
+		// session without sharing state across conversations.
+		ptm, err := plantask.New(ctx, &plantask.Config{Backend: planTaskBackend{}, BaseDir: planTaskBaseDir})
+		if err != nil {
+			return nil, false, fmt.Errorf("configure plantask middleware: %w", err)
+		}
+		handlers = append(handlers, ptm)
+	}
+	if toolSearchOn {
+		// Client-side search only: the model-native variant moves tools to
+		// deferred infos, which the gateway's providers do not expose.
+		ts, err := toolsearch.New(ctx, &toolsearch.Config{DynamicTools: nodeTools})
+		if err != nil {
+			return nil, false, fmt.Errorf("configure toolsearch middleware: %w", err)
+		}
+		handlers = append(handlers, ts)
+		toolsDynamic = true
+	}
+	if md := mw.AgentsMD; md != nil && md.Enabled {
+		files := make([]string, 0, len(md.Docs))
+		for _, doc := range md.Docs {
+			files = append(files, doc.Path)
+		}
+		amd, err := agentsmd.New(ctx, &agentsmd.Config{
+			Backend:             newAgentsMDDocs(md.Docs),
+			AgentsMDFiles:       files,
+			AllAgentsMDMaxBytes: md.MaxTotalBytes,
+		})
+		if err != nil {
+			return nil, false, fmt.Errorf("configure agentsmd middleware: %w", err)
+		}
+		handlers = append(handlers, amd)
+	}
+	return handlers, toolsDynamic, nil
+}
+
+func appendMissing(list []string, name string) []string {
+	if slices.Contains(list, name) {
+		return list
+	}
+	out := make([]string, 0, len(list)+1)
+	out = append(out, list...)
+	return append(out, name)
 }
 
 // buildPlanExecute materializes the plan-execute-replan prebuilt. Roles
@@ -301,16 +413,14 @@ func (h *Host) buildDeep(ctx context.Context, agentID string, spec nodeSpec, inh
 		SubAgents:    children,
 		MaxIteration: spec.topology.MaxIterations,
 	}
-	if len(tools) > 0 {
-		cfg.ToolsConfig = adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}}
-	}
-	sum, err := summarizationHandler(ctx, spec.middlewares, chatModel)
+	handlers, toolsDynamic, err := middlewareHandlers(ctx, spec.middlewares, chatModel, tools)
 	if err != nil {
 		return nil, err
 	}
-	if sum != nil {
-		cfg.Handlers = append(cfg.Handlers, sum)
+	if len(tools) > 0 && !toolsDynamic {
+		cfg.ToolsConfig = adk.ToolsConfig{ToolsNodeConfig: compose.ToolsNodeConfig{Tools: tools}}
 	}
+	cfg.Handlers = append(cfg.Handlers, handlers...)
 	return deep.New(ctx, cfg)
 }
 

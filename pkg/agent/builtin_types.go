@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 )
@@ -116,9 +117,16 @@ type BuiltinSubAgent struct {
 }
 
 // BuiltinMiddlewares toggles the ADK middlewares that are safe as pure
-// configuration; each is off by default.
+// configuration; each is off by default. They apply to the root definition's
+// chat-model nodes (a single node, the supervisor head, the deep head).
 type BuiltinMiddlewares struct {
-	Summarization *BuiltinSummarization `json:"summarization,omitempty"`
+	Summarization  *BuiltinSummarization  `json:"summarization,omitempty"`
+	AgentsMD       *BuiltinAgentsMD       `json:"agentsmd,omitempty"`
+	Reduction      *BuiltinReduction      `json:"reduction,omitempty"`
+	ToolSearch     *BuiltinToolSearch     `json:"toolsearch,omitempty"`
+	PlanTask       *BuiltinPlanTask       `json:"plantask,omitempty"`
+	Skill          *BuiltinSkill          `json:"skill,omitempty"`
+	PatchToolCalls *BuiltinPatchToolCalls `json:"patchtoolcalls,omitempty"`
 }
 
 // BuiltinSummarization enables the ADK context-compaction middleware using
@@ -128,6 +136,101 @@ type BuiltinSummarization struct {
 	// TriggerTokens overrides the token threshold that activates
 	// summarization; 0 uses the ADK default.
 	TriggerTokens int `json:"trigger_tokens,omitempty"`
+}
+
+// BuiltinAgentsMD enables the ADK agentsmd middleware over inline virtual
+// documents: the content is injected transiently at model-call time, so it is
+// excluded from summarization/reduction and never persisted to the session
+// history. Docs are inline by design — a builtin agent has no workspace, and
+// host filesystem paths would let a config-store object read arbitrary
+// gateway-visible files into model context.
+type BuiltinAgentsMD struct {
+	Enabled bool `json:"enabled"`
+	// Docs are the ordered virtual documents. Paths label the injected
+	// sections and anchor @import references between docs; an @import that
+	// resolves to no doc is skipped with a load warning, not an error.
+	Docs []BuiltinAgentsMDDoc `json:"docs,omitempty"`
+	// MaxTotalBytes caps the cumulative injected content; once exceeded,
+	// remaining docs are skipped. 0 means no cap.
+	MaxTotalBytes int `json:"max_total_bytes,omitempty"`
+}
+
+// BuiltinAgentsMDDoc is one inline virtual document.
+type BuiltinAgentsMDDoc struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// BuiltinReduction enables the clear phase of the ADK tool-reduction
+// middleware: when the estimated context exceeds the token threshold, older
+// tool-call arguments and outputs are replaced with placeholders. Clearing is
+// lossy — a builtin agent has no file backend to offload cleared content to,
+// so the truncation/offload phase stays disabled.
+type BuiltinReduction struct {
+	Enabled bool `json:"enabled"`
+	// MaxTokensForClear is the estimated-token threshold (a chars/4
+	// heuristic, not a tokenizer count) that activates clearing; 0 uses the
+	// ADK default.
+	MaxTokensForClear int `json:"max_tokens_for_clear,omitempty"`
+	// ClearRetentionSuffixLimit keeps the most recent N tool-calling
+	// exchanges uncleared; 0 uses the ADK default of 1.
+	ClearRetentionSuffixLimit int `json:"clear_retention_suffix_limit,omitempty"`
+	// ClearExcludeTools lists tool names whose calls are never cleared.
+	ClearExcludeTools []string `json:"clear_exclude_tools,omitempty"`
+}
+
+// BuiltinToolSearch enables the ADK dynamictool/toolsearch middleware: the
+// node's MCP tools are withheld from the model's tool list and exposed
+// through a tool_search meta-tool the model queries to load tools on demand.
+// Useful when the referenced MCP services expose many tools. Client-side
+// search only — the model-native variant needs deferred-tool support the
+// gateway's providers do not expose. The tool list changes between calls as
+// tools are loaded, which can invalidate the upstream prompt cache.
+type BuiltinToolSearch struct {
+	Enabled bool `json:"enabled"`
+}
+
+// BuiltinSkill enables the ADK skill middleware over inline virtual skills:
+// the model gets a skill tool whose description advertises every skill's name
+// and description, and invoking it returns the skill's instructions as the
+// tool result. Inline execution only — the definition exposes no context/
+// agent/model frontmatter, so fork-mode sub-agent execution and per-skill
+// model overrides are structurally impossible. Skills are inline for the same
+// reason agentsmd docs are: a builtin agent has no workspace, and host
+// filesystem paths would let a config-store object read arbitrary
+// gateway-visible files into model context.
+type BuiltinSkill struct {
+	Enabled bool `json:"enabled"`
+	// Skills are the selectable inline skills.
+	Skills []BuiltinSkillDoc `json:"skills,omitempty"`
+}
+
+// BuiltinSkillDoc is one inline skill: the name the model selects, the
+// description advertised in the skill tool, and the markdown instructions
+// returned when the skill is invoked.
+type BuiltinSkillDoc struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Content     string `json:"content"`
+}
+
+// BuiltinPlanTask enables the ADK plantask middleware: the model gets
+// TaskCreate/TaskGet/TaskUpdate/TaskList tools for maintaining a structured
+// task list. The task board is stored in the session (in-memory,
+// session-scoped), so it shares the session's restart-loss and eviction
+// semantics and never leaks between conversations.
+type BuiltinPlanTask struct {
+	Enabled bool `json:"enabled"`
+}
+
+// BuiltinPatchToolCalls enables the ADK patchtoolcalls middleware: before
+// every model call, tool calls in the history that have no corresponding tool
+// result get a placeholder tool message inserted, so a history that ends up
+// structurally incomplete never makes a strict upstream (tool_use/tool_result
+// pairing) reject the request. Purely defensive — the host only commits
+// successful turn transcripts, which are complete today.
+type BuiltinPatchToolCalls struct {
+	Enabled bool `json:"enabled"`
 }
 
 // BuiltinLimits bound a builtin agent's execution; both are fail-closed
@@ -145,6 +248,34 @@ func (b *BuiltinRuntime) normalize() {
 	b.SystemPrompt = strings.TrimSpace(b.SystemPrompt)
 	normalizeToolSelections(b.Tools)
 	b.Topology.normalize()
+	b.Middlewares.normalize()
+}
+
+func (m *BuiltinMiddlewares) normalize() {
+	if m == nil {
+		return
+	}
+	if m.AgentsMD != nil {
+		for i := range m.AgentsMD.Docs {
+			// The agentsmd loader matches @import targets against cleaned
+			// paths, so store the cleaned form; an empty path stays empty for
+			// validation to reject.
+			p := strings.TrimSpace(m.AgentsMD.Docs[i].Path)
+			if p != "" {
+				p = filepath.Clean(p)
+			}
+			m.AgentsMD.Docs[i].Path = p
+		}
+	}
+	if m.Reduction != nil {
+		m.Reduction.ClearExcludeTools = normalizeIDs(m.Reduction.ClearExcludeTools)
+	}
+	if m.Skill != nil {
+		for i := range m.Skill.Skills {
+			m.Skill.Skills[i].Name = strings.TrimSpace(m.Skill.Skills[i].Name)
+			m.Skill.Skills[i].Description = strings.TrimSpace(m.Skill.Skills[i].Description)
+		}
+	}
 }
 
 func (m *BuiltinModel) normalize() {
@@ -221,8 +352,87 @@ func (a Agent) validateBuiltin() error {
 			return fmt.Errorf("runtime.builtin.limits values must be non-negative")
 		}
 	}
-	if b.Middlewares != nil && b.Middlewares.Summarization != nil && b.Middlewares.Summarization.TriggerTokens < 0 {
+	if err := validateBuiltinMiddlewares(b.Middlewares, len(b.Tools) > 0); err != nil {
+		return err
+	}
+	return nil
+}
+
+// maxBuiltinInlineContentBytes bounds one middleware's inline content payload
+// (agentsmd docs, skills) so a definition cannot bloat the config store or
+// the injected context unreasonably.
+const maxBuiltinInlineContentBytes = 1 << 20
+
+// validateBuiltinMiddlewares checks the middleware block. rootHasTools
+// reports whether the root definition declares tool selections — middlewares
+// attach to the root definition's chat-model nodes, which carry exactly those
+// tools, so toolsearch without them has nothing to search.
+func validateBuiltinMiddlewares(mw *BuiltinMiddlewares, rootHasTools bool) error {
+	if mw == nil {
+		return nil
+	}
+	if ts := mw.ToolSearch; ts != nil && ts.Enabled && !rootHasTools {
+		return fmt.Errorf("runtime.builtin.middlewares.toolsearch requires the definition to declare tools")
+	}
+	if mw.Summarization != nil && mw.Summarization.TriggerTokens < 0 {
 		return fmt.Errorf("runtime.builtin.middlewares.summarization.trigger_tokens must be non-negative")
+	}
+	if md := mw.AgentsMD; md != nil {
+		if md.MaxTotalBytes < 0 {
+			return fmt.Errorf("runtime.builtin.middlewares.agentsmd.max_total_bytes must be non-negative")
+		}
+		if md.Enabled && len(md.Docs) == 0 {
+			return fmt.Errorf("runtime.builtin.middlewares.agentsmd requires at least one doc when enabled")
+		}
+		seen := map[string]struct{}{}
+		total := 0
+		for _, doc := range md.Docs {
+			if doc.Path == "" || doc.Path == "." {
+				return fmt.Errorf("runtime.builtin.middlewares.agentsmd docs require a path")
+			}
+			if _, dup := seen[doc.Path]; dup {
+				return fmt.Errorf("runtime.builtin.middlewares.agentsmd doc path %q is duplicated", doc.Path)
+			}
+			seen[doc.Path] = struct{}{}
+			if strings.TrimSpace(doc.Content) == "" {
+				return fmt.Errorf("runtime.builtin.middlewares.agentsmd doc %q requires content", doc.Path)
+			}
+			total += len(doc.Content)
+		}
+		if total > maxBuiltinInlineContentBytes {
+			return fmt.Errorf("runtime.builtin.middlewares.agentsmd docs exceed the total content limit of %d bytes", maxBuiltinInlineContentBytes)
+		}
+	}
+	if rd := mw.Reduction; rd != nil {
+		if rd.MaxTokensForClear < 0 {
+			return fmt.Errorf("runtime.builtin.middlewares.reduction.max_tokens_for_clear must be non-negative")
+		}
+		if rd.ClearRetentionSuffixLimit < 0 {
+			return fmt.Errorf("runtime.builtin.middlewares.reduction.clear_retention_suffix_limit must be non-negative")
+		}
+	}
+	if sk := mw.Skill; sk != nil {
+		if sk.Enabled && len(sk.Skills) == 0 {
+			return fmt.Errorf("runtime.builtin.middlewares.skill requires at least one skill when enabled")
+		}
+		seen := map[string]struct{}{}
+		total := 0
+		for _, doc := range sk.Skills {
+			if strings.TrimSpace(doc.Name) == "" {
+				return fmt.Errorf("runtime.builtin.middlewares.skill skills require a name")
+			}
+			if _, dup := seen[doc.Name]; dup {
+				return fmt.Errorf("runtime.builtin.middlewares.skill name %q is duplicated", doc.Name)
+			}
+			seen[doc.Name] = struct{}{}
+			if strings.TrimSpace(doc.Content) == "" {
+				return fmt.Errorf("runtime.builtin.middlewares.skill %q requires content", doc.Name)
+			}
+			total += len(doc.Content)
+		}
+		if total > maxBuiltinInlineContentBytes {
+			return fmt.Errorf("runtime.builtin.middlewares.skill skills exceed the total content limit of %d bytes", maxBuiltinInlineContentBytes)
+		}
 	}
 	return nil
 }

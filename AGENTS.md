@@ -405,8 +405,14 @@ Important files:
   requires a factory name registered in the linked binary and is root-only —
   a factory receives the whole `BuiltinRuntime` definition, so a nested custom
   node is rejected at validation and again at materialization), inline-only
-  sub-agent definitions, a `summarization` middleware toggle, and fail-closed
-  `limits` (`max_concurrent_turns`, `turn_timeout_seconds`).
+  sub-agent definitions, middleware toggles (`summarization`; `agentsmd` over
+  inline virtual docs — never host filesystem paths; clear-only `reduction`
+  with no truncation/offload phase; `toolsearch` gating the node's MCP tools
+  behind a `tool_search` meta-tool, requiring declared tools; `plantask`
+  task tools over a session-scoped in-memory board; `skill` over inline
+  virtual skills, inline execution only — no fork/model frontmatter;
+  defensive `patchtoolcalls` completing dangling tool exchanges), and
+  fail-closed `limits` (`max_concurrent_turns`, `turn_timeout_seconds`).
 - `manager.go`: agent CRUD plus the in-memory route/service → agent index. It
   enforces P0 one-runtime-one-agent (a `service_id` is bound by at most one
   agent), route-binding uniqueness (any LLM/MCP/ACP/builtin `route_id` is owned
@@ -457,6 +463,26 @@ every builtin agent:
   id, so inner traffic produces `llm_usage_events`/`mcp_usage_events` as usual
 - turn events use the shared vocabulary subset `session`, `delta`, `content`,
   `tool_call`, `usage`, `done`, `error`
+- middlewares attach to the root definition's chat-model nodes (single,
+  supervisor head, deep head) in the fixed order patchtoolcalls → reduction →
+  summarization → skill → plantask → toolsearch → agentsmd: patchtoolcalls
+  completes dangling tool exchanges before anything else reads the history,
+  reduction clears tool-output bloat before summarization counts tokens,
+  toolsearch derives tool visibility after the context managers settle the
+  history, and the agentsmd injection (inline docs served by an in-memory
+  backend, transient per model call, never persisted to the session) stays
+  invisible to all of them; reduction is clear-only because there is no file
+  backend to offload to and no `read_file` tool to hand the model; with
+  toolsearch enabled the node's MCP tools become the middleware's dynamic
+  tools instead of static `ToolsConfig` entries (client-side search only), and
+  reduction auto-excludes `tool_search` results from clearing since
+  loaded-tool visibility is re-derived from them every call; skill and
+  plantask tools stay statically visible under toolsearch — the plantask board
+  is session-scoped in-memory state riding on the session object (evicted with
+  the session, capped at 256 files, 256 KiB per file, and 1 MiB total,
+  stateless backend reading the board from the turn context), and skills are
+  inline virtual documents whose backend never returns fork/model frontmatter,
+  so fork-mode execution is structurally unreachable
 - custom Go agents register through `builtin.RegisterFactory` (mirroring
   provider registration) and are selected with `topology.kind = "custom"`;
   factory packages must be blank-imported in `cmd/agw/main.go`,

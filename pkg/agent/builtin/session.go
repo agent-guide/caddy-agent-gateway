@@ -47,6 +47,9 @@ type session struct {
 	busy       int
 	messages   []*schema.Message
 	lastAccess time.Time
+	// taskBoard is the session's plantask storage, created lazily when the
+	// agent enables the plantask middleware. Evicted with the session.
+	taskBoard *planTaskBoard
 }
 
 // sessionStore keys sessions by agent id then session id. It survives
@@ -151,6 +154,16 @@ func (h *sessionHandle) release() {
 
 func (h *sessionHandle) sessionID() string {
 	return h.sess.id
+}
+
+// board returns the session's plantask storage, creating it on first use.
+func (h *sessionHandle) board() *planTaskBoard {
+	h.store.mu.Lock()
+	defer h.store.mu.Unlock()
+	if h.sess.taskBoard == nil {
+		h.sess.taskBoard = newPlanTaskBoard()
+	}
+	return h.sess.taskBoard
 }
 
 // evictExpiredLocked drops sessions idle past the TTL. Sessions with turns in

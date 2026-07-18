@@ -132,6 +132,109 @@ func TestBuiltinValidationRules(t *testing.T) {
 			wantErr: "duplicated",
 		},
 		{
+			name: "agentsmd enabled requires docs",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{AgentsMD: &BuiltinAgentsMD{Enabled: true}}
+			},
+			wantErr: "requires at least one doc",
+		},
+		{
+			name: "agentsmd docs require a path",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{AgentsMD: &BuiltinAgentsMD{
+					Enabled: true,
+					Docs:    []BuiltinAgentsMDDoc{{Path: "", Content: "rules"}},
+				}}
+			},
+			wantErr: "docs require a path",
+		},
+		{
+			name: "agentsmd doc paths must be unique",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{AgentsMD: &BuiltinAgentsMD{
+					Enabled: true,
+					Docs: []BuiltinAgentsMDDoc{
+						{Path: "AGENTS.md", Content: "one"},
+						{Path: "AGENTS.md", Content: "two"},
+					},
+				}}
+			},
+			wantErr: "duplicated",
+		},
+		{
+			name: "agentsmd docs require content",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{AgentsMD: &BuiltinAgentsMD{
+					Enabled: true,
+					Docs:    []BuiltinAgentsMDDoc{{Path: "AGENTS.md", Content: "  \n"}},
+				}}
+			},
+			wantErr: "requires content",
+		},
+		{
+			name: "agentsmd docs are capped in total size",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{AgentsMD: &BuiltinAgentsMD{
+					Enabled: true,
+					Docs:    []BuiltinAgentsMDDoc{{Path: "AGENTS.md", Content: strings.Repeat("x", maxBuiltinInlineContentBytes+1)}},
+				}}
+			},
+			wantErr: "total content limit",
+		},
+		{
+			name: "reduction thresholds must be non-negative",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{Reduction: &BuiltinReduction{Enabled: true, MaxTokensForClear: -1}}
+			},
+			wantErr: "max_tokens_for_clear must be non-negative",
+		},
+		{
+			name: "skill enabled requires skills",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{Skill: &BuiltinSkill{Enabled: true}}
+			},
+			wantErr: "requires at least one skill",
+		},
+		{
+			name: "skills require a name",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{Skill: &BuiltinSkill{
+					Enabled: true,
+					Skills:  []BuiltinSkillDoc{{Name: "  ", Content: "steps"}},
+				}}
+			},
+			wantErr: "skills require a name",
+		},
+		{
+			name: "skill names must be unique",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{Skill: &BuiltinSkill{
+					Enabled: true,
+					Skills:  []BuiltinSkillDoc{{Name: "pdf", Content: "one"}, {Name: "pdf", Content: "two"}},
+				}}
+			},
+			wantErr: "duplicated",
+		},
+		{
+			name: "skills require content",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{Skill: &BuiltinSkill{
+					Enabled: true,
+					Skills:  []BuiltinSkillDoc{{Name: "pdf", Content: " \n"}},
+				}}
+			},
+			wantErr: "requires content",
+		},
+		{
+			name: "toolsearch requires declared tools",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Tools = nil
+				a.Resources.MCPServiceIDs = nil
+				a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{ToolSearch: &BuiltinToolSearch{Enabled: true}}
+			},
+			wantErr: "toolsearch requires the definition to declare tools",
+		},
+		{
 			name: "acp runtime must not carry a builtin block",
 			mutate: func(a *Agent) {
 				a.Runtime.Type = RuntimeTypeACP
@@ -182,6 +285,32 @@ func TestBuiltinPlanExecuteAndDeepValidate(t *testing.T) {
 	deep.Runtime.Builtin.Topology.SubAgents = []BuiltinSubAgent{{Name: "researcher", Description: "digs into details"}}
 	if err := deep.Validate(); err != nil {
 		t.Fatalf("Validate() deep with sub_agents error = %v, want nil", err)
+	}
+}
+
+func TestBuiltinMiddlewaresValidateAndNormalize(t *testing.T) {
+	a := validBuiltinAgent()
+	a.Runtime.Builtin.Middlewares = &BuiltinMiddlewares{
+		Summarization: &BuiltinSummarization{Enabled: true, TriggerTokens: 4096},
+		AgentsMD: &BuiltinAgentsMD{
+			Enabled: true,
+			Docs: []BuiltinAgentsMDDoc{
+				{Path: " ./AGENTS.md ", Content: "Root rules.\n@style/go.md"},
+				{Path: "style//go.md", Content: "Go style rules."},
+			},
+		},
+		Reduction: &BuiltinReduction{Enabled: true, MaxTokensForClear: 120000, ClearExcludeTools: []string{" read_file ", ""}},
+	}
+	a.Normalize()
+	if err := a.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+	docs := a.Runtime.Builtin.Middlewares.AgentsMD.Docs
+	if docs[0].Path != "AGENTS.md" || docs[1].Path != "style/go.md" {
+		t.Fatalf("doc paths = %q/%q, want cleaned AGENTS.md and style/go.md", docs[0].Path, docs[1].Path)
+	}
+	if got := a.Runtime.Builtin.Middlewares.Reduction.ClearExcludeTools; len(got) != 1 || got[0] != "read_file" {
+		t.Fatalf("clear_exclude_tools = %v, want [read_file]", got)
 	}
 }
 

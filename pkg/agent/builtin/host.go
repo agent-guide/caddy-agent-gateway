@@ -146,6 +146,11 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 		return err
 	}
 	sessionID := handle.sessionID()
+	if mw := a.Runtime.Builtin.Middlewares; mw != nil && mw.PlanTask != nil && mw.PlanTask.Enabled {
+		// The plantask backend is stateless; the session's task board travels
+		// on the turn context so task tools operate session-scoped storage.
+		turnCtx = withTaskBoard(turnCtx, handle.board())
+	}
 
 	select {
 	case entry.turnSem <- struct{}{}:

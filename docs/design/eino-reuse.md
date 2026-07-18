@@ -215,7 +215,18 @@ built on ADK as a third runtime type alongside `acp` and `http`: the generic
 ADK host lives in `pkg/agent/builtin`, turn ingress in
 `pkg/gateway/builtinroute` plus the dispatcher `builtin` enablement, and the
 authoritative design (definition schema, lifecycle, observability, landed
-scope) is `docs/design/agents-control-plane.md` §5.7 and §7 PB.
+scope) is `docs/design/agents-control-plane.md` §5.7 and §7 PB. Middleware
+adoption covers `summarization`, `agentsmd` (over inline virtual documents —
+builtin agents have no workspace to read real files from), `reduction`
+(clear-only; truncation/offload needs a file backend plus a `read_file`
+tool, deferred with the workspace question), `dynamictool/toolsearch`
+(client-side search over the node's MCP tools; the model-native variant
+needs deferred-tool support the gateway's providers do not expose),
+`plantask` (task tools over a session-scoped in-memory board), `skill`
+(inline virtual skills, inline execution only — the schema exposes no
+fork/model frontmatter), and `patchtoolcalls` (defensive completion of
+dangling tool exchanges). Of the ADK middlewares only `filesystem` remains
+unadopted, deferred with the same workspace question as reduction offload.
 
 Nearly all eino development between v0.8.4 and v0.9.12 landed in ADK. For
 gateway-native agents, ADK is the building material and none of it should

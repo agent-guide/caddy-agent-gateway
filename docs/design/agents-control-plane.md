@@ -563,7 +563,21 @@ compile-time capability, runtime configuration.
       "kind": "single",
       "sub_agents": []
     },
-    "middlewares": { "summarization": { "enabled": true } },
+    "middlewares": {
+      "summarization": { "enabled": true },
+      "agentsmd": {
+        "enabled": true,
+        "docs": [ { "path": "AGENTS.md", "content": "# Rules\n..." } ]
+      },
+      "reduction": { "enabled": true, "max_tokens_for_clear": 120000 },
+      "toolsearch": { "enabled": true },
+      "plantask": { "enabled": true },
+      "skill": {
+        "enabled": true,
+        "skills": [ { "name": "pdf-report", "description": "...", "content": "# Steps\n..." } ]
+      },
+      "patchtoolcalls": { "enabled": true }
+    },
     "limits": { "max_concurrent_turns": 4, "turn_timeout_seconds": 600 }
   }
 }
@@ -610,7 +624,67 @@ Schema rules:
   runtimes — exactly what the [5.1](#51-agent) cardinality rules exclude;
   coordinating first-class agents is Workflows (P3), not topology.
 - **`middlewares`** toggles the ADK middlewares that are safe as
-  configuration (`summarization`, `agentsmd`); each is off by default.
+  configuration; each is off by default, and they apply to the root
+  definition's chat-model nodes (a single node, the supervisor head, the
+  deep head). Registration order is fixed — patchtoolcalls, reduction,
+  summarization, skill, plantask, toolsearch, agentsmd — so dangling tool
+  exchanges are completed before anything else reads the history,
+  tool-output bloat is cleared before summarization counts tokens, tool
+  visibility is derived after the context managers settle the history, and
+  the agentsmd injection stays invisible to all of them.
+  - `summarization` compacts the context with the agent's own model once
+    `trigger_tokens` is exceeded.
+  - `agentsmd` injects **inline virtual documents** (`docs`, each
+    `path` + `content`, with `@import` between docs) transiently at
+    model-call time; the injection never enters the session history. Docs
+    are inline by design: a builtin agent has no workspace, and host
+    filesystem paths would let a config-store object read arbitrary
+    gateway-visible files into model context. A host-filesystem variant
+    would need gateway-level allowed-roots gating first.
+  - `reduction` runs **clear-only**: past `max_tokens_for_clear`
+    (a chars/4 estimate), older tool-call outputs become placeholders,
+    keeping the most recent `clear_retention_suffix_limit` exchanges and
+    skipping `clear_exclude_tools`. Clearing is lossy — the
+    truncation/offload phase needs a file backend plus a `read_file` tool
+    the agent does not have, so it stays disabled until a workspace design
+    lands.
+  - `toolsearch` withholds the node's MCP tools from the model's tool list
+    and exposes a `tool_search` meta-tool that loads them on demand — for
+    definitions whose MCP services expose many tools. Requires the
+    definition to declare `tools`. Client-side search only (the
+    model-native variant needs deferred-tool support the gateway's
+    providers do not expose), and the tool list changing between calls can
+    invalidate the upstream prompt cache. When reduction is also enabled,
+    `tool_search` results are auto-excluded from clearing — visibility of
+    loaded tools is re-derived from those results on every call.
+    Summarization compaction can still swallow them; the model then simply
+    searches again.
+  - `skill` gives the model a `skill` tool over **inline virtual skills**
+    (`skills`, each `name` + `description` + `content`): the tool
+    description advertises every skill, and invoking one returns its
+    instructions as the tool result. Inline execution only — the schema
+    exposes no context/agent/model frontmatter, so fork-mode sub-agent
+    execution and per-skill model overrides are structurally unreachable.
+    Skills are inline for the same workspace/security reason as agentsmd
+    docs. A skill result is an ordinary tool output to reduction: clearing
+    may replace it with a placeholder, and the model re-invokes the skill
+    if it needs the instructions again (operators can pin skills with
+    `clear_exclude_tools: ["skill"]`).
+  - `patchtoolcalls` inserts a placeholder tool result for any tool call in
+    the history that has no corresponding response, so a structurally
+    incomplete history never makes a strict upstream (tool_use/tool_result
+    pairing) reject the request. Purely defensive: the host only commits
+    successful turn transcripts, but a model that emits tool calls on a
+    node without tools produces exactly such a transcript.
+  - `plantask` gives the model TaskCreate/TaskGet/TaskUpdate/TaskList tools
+    for maintaining a structured task list. The task board is
+    **session-scoped in-memory storage** riding on the session object — it
+    is evicted with the session, shares the documented restart-loss
+    semantics, never leaks between conversations, and is capped (256 files,
+    256 KiB per file, 1 MiB total)
+    so a runaway model cannot grow it without bound. The task tools stay
+    statically visible even under toolsearch, which only gates the node's
+    MCP tools.
 
 #### 5.7.3 Escape hatch: compiled-in custom agents
 
@@ -985,9 +1059,11 @@ lands with the P2 task layer.
 Scope notes of the landed slice: every topology kind materializes —
 `single`, `sequential`, `parallel`, `loop`, `supervisor`, `planexecute`
 (role models via `topology.plan_execute`, per [5.7.2](#572-definition-schema)),
-`deep`, and `custom`. Middleware toggles cover
-`summarization` (using the agent's own model); `agentsmd` is deferred — it
-needs a file backend that builtin agents do not have. Sessions are in-memory
+`deep`, and `custom`. Middleware toggles cover `summarization` (using the
+agent's own model), `agentsmd` (over inline virtual documents served by an
+in-memory backend — the file-backend gap that originally deferred it), and
+`reduction` (clear-only; truncation/offload waits for a workspace design,
+per [5.7.2](#572-definition-schema)). Sessions are in-memory
 per the PB1 restart-loss semantics. The dispatcher `builtin` enablement exists
 in the Caddy binary (`agw`); `agwd` does not expose builtin ingress, matching
 its ACP posture.
