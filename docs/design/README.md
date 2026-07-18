@@ -13,5 +13,6 @@ Current design pages:
 - [mcp-tool-policy.md](mcp-tool-policy.md)
 - [memory.md](memory.md)
 - [observability.md](observability.md)
+- [external-agent-observability-correlation.md](external-agent-observability-correlation.md)
 - [protocol-support-roadmap.md](protocol-support-roadmap.md)
 - [eino-reuse.md](eino-reuse.md)
