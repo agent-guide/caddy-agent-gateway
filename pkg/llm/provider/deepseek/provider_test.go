@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
+	einodeepseek "github.com/cloudwego/eino-ext/components/model/deepseek"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
@@ -246,8 +246,9 @@ func TestGenerateMapsDeveloperMessagesToSystem(t *testing.T) {
 }
 
 func TestApplyOptions(t *testing.T) {
-	cfg := &einoopenai.ChatModelConfig{}
-	extraFields := applyOptions(cfg, map[string]any{
+	cfg := &einodeepseek.ChatModelConfig{}
+	applyOptions(cfg, map[string]any{
+		"path":                 "/custom/chat",
 		"response_format_type": "json_object",
 		"max_tokens":           "256",
 		"temperature":          "0.3",
@@ -258,17 +259,20 @@ func TestApplyOptions(t *testing.T) {
 		"top_log_probs":        float64(2),
 	})
 
-	if cfg.ResponseFormat == nil || cfg.ResponseFormat.Type != einoopenai.ChatCompletionResponseFormatTypeJSONObject {
-		t.Fatalf("ResponseFormat = %#v, want json_object", cfg.ResponseFormat)
+	if cfg.Path != "/custom/chat" {
+		t.Fatalf("Path = %q, want /custom/chat", cfg.Path)
 	}
-	if cfg.MaxTokens == nil || *cfg.MaxTokens != 256 || cfg.Temperature == nil || *cfg.Temperature != 0.3 || cfg.TopP == nil || *cfg.TopP != 0.9 {
+	if cfg.ResponseFormatType != einodeepseek.ResponseFormatTypeJSONObject {
+		t.Fatalf("ResponseFormatType = %#v, want json_object", cfg.ResponseFormatType)
+	}
+	if cfg.MaxTokens != 256 || cfg.Temperature != 0.3 || cfg.TopP != 0.9 {
 		t.Fatalf("common options not applied: %+v", cfg)
 	}
-	if cfg.PresencePenalty == nil || *cfg.PresencePenalty != 0.1 || cfg.FrequencyPenalty == nil || *cfg.FrequencyPenalty != -0.2 {
+	if cfg.PresencePenalty != 0.1 || cfg.FrequencyPenalty != -0.2 {
 		t.Fatalf("penalties not applied: %+v", cfg)
 	}
-	if extraFields["logprobs"] != true || extraFields["top_logprobs"] != 2 {
-		t.Fatalf("logprobs not applied: %+v", extraFields)
+	if !cfg.LogProbs || cfg.TopLogProbs != 2 {
+		t.Fatalf("logprobs not applied: %+v", cfg)
 	}
 }
 

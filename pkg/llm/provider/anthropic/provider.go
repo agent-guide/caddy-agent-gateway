@@ -1,15 +1,24 @@
 // Package anthropic implements the Anthropic provider (Claude models).
+//
+// Chat and streaming delegate to the eino-ext claude component (backed by the
+// official anthropic-sdk-go). The provider keeps only gateway-specific logic:
+// per-request credential resolution, thinking-budget normalization, request
+// metadata, and model discovery.
 package anthropic
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	einoclaude "github.com/cloudwego/eino-ext/components/model/claude"
+	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/eino-contrib/jsonschema"
 
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	"github.com/agent-guide/agent-gateway/pkg/httpclient"
@@ -45,58 +54,53 @@ func New(config provider.ProviderConfig) (provider.Provider, error) {
 
 func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
 	return provider.RetryProviderCall(p.ProviderConfig.Network, func() (*provider.ChatResponse, error) {
-		state, err := provider.ResolveChatRequest(ctx, p.ProviderConfig, req)
+		chatModel, messages, opts, err := p.newChatModel(ctx, req)
 		if err != nil {
 			return nil, err
 		}
-
-		httpReq, err := p.newMessagesRequest(ctx, state, false)
+		msg, err := chatModel.Generate(ctx, messages, opts...)
 		if err != nil {
-			return nil, err
+			return nil, wrapProviderError(err, "anthropic: request failed")
 		}
-
-		resp, err := p.client.Do(httpReq)
-		if err != nil {
-			return nil, statuserr.Wrap(fmt.Errorf("anthropic: request failed: %w", err), http.StatusBadGateway)
-		}
-		defer resp.Body.Close()
-
-		if err := provider.CheckResponse(resp); err != nil {
-			return nil, statuserr.Wrap(err, http.StatusBadGateway)
-		}
-
-		var payload anthropicbase.MessagesResponse
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-			return nil, statuserr.Wrap(fmt.Errorf("anthropic: decode response: %w", err), http.StatusBadGateway)
-		}
-		return payload.ToChatResponse(), nil
+		return provider.ChatResponseFromEinoMessage(msg), nil
 	})
 }
 
 func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*schema.StreamReader[*schema.Message], error) {
-	state, err := provider.ResolveChatRequest(ctx, p.ProviderConfig, req)
+	chatModel, messages, opts, err := p.newChatModel(ctx, req)
 	if err != nil {
 		return nil, err
 	}
-
-	httpReq, err := p.newMessagesRequest(ctx, state, true)
+	stream, err := chatModel.Stream(ctx, messages, opts...)
 	if err != nil {
-		return nil, err
+		return nil, wrapProviderError(err, "anthropic: stream request failed")
 	}
-	httpReq.Header.Set("Accept", "text/event-stream")
+	return stream, nil
+}
 
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return nil, statuserr.Wrap(fmt.Errorf("anthropic: stream request failed: %w", err), http.StatusBadGateway)
+// wrapProviderError converts Anthropic SDK API errors into
+// provider.UpstreamError so the upstream HTTP status passes through to
+// clients and 4xx errors are not retried; other errors become 502.
+func wrapProviderError(err error, context string) error {
+	var apiErr *anthropic.Error
+	if errors.As(err, &apiErr) {
+		return &provider.UpstreamError{
+			Status:     apiErr.StatusCode,
+			StatusText: http.StatusText(apiErr.StatusCode),
+			Body:       upstreamErrorBody(apiErr),
+		}
 	}
-	if err := provider.CheckResponse(resp); err != nil {
-		resp.Body.Close()
-		return nil, statuserr.Wrap(err, http.StatusBadGateway)
-	}
+	return statuserr.Wrap(fmt.Errorf("%s: %w", context, err), http.StatusBadGateway)
+}
 
-	sr, sw := schema.Pipe[*schema.Message](16)
-	go anthropicbase.ReadMessageStream(resp.Body, sw, "anthropic")
-	return sr, nil
+// upstreamErrorBody extracts the raw upstream JSON body from the SDK error
+// message ("<method> <url>: <status> <text> <raw-json>").
+func upstreamErrorBody(apiErr *anthropic.Error) string {
+	msg := apiErr.Error()
+	if i := strings.Index(msg, "{"); i >= 0 {
+		return msg[i:]
+	}
+	return msg
 }
 
 func (p *Provider) CreateResponses(ctx context.Context, req *provider.ResponsesRequest) (*provider.ResponsesResponse, error) {
@@ -105,6 +109,122 @@ func (p *Provider) CreateResponses(ctx context.Context, req *provider.ResponsesR
 
 func (p *Provider) StreamResponses(ctx context.Context, req *provider.ResponsesRequest) (*schema.StreamReader[*provider.ResponsesStreamEvent], error) {
 	return provider.StreamResponsesViaChat(ctx, p, req)
+}
+
+// newChatModel builds a per-request eino-ext claude chat model. The model is
+// rebuilt per call because the API key can be overridden per request through
+// credential scheduling.
+func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) (einomodel.ToolCallingChatModel, []*schema.Message, []einomodel.Option, error) {
+	state, err := provider.ResolveChatRequest(ctx, p.ProviderConfig, req)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	thinking := requestThinking(state)
+	extendedThinking := thinking != nil && thinking.Type == "enabled"
+
+	maxTokens := defaultMaxTokens
+	if state.CommonOptions != nil && state.CommonOptions.MaxTokens != nil && *state.CommonOptions.MaxTokens > 0 {
+		maxTokens = *state.CommonOptions.MaxTokens
+	}
+	if extendedThinking {
+		maxTokens, thinking.BudgetTokens = anthropicbase.ClampThinkingBudget(maxTokens, thinking.BudgetTokens)
+	}
+
+	baseURL := p.ProviderConfig.BaseURL
+	cfg := &einoclaude.Config{
+		BaseURL:                &baseURL,
+		APIKey:                 provider.APIKeyFromContextOrConfig(ctx, p.ProviderConfig.APIKey),
+		Model:                  state.ModelName,
+		MaxTokens:              maxTokens,
+		HTTPClient:             p.client,
+		AdditionalHeaderFields: p.ProviderConfig.Network.ExtraHeaders,
+	}
+
+	// Extended thinking rejects temperature/top_p/top_k modifications, so
+	// sampling options are dropped when thinking is enabled.
+	if state.CommonOptions != nil {
+		if !extendedThinking {
+			cfg.Temperature = state.CommonOptions.Temperature
+			cfg.TopP = state.CommonOptions.TopP
+		}
+		cfg.StopSequences = state.CommonOptions.Stop
+	}
+	if !extendedThinking {
+		if chatOpts := provider.GetChatOptions(state.Options...); chatOpts != nil && chatOpts.TopK > 0 {
+			topK := int32(chatOpts.TopK)
+			cfg.TopK = &topK
+		}
+	}
+
+	if thinking != nil {
+		cfg.ThinkingConfig = thinkingConfigParam(thinking)
+	}
+
+	disableParallel := disableParallelToolUse(state)
+	if disableParallel {
+		disable := true
+		cfg.DisableParallelToolUse = &disable
+	}
+
+	if format := anthropicbase.OutputFormatFromState(state); format != nil {
+		js := &jsonschema.Schema{}
+		if err := json.Unmarshal(format.Schema, js); err != nil {
+			return nil, nil, nil, fmt.Errorf("anthropic: parse response format schema: %w", err)
+		}
+		cfg.ResponseFormat = &einoclaude.ResponseFormat{Schema: js}
+	}
+
+	extraRequestFields := map[string]any{}
+	if userID := requestUserID(state); userID != "" {
+		// The claude component has no request metadata support; inject it
+		// through the SDK's JSON request patch (sjson path semantics).
+		extraRequestFields["metadata"] = map[string]any{"user_id": userID}
+	}
+
+	var opts []einomodel.Option
+	var tools []*schema.ToolInfo
+	var toolChoice *schema.ToolChoice
+	var allowedToolNames []string
+	if state.CommonOptions != nil {
+		tools = state.CommonOptions.Tools
+		toolChoice = state.CommonOptions.ToolChoice
+		allowedToolNames = state.CommonOptions.AllowedToolNames
+	}
+	if len(tools) > 0 {
+		opts = append(opts, einomodel.WithTools(tools))
+	}
+	// Anthropic carries disable_parallel_tool_use inside tool_choice, so an
+	// explicit auto choice is required for the flag to reach the wire.
+	if toolChoice == nil && disableParallel && len(tools) > 0 {
+		allowed := schema.ToolChoiceAllowed
+		toolChoice = &allowed
+	}
+	if toolChoice != nil {
+		opts = append(opts, einomodel.WithToolChoice(*toolChoice, allowedToolNames...))
+		// The claude component drops disable_parallel_tool_use on the
+		// forced-named-tool choice shape; restore it via a JSON request patch.
+		if disableParallel && *toolChoice == schema.ToolChoiceForced {
+			extraRequestFields["tool_choice.disable_parallel_tool_use"] = true
+		}
+	}
+	if len(extraRequestFields) > 0 {
+		cfg.AdditionalRequestFields = extraRequestFields
+	}
+
+	chatModel, err := einoclaude.NewChatModel(ctx, cfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("anthropic: build chat model: %w", err)
+	}
+	return chatModel, state.Messages, opts, nil
+}
+
+func thinkingConfigParam(tc *anthropicbase.ThinkingConfig) *anthropic.ThinkingConfigParamUnion {
+	if tc.Type == "disabled" {
+		return &anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
+	}
+	union := anthropic.ThinkingConfigParamOfEnabled(int64(tc.BudgetTokens))
+	return &union
 }
 
 // ListModels fetches available Claude models from GET /v1/models.
@@ -157,48 +277,6 @@ func (p *Provider) Config() provider.ProviderConfig {
 	return p.ProviderConfig
 }
 
-func (p *Provider) newMessagesRequest(ctx context.Context, state *provider.ChatRequestState, stream bool) (*http.Request, error) {
-	body, err := p.buildRequestPayload(state, stream)
-	if err != nil {
-		return nil, err
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		strings.TrimRight(p.ProviderConfig.BaseURL, "/")+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: build request: %w", err)
-	}
-	p.setHeaders(httpReq)
-	return httpReq, nil
-}
-
-func (p *Provider) buildRequestPayload(state *provider.ChatRequestState, stream bool) ([]byte, error) {
-	msgReq := buildMessagesRequest(state, stream)
-	body, err := json.Marshal(msgReq)
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
-	}
-	return body, nil
-}
-
-func buildMessagesRequest(state *provider.ChatRequestState, stream bool) *anthropicbase.MessagesRequest {
-	return anthropicbase.BuildMessagesRequest(state, anthropicbase.BuildMessagesOptions{
-		DefaultMaxTokens:       defaultMaxTokens,
-		Stream:                 stream,
-		Metadata:               requestMetadata(state),
-		Thinking:               requestThinking(state),
-		OutputConfig:           requestOutputConfig(state),
-		DisableParallelToolUse: disableParallelToolUse(state),
-	})
-}
-
-func requestOutputConfig(state *provider.ChatRequestState) *anthropicbase.OutputConfig {
-	if format := anthropicbase.OutputFormatFromState(state); format != nil {
-		return &anthropicbase.OutputConfig{Format: format}
-	}
-	return nil
-}
-
 func (p *Provider) setHeaders(req *http.Request) {
 	req.Header.Set("Content-Type", "application/json")
 	if apiKey := provider.APIKeyFromContextOrConfig(req.Context(), p.ProviderConfig.APIKey); apiKey != "" {
@@ -208,14 +286,6 @@ func (p *Provider) setHeaders(req *http.Request) {
 	for k, v := range p.ProviderConfig.Network.ExtraHeaders {
 		req.Header.Set(k, v)
 	}
-}
-
-func requestMetadata(state *provider.ChatRequestState) *anthropicbase.RequestMetadata {
-	userID := requestUserID(state)
-	if userID == "" {
-		return nil
-	}
-	return &anthropicbase.RequestMetadata{UserID: userID}
 }
 
 func requestUserID(state *provider.ChatRequestState) string {

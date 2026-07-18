@@ -88,24 +88,33 @@ func BuildMessagesRequest(state *provider.ChatRequestState, opts BuildMessagesOp
 	return req
 }
 
-// normalizeThinkingBudget enforces Anthropic's extended-thinking constraints:
-// budget_tokens must be at least 1024 and strictly less than max_tokens. It
-// prefers to honor an explicit max_tokens by shrinking the thinking budget, and
-// only grows max_tokens when the cap is too small to host even minimal thinking.
+// normalizeThinkingBudget applies ClampThinkingBudget to an in-flight request.
 func normalizeThinkingBudget(req *MessagesRequest) {
 	th := req.Thinking
 	if th == nil || th.Type != "enabled" || th.BudgetTokens <= 0 {
 		return
 	}
-	budget := max(th.BudgetTokens, minThinkingBudgetTokens)
-	if req.MaxTokens < budget+minThinkingAnswerTokens {
-		if room := req.MaxTokens - minThinkingAnswerTokens; room >= minThinkingBudgetTokens {
+	req.MaxTokens, th.BudgetTokens = ClampThinkingBudget(req.MaxTokens, th.BudgetTokens)
+}
+
+// ClampThinkingBudget enforces Anthropic's extended-thinking constraints on a
+// (max_tokens, budget_tokens) pair: budget_tokens must be at least 1024 and
+// strictly less than max_tokens. It prefers to honor an explicit max_tokens by
+// shrinking the thinking budget, and only grows max_tokens when the cap is too
+// small to host even minimal thinking.
+func ClampThinkingBudget(maxTokens, budgetTokens int) (int, int) {
+	if budgetTokens <= 0 {
+		return maxTokens, budgetTokens
+	}
+	budget := max(budgetTokens, minThinkingBudgetTokens)
+	if maxTokens < budget+minThinkingAnswerTokens {
+		if room := maxTokens - minThinkingAnswerTokens; room >= minThinkingBudgetTokens {
 			budget = room
 		} else {
-			req.MaxTokens = budget + minThinkingAnswerTokens
+			maxTokens = budget + minThinkingAnswerTokens
 		}
 	}
-	th.BudgetTokens = budget
+	return maxTokens, budget
 }
 
 // OutputFormatFromState derives an Anthropic structured-output format from the

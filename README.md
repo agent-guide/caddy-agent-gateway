@@ -146,6 +146,8 @@ The `AGW_ADMIN_ADDR` environment variable sets the admin API address (default: `
 
 Provider `options.compact` selects compatibility request shaping. In Caddyfile provider blocks, configure it as `option compact <cc|codex|none>`. In bundle YAML, configure it as `options.compact`. Providers ignore modes they do not implement.
 
+Built-in `provider_type` values: `openai`, `anthropic`, `claudecode`, `codex`, `gemini`, `ollama`, `openrouter`, `deepseek`, `zhipu`, `qwen`. The `qwen` provider targets DashScope's OpenAI-compatible mode and supports an optional `options.enable_thinking` (bool) to control Qwen thinking mode; per-request reasoning fields override it.
+
 ## MCP Quick Start
 
 The MCP gateway uses the same minimal Caddyfile as the Quick Start. Enable `mcp` in the dispatcher, then apply an MCP bundle.

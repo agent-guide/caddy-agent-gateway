@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
+	einodeepseek "github.com/cloudwego/eino-ext/components/model/deepseek"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
@@ -24,7 +24,7 @@ type Provider struct {
 	*openaibase.Base
 }
 
-// New creates a new DeepSeek provider using DeepSeek's OpenAI-compatible API.
+// New creates a new DeepSeek provider using the eino-ext DeepSeek component.
 func New(config provider.ProviderConfig) (provider.Provider, error) {
 	if config.BaseURL == "" {
 		config.BaseURL = "https://api.deepseek.com"
@@ -80,30 +80,25 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 		return nil, nil, nil, err
 	}
 
-	cfg := &einoopenai.ChatModelConfig{
+	cfg := &einodeepseek.ChatModelConfig{
 		BaseURL:    p.ProviderConfig.BaseURL,
 		Model:      state.ModelName,
 		Timeout:    p.ProviderConfig.Network.RequestTimeout(),
 		HTTPClient: httpclient.BuildHTTPClient(p.ProviderConfig.Network),
 	}
 	cfg.APIKey = provider.APIKeyFromContextOrConfig(ctx, p.ProviderConfig.APIKey)
-	configExtra := applyOptions(cfg, p.ProviderConfig.Options)
+	applyOptions(cfg, p.ProviderConfig.Options)
 	requestExtra := provider.ChatCompletionsExtraFieldsFromOptions(provider.ReasoningEffortField, state.Options...)
 	if p.CCCompat {
 		provider.StripCCUnsupportedChatFields(requestExtra)
 	}
-	if _, ok := requestExtra["response_format"]; ok {
-		// A per-request response_format wins over the provider-config default
-		// so the request body carries a single response_format value.
-		cfg.ResponseFormat = nil
-	}
 
-	chatModel, err := einoopenai.NewChatModel(ctx, cfg)
+	chatModel, err := einodeepseek.NewChatModel(ctx, cfg)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	opts := append([]einomodel.Option(nil), state.Options...)
-	extraFields := provider.MergeExtraFields(configExtra, requestExtra)
+	extraFields := requestExtra
 	if thinkingType := p.thinkingType(); thinkingType != "" {
 		extraFields = provider.MergeExtraFields(extraFields, map[string]any{
 			"thinking": map[string]any{
@@ -112,7 +107,7 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 		})
 	}
 	if len(extraFields) > 0 {
-		opts = append(opts, einoopenai.WithExtraFields(extraFields))
+		opts = append(opts, einodeepseek.WithExtraFields(extraFields))
 	}
 	return chatModel, normalizeMessagesForDeepSeek(state.Messages), opts, nil
 }
@@ -184,51 +179,47 @@ func (p *Provider) ensureBase() {
 	}
 }
 
-func applyOptions(cfg *einoopenai.ChatModelConfig, opts map[string]any) map[string]any {
+func applyOptions(cfg *einodeepseek.ChatModelConfig, opts map[string]any) {
 	if len(opts) == 0 {
-		return nil
+		return
+	}
+	if v := stringOption(opts, "path"); v != "" {
+		cfg.Path = v
 	}
 	if v := stringOption(opts, "response_format_type"); v != "" {
-		cfg.ResponseFormat = openAIResponseFormat(v)
+		cfg.ResponseFormatType = deepSeekResponseFormat(v)
 	}
 	if v, ok := intOption(opts, "max_tokens"); ok {
-		cfg.MaxTokens = &v
+		cfg.MaxTokens = v
 	}
 	if v, ok := float32Option(opts, "temperature"); ok {
-		cfg.Temperature = &v
+		cfg.Temperature = v
 	}
 	if v, ok := float32Option(opts, "top_p"); ok {
-		cfg.TopP = &v
+		cfg.TopP = v
 	}
 	if v, ok := float32Option(opts, "presence_penalty"); ok {
-		cfg.PresencePenalty = &v
+		cfg.PresencePenalty = v
 	}
 	if v, ok := float32Option(opts, "frequency_penalty"); ok {
-		cfg.FrequencyPenalty = &v
+		cfg.FrequencyPenalty = v
 	}
-	extraFields := map[string]any{}
 	if v, ok := boolOption(opts, "log_probs"); ok {
-		extraFields["logprobs"] = v
+		cfg.LogProbs = v
 	}
 	if v, ok := intOption(opts, "top_log_probs"); ok {
-		extraFields["top_logprobs"] = v
+		cfg.TopLogProbs = v
 	}
-	if len(extraFields) == 0 {
-		return nil
-	}
-	return extraFields
 }
 
-func openAIResponseFormat(formatType string) *einoopenai.ChatCompletionResponseFormat {
+func deepSeekResponseFormat(formatType string) einodeepseek.ResponseFormatType {
 	switch strings.TrimSpace(formatType) {
-	case string(einoopenai.ChatCompletionResponseFormatTypeText):
-		return &einoopenai.ChatCompletionResponseFormat{Type: einoopenai.ChatCompletionResponseFormatTypeText}
-	case string(einoopenai.ChatCompletionResponseFormatTypeJSONObject):
-		return &einoopenai.ChatCompletionResponseFormat{Type: einoopenai.ChatCompletionResponseFormatTypeJSONObject}
-	case string(einoopenai.ChatCompletionResponseFormatTypeJSONSchema):
-		return &einoopenai.ChatCompletionResponseFormat{Type: einoopenai.ChatCompletionResponseFormatTypeJSONSchema}
+	case string(einodeepseek.ResponseFormatTypeText):
+		return einodeepseek.ResponseFormatTypeText
+	case string(einodeepseek.ResponseFormatTypeJSONObject):
+		return einodeepseek.ResponseFormatTypeJSONObject
 	default:
-		return nil
+		return ""
 	}
 }
 

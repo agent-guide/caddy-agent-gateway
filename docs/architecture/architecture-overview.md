@@ -168,9 +168,14 @@ Built-in providers:
 
 - `openai`
 - `anthropic`
+- `claudecode`
+- `codex`
 - `gemini`
 - `ollama`
 - `openrouter`
+- `deepseek`
+- `zhipu`
+- `qwen`
 
 The provider layer uses shared helpers for HTTP client construction, auth/header injection, and OpenAI-compatible behavior. The design keeps provider implementations narrow while still allowing provider-specific behavior.
 

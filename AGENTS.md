@@ -291,20 +291,23 @@ They do not register as managed credentials and do not participate in credential
 Built-in provider runtime packages:
 
 - `openai`
-- `anthropic`
+- `anthropic`: delegates chat/streaming to the eino-ext `claude` component (official anthropic-sdk-go); the provider keeps thinking-budget normalization, request metadata, and ListModels. `anthropicbase` remains the hand-rolled Messages wire layer used by `claudecode`.
 - `claudecode`
 - `codex`
 - `gemini`
 - `ollama`
 - `openrouter`
-- `deepseek`
+- `deepseek`: delegates chat/streaming to the eino-ext `deepseek` component
+  (`deepseek-go` underneath); the provider retains request compatibility,
+  thinking-mode defaults, and Responses-via-chat adaptation
 - `zhipu`
+- `qwen`: DashScope OpenAI-compatible mode via the eino-ext `qwen` component; optional `enable_thinking` provider option, per-request reasoning fields override it
 
 Provider registration rules:
 
 - implement the `provider.Provider` interface
 - register the factory with `provider.RegisterProviderFactory(...)`
-- add a blank import for the runtime provider package in `cmd/agw/main.go` and `cmd/agwd/main.go` so the provider is linked into the binaries
+- add a blank import for the runtime provider package in `cmd/agw/main.go`, `cmd/agwd/main.go`, and `cmd/agwctl/cmd_gateway.go`; agwctl needs it because `gateway validate`/`apply` check `provider_type` against the locally linked provider registry
 
 ### `pkg/cliauth/`
 

@@ -28,6 +28,7 @@ import (
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/ollama"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/openai"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/openrouter"
+	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/qwen"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/zhipu"
 )
 

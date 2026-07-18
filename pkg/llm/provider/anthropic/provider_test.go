@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	"github.com/agent-guide/agent-gateway/pkg/httpclient"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
@@ -380,15 +382,50 @@ func TestChatMapsResponseFormatToOutputConfig(t *testing.T) {
 	}
 }
 
+func TestChatPassesThroughUpstream4xxWithoutRetry(t *testing.T) {
+	var requests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"bad input"}}`))
+	}))
+	defer server.Close()
+	prov := newCaptureProvider(t, server.URL)
+
+	_, err := prov.Chat(context.Background(), &provider.ChatRequest{
+		Model:    "claude-sonnet-4-20250514",
+		Messages: []*schema.Message{schema.UserMessage("hello")},
+	})
+	if err == nil {
+		t.Fatal("Chat() error = nil, want upstream error")
+	}
+	if status := statuserr.StatusCode(err, 0); status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 passed through", status)
+	}
+	if !strings.Contains(err.Error(), "bad input") {
+		t.Fatalf("error = %q, want upstream body included", err)
+	}
+	if requests != 1 {
+		t.Fatalf("upstream requests = %d, want 1 (4xx must not be retried)", requests)
+	}
+}
+
 func TestStreamChatCapturesInputTokens(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("event: message_start\n"))
-		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"usage":{"input_tokens":42,"output_tokens":1}}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","usage":{"input_tokens":42,"output_tokens":1}}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_start\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}` + "\n\n"))
 		_, _ = w.Write([]byte("event: content_block_delta\n"))
-		_, _ = w.Write([]byte(`data: {"delta":{"type":"text_delta","text":"hi"}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: content_block_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"content_block_stop","index":0}` + "\n\n"))
 		_, _ = w.Write([]byte("event: message_delta\n"))
-		_, _ = w.Write([]byte(`data: {"usage":{"output_tokens":7},"delta":{"stop_reason":"end_turn"}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":7}}` + "\n\n"))
+		_, _ = w.Write([]byte("event: message_stop\n"))
+		_, _ = w.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
 	}))
 	defer server.Close()
 	prov := newCaptureProvider(t, server.URL)
