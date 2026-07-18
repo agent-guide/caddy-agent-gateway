@@ -24,21 +24,45 @@ var ErrInvalidRequest = errors.New("invalid builtin turn request")
 // reached. Fail-closed: the turn is rejected, never queued.
 var ErrTurnLimitExceeded = errors.New("builtin agent concurrent turn limit exceeded")
 
+// ErrPermissionCapacity is returned when permissions.max_pending is reached:
+// the interrupting turn fails instead of storing another checkpoint
+// (fail-closed, §5.7.7).
+var ErrPermissionCapacity = errors.New("builtin agent pending permission capacity exceeded")
+
 // ErrAgentNotFound is returned when the agent id does not resolve.
 var ErrAgentNotFound = errors.New("builtin agent not found")
 
 // TurnRequest is the data-plane turn input. Sessions are in-memory
 // conversation histories keyed by session_id; state does not survive a
 // gateway restart (documented PB1 semantics — durable checkpoints wait for
-// eino v0.10).
+// eino v0.10). Exactly one of Input and Permission must be set: Input starts
+// a turn, Permission resumes one suspended on a tool-permission interrupt
+// (§5.7.7) and streams the continuation on this request's SSE response.
 type TurnRequest struct {
-	SessionID string `json:"session_id,omitempty"`
-	Input     string `json:"input"`
+	SessionID  string          `json:"session_id,omitempty"`
+	Input      string          `json:"input,omitempty"`
+	Permission *TurnPermission `json:"permission,omitempty"`
+}
+
+// TurnPermission answers a pending tool-permission request. Outcome is empty
+// to deliver per-call decisions, or "cancel" to discard the suspended turn.
+// A pending call absent from Decisions is denied (fail-closed).
+type TurnPermission struct {
+	RequestID string                   `json:"request_id"`
+	Outcome   string                   `json:"outcome,omitempty"`
+	Decisions []TurnPermissionDecision `json:"decisions,omitempty"`
+}
+
+// TurnPermissionDecision resolves one gated tool call: outcome "allow" or
+// "deny".
+type TurnPermissionDecision struct {
+	CallID  string `json:"call_id"`
+	Outcome string `json:"outcome"`
 }
 
 // TurnEvent is one SSE event of a builtin turn. The vocabulary is a marked
 // subset of the ACP turn vocabulary: session, delta, content, tool_call,
-// usage, done, error.
+// usage, permission, done, error.
 type TurnEvent struct {
 	Event      string          `json:"-"`
 	SessionID  string          `json:"session_id,omitempty"`
@@ -50,13 +74,20 @@ type TurnEvent struct {
 
 // Turn event names.
 const (
-	EventSession  = "session"
-	EventDelta    = "delta"
-	EventContent  = "content"
-	EventToolCall = "tool_call"
-	EventUsage    = "usage"
-	EventDone     = "done"
-	EventError    = "error"
+	EventSession    = "session"
+	EventDelta      = "delta"
+	EventContent    = "content"
+	EventToolCall   = "tool_call"
+	EventUsage      = "usage"
+	EventPermission = "permission"
+	EventDone       = "done"
+	EventError      = "error"
+)
+
+// Done stop reasons beyond "end_turn".
+const (
+	StopReasonPermissionRequired = "permission_required"
+	StopReasonCancelled          = "cancelled"
 )
 
 // EventSink receives turn events in emission order.

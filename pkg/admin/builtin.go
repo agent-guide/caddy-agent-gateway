@@ -31,6 +31,18 @@ func (v *BuiltinRouteView) UnmarshalJSON(data []byte) error {
 	return unmarshalRouteViewExtras(data, &v.Source, &v.ReadOnly)
 }
 
+// handleGetBuiltinRuntime reports the ADK host runtime view: per-agent
+// materialization state plus pending interactive tool permissions (§5.7.7).
+// The pending list is read-only here; decisions flow through the data-plane
+// resume on POST /<builtin-route>/turn.
+func (h *Handler) handleGetBuiltinRuntime(w http.ResponseWriter, _ *http.Request) {
+	if h.builtinHost == nil {
+		_ = httpjson.Error(w, http.StatusServiceUnavailable, "builtin host is not configured")
+		return
+	}
+	_ = httpjson.Write(w, http.StatusOK, h.builtinHost.Runtime())
+}
+
 func (h *Handler) handleListBuiltinRoutes(w http.ResponseWriter, r *http.Request) {
 	resolver, err := h.builtinRouteResolver()
 	if err != nil {

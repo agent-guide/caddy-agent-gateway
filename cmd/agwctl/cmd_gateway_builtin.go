@@ -42,10 +42,25 @@ var gatewayBuiltinRouteGetCmd = &cobra.Command{
 	},
 }
 
+// ── gateway builtin runtime ──────────────────────────────────────────────────
+
+var gatewayBuiltinRuntimeCmd = &cobra.Command{
+	Use:   "builtin-runtime",
+	Short: "Inspect the builtin ADK host runtime (materializations, pending permissions)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		view, err := newGatewayClient().GetBuiltinRuntime(context.Background())
+		if err != nil {
+			return err
+		}
+		return printJSON(view)
+	},
+}
+
 func init() {
 	gatewayBuiltinRouteCmd.AddCommand(
 		gatewayBuiltinRouteListCmd,
 		gatewayBuiltinRouteGetCmd,
 	)
 	gatewayCmd.AddCommand(gatewayBuiltinRouteCmd)
+	gatewayCmd.AddCommand(gatewayBuiltinRuntimeCmd)
 }

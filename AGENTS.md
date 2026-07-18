@@ -411,8 +411,12 @@ Important files:
   behind a `tool_search` meta-tool, requiring declared tools; `plantask`
   task tools over a session-scoped in-memory board; `skill` over inline
   virtual skills, inline execution only — no fork/model frontmatter;
-  defensive `patchtoolcalls` completing dangling tool exchanges), and
-  fail-closed `limits` (`max_concurrent_turns`, `turn_timeout_seconds`).
+  defensive `patchtoolcalls` completing dangling tool exchanges),
+  root-level `permissions` (HITL tool gating, §5.7.7: mode
+  `auto_approve`/`interactive`, `timeout_seconds`, `max_pending`, and
+  fully-qualified `auto_approve_tools` validated against tools declared
+  anywhere in the topology), and fail-closed `limits`
+  (`max_concurrent_turns`, `turn_timeout_seconds`).
 - `manager.go`: agent CRUD plus the in-memory route/service → agent index. It
   enforces P0 one-runtime-one-agent (a `service_id` is bound by at most one
   agent), route-binding uniqueness (any LLM/MCP/ACP/builtin `route_id` is owned
@@ -462,7 +466,23 @@ every builtin agent:
   executions (kind `mcp`), parented under the turn span and carrying the agent
   id, so inner traffic produces `llm_usage_events`/`mcp_usage_events` as usual
 - turn events use the shared vocabulary subset `session`, `delta`, `content`,
-  `tool_call`, `usage`, `done`, `error`
+  `tool_call`, `usage`, `permission`, `done`, `error`
+- interactive tool permissions (§5.7.7): with `permissions.mode =
+  "interactive"` every non-allowlisted MCP tool call interrupts the turn
+  through the ADK Runner checkpoint cycle — the approval gate wraps the
+  einotool bridge outermost (denied/interrupted calls never open an MCP child
+  span), the run state checkpoints into an in-memory store, and the turn ends
+  with a `permission` event plus `done`/`permission_required` while holding
+  no turn slot, stream, or goroutine. The client resumes through
+  `POST /<builtin-route>/turn` with a `permission` field (per-call
+  allow/deny; unanswered calls denied; request-level `cancel` discards),
+  which streams the continuation and commits the full exchange on
+  completion. Everything fails closed: decision TTL expiry, definition
+  updates (a checkpoint only resumes on the graph that produced it),
+  `max_pending` capacity, and new input on a suspended session (rejected
+  with the pending request id). Pending permissions are one-shot and listed
+  in `GET /admin/builtin/runtime`; middleware tools (skill, plantask,
+  tool_search) are never gated
 - middlewares attach to the root definition's chat-model nodes (single,
   supervisor head, deep head) in the fixed order patchtoolcalls → reduction →
   summarization → skill → plantask → toolsearch → agentsmd: patchtoolcalls
@@ -613,6 +633,8 @@ Implemented ACP families:
 Implemented builtin families:
 
 - `/admin/builtin/routes/...`
+- `/admin/builtin/runtime` (host materializations and pending interactive
+  tool permissions; read-only — decisions flow through the data-plane resume)
 
 Implemented agent families:
 

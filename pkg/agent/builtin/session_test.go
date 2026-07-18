@@ -56,3 +56,40 @@ func TestSessionReuseAtCapKeepsHistory(t *testing.T) {
 		t.Fatalf("sessionCount after create = %d, want %d", got, maxSessionsPerAgent)
 	}
 }
+
+func TestPendingPermissionSessionIsNotEvictedAtCap(t *testing.T) {
+	store := newSessionStore()
+	ctx := context.Background()
+
+	h, _, err := store.begin(ctx, "triage", "pending")
+	if err != nil {
+		t.Fatalf("begin(pending) error = %v", err)
+	}
+	h.commit([]*schema.Message{schema.UserMessage("remember me")})
+	store.setPendingPermission("triage", "pending", true)
+
+	for i := 1; i < maxSessionsPerAgent; i++ {
+		h, _, err := store.begin(ctx, "triage", fmt.Sprintf("filler-%03d", i))
+		if err != nil {
+			t.Fatalf("begin(filler %d) error = %v", i, err)
+		}
+		h.release()
+	}
+
+	// Creating another session at the cap must evict an ordinary idle session,
+	// never the suspended permission session.
+	h, _, err = store.begin(ctx, "triage", "brand-new")
+	if err != nil {
+		t.Fatalf("begin(brand-new) error = %v", err)
+	}
+	h.release()
+
+	h, history, err := store.begin(ctx, "triage", "pending")
+	if err != nil {
+		t.Fatalf("begin(pending) after cap eviction error = %v", err)
+	}
+	defer h.release()
+	if len(history) != 1 || history[0].Content != "remember me" {
+		t.Fatalf("pending history = %+v, want the pinned session history", history)
+	}
+}

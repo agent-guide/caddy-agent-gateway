@@ -44,7 +44,12 @@ type session struct {
 	serial chan struct{}
 	// busy counts turns holding or waiting on serial; the evictor skips busy
 	// sessions. Guarded by the store mutex.
-	busy       int
+	busy int
+	// pendingPermission pins a suspended interactive turn's session while no
+	// turn holds serial. Without this pin the TTL/cap evictors can delete the
+	// history and task board before the checkpoint is resumed.
+	pendingPermission bool
+
 	messages   []*schema.Message
 	lastAccess time.Time
 	// taskBoard is the session's plantask storage, created lazily when the
@@ -166,12 +171,23 @@ func (h *sessionHandle) board() *planTaskBoard {
 	return h.sess.taskBoard
 }
 
+// setPendingPermission pins or unpins a session while an interactive turn is
+// suspended. The session is guaranteed to exist when it is first pinned; an
+// absent session during cleanup is harmless.
+func (s *sessionStore) setPendingPermission(agentID, sessionID string, pending bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess := s.agents[agentID][sessionID]; sess != nil {
+		sess.pendingPermission = pending
+	}
+}
+
 // evictExpiredLocked drops sessions idle past the TTL. Sessions with turns in
 // flight or waiting are never evicted. Caller holds s.mu.
 func (s *sessionStore) evictExpiredLocked(byID map[string]*session) {
 	now := time.Now()
 	for id, sess := range byID {
-		if sess.busy == 0 && now.Sub(sess.lastAccess) > sessionIdleTTL {
+		if sess.busy == 0 && !sess.pendingPermission && now.Sub(sess.lastAccess) > sessionIdleTTL {
 			delete(byID, id)
 		}
 	}
@@ -186,7 +202,7 @@ func (s *sessionStore) evictForCapLocked(byID map[string]*session) {
 		oldestID := ""
 		var oldest time.Time
 		for id, sess := range byID {
-			if sess.busy > 0 {
+			if sess.busy > 0 || sess.pendingPermission {
 				continue
 			}
 			if oldestID == "" || sess.lastAccess.Before(oldest) {

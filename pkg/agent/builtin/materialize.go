@@ -36,6 +36,9 @@ type nodeSpec struct {
 	tools        []agent.BuiltinToolSelection
 	topology     *agent.BuiltinTopology
 	middlewares  *agent.BuiltinMiddlewares
+	// permissions is the root definition's HITL policy; it applies to every
+	// node's MCP tools (§5.7.7), so sub-specs inherit it verbatim.
+	permissions *agent.BuiltinPermissions
 }
 
 func rootSpec(a agent.Agent) nodeSpec {
@@ -53,10 +56,11 @@ func rootSpec(a agent.Agent) nodeSpec {
 		tools:        def.Tools,
 		topology:     &def.Topology,
 		middlewares:  def.Middlewares,
+		permissions:  def.Permissions,
 	}
 }
 
-func subSpec(sub agent.BuiltinSubAgent) nodeSpec {
+func subSpec(sub agent.BuiltinSubAgent, permissions *agent.BuiltinPermissions) nodeSpec {
 	return nodeSpec{
 		name:         sub.Name,
 		description:  sub.Description,
@@ -65,6 +69,7 @@ func subSpec(sub agent.BuiltinSubAgent) nodeSpec {
 		generation:   sub.Generation,
 		tools:        sub.Tools,
 		topology:     sub.Topology,
+		permissions:  permissions,
 	}
 }
 
@@ -129,7 +134,7 @@ func (h *Host) buildChildren(ctx context.Context, agentID string, spec nodeSpec,
 	}
 	children := make([]adk.Agent, 0, len(spec.topology.SubAgents))
 	for _, sub := range spec.topology.SubAgents {
-		child, err := h.buildNode(ctx, agentID, subSpec(sub), modelRef, def, false)
+		child, err := h.buildNode(ctx, agentID, subSpec(sub, spec.permissions), modelRef, def, false)
 		if err != nil {
 			return nil, fmt.Errorf("sub_agent %q: %w", sub.Name, err)
 		}
@@ -157,7 +162,7 @@ func (h *Host) buildChatModelAgent(ctx context.Context, agentID string, spec nod
 	if err != nil {
 		return nil, err
 	}
-	tools, err := h.resolveTools(ctx, agentID, spec.tools)
+	tools, err := h.resolveTools(ctx, agentID, spec.tools, spec.permissions)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +339,7 @@ func (h *Host) buildPlanExecute(ctx context.Context, agentID string, spec nodeSp
 	if executorRole != nil && len(executorRole.Tools) > 0 {
 		executorTools = executorRole.Tools
 	}
-	tools, err := h.resolveTools(ctx, agentID, executorTools)
+	tools, err := h.resolveTools(ctx, agentID, executorTools, spec.permissions)
 	if err != nil {
 		return nil, err
 	}
@@ -397,7 +402,7 @@ func (h *Host) buildDeep(ctx context.Context, agentID string, spec nodeSpec, inh
 	if err != nil {
 		return nil, err
 	}
-	tools, err := h.resolveTools(ctx, agentID, spec.tools)
+	tools, err := h.resolveTools(ctx, agentID, spec.tools, spec.permissions)
 	if err != nil {
 		return nil, err
 	}
@@ -438,12 +443,18 @@ func (h *Host) resolveModel(ctx context.Context, agentID string, ref *agent.Buil
 	return newObservedModel(chatModel, h.observer, ref.LLMRouteID, agentID), nil
 }
 
-func (h *Host) resolveTools(ctx context.Context, agentID string, selections []agent.BuiltinToolSelection) ([]tool.BaseTool, error) {
+func (h *Host) resolveTools(ctx context.Context, agentID string, selections []agent.BuiltinToolSelection, permissions *agent.BuiltinPermissions) ([]tool.BaseTool, error) {
 	if len(selections) == 0 {
 		return nil, nil
 	}
 	if h.tools == nil {
 		return nil, fmt.Errorf("builtin host has no MCP tool source")
+	}
+	autoApproved := map[string]struct{}{}
+	if permissions != nil {
+		for _, entry := range permissions.AutoApproveTools {
+			autoApproved[entry] = struct{}{}
+		}
 	}
 	var out []tool.BaseTool
 	for _, sel := range selections {
@@ -456,7 +467,16 @@ func (h *Host) resolveTools(ctx context.Context, agentID string, selections []ag
 			if err != nil {
 				return nil, fmt.Errorf("tool info of service %q: %w", sel.MCPServiceID, err)
 			}
-			out = append(out, newObservedTool(t, h.observer, sel.MCPServiceID, info.Name, agentID))
+			wrapped := newObservedTool(t, h.observer, sel.MCPServiceID, info.Name, agentID)
+			// The approval gate wraps outermost, so interrupted and denied
+			// calls never open an MCP child span; allowlisted tools skip the
+			// gate entirely.
+			if permissions.Interactive() {
+				if _, bypass := autoApproved[sel.MCPServiceID+"/"+info.Name]; !bypass {
+					wrapped = newGatedTool(wrapped, sel.MCPServiceID, info.Name)
+				}
+			}
+			out = append(out, wrapped)
 		}
 	}
 	return out, nil

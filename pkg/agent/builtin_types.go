@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -32,7 +33,45 @@ type BuiltinRuntime struct {
 	Tools        []BuiltinToolSelection `json:"tools,omitempty"`
 	Topology     BuiltinTopology        `json:"topology"`
 	Middlewares  *BuiltinMiddlewares    `json:"middlewares,omitempty"`
+	Permissions  *BuiltinPermissions    `json:"permissions,omitempty"`
 	Limits       *BuiltinLimits         `json:"limits,omitempty"`
+}
+
+// Builtin tool-permission modes (§5.7.7). There is no "deny" mode: builtin
+// tools are operator-declared allowlists already; a fully denied toolset is a
+// definition without tools.
+const (
+	PermissionModeAutoApprove = "auto_approve"
+	PermissionModeInteractive = "interactive"
+)
+
+// BuiltinPermissions is the root-level human-in-the-loop policy over the
+// definition's MCP tool executions; it applies to every topology node.
+// Gateway-local middleware tools (skill, plantask task tools, tool_search)
+// are always exempt. In interactive mode an unapproved tool call suspends the
+// turn through an ADK checkpoint interrupt — no turn slot, stream, or
+// goroutine is held while a human decides — and resumes through the turn
+// endpoint. Every lifecycle edge (decision timeout, definition update,
+// pending capacity, unanswered calls) fails closed.
+type BuiltinPermissions struct {
+	// Mode is "auto_approve" (default — tools execute as the model asks) or
+	// "interactive" (each MCP tool call needs an explicit decision).
+	Mode string `json:"mode,omitempty"`
+	// TimeoutSeconds is the pending-decision TTL. Zero takes the host default.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// MaxPending caps simultaneously pending permissions for the agent.
+	// Pending permissions hold no turn slots, so without a cap they could
+	// accumulate without bound. Zero takes the host default.
+	MaxPending int `json:"max_pending,omitempty"`
+	// AutoApproveTools bypasses interactive gating for fully-qualified
+	// "<mcp_service_id>/<tool_name>" entries (bare names could collide across
+	// services). Every entry must resolve to a declared tool selection.
+	AutoApproveTools []string `json:"auto_approve_tools,omitempty"`
+}
+
+// Interactive reports whether the definition gates tool executions.
+func (p *BuiltinPermissions) Interactive() bool {
+	return p != nil && p.Mode == PermissionModeInteractive
 }
 
 // BuiltinModel resolves through a gateway LLM route, never a raw provider, so
@@ -249,6 +288,10 @@ func (b *BuiltinRuntime) normalize() {
 	normalizeToolSelections(b.Tools)
 	b.Topology.normalize()
 	b.Middlewares.normalize()
+	if p := b.Permissions; p != nil {
+		p.Mode = strings.ToLower(strings.TrimSpace(p.Mode))
+		p.AutoApproveTools = normalizeIDs(p.AutoApproveTools)
+	}
 }
 
 func (m *BuiltinMiddlewares) normalize() {
@@ -352,8 +395,82 @@ func (a Agent) validateBuiltin() error {
 			return fmt.Errorf("runtime.builtin.limits values must be non-negative")
 		}
 	}
+	if err := validateBuiltinPermissions(b.Permissions, collectToolSelections(b)); err != nil {
+		return err
+	}
 	if err := validateBuiltinMiddlewares(b.Middlewares, len(b.Tools) > 0); err != nil {
 		return err
+	}
+	return nil
+}
+
+// collectToolSelections gathers every tool selection of the definition — the
+// approval gate covers every topology node, so auto-approve entries may
+// reference sub-agent and planexecute-executor tools too.
+func collectToolSelections(b *BuiltinRuntime) []BuiltinToolSelection {
+	var out []BuiltinToolSelection
+	out = append(out, b.Tools...)
+	var walk func(t *BuiltinTopology)
+	walk = func(t *BuiltinTopology) {
+		if t == nil {
+			return
+		}
+		if pe := t.PlanExecute; pe != nil && pe.Executor != nil {
+			out = append(out, pe.Executor.Tools...)
+		}
+		for i := range t.SubAgents {
+			out = append(out, t.SubAgents[i].Tools...)
+			walk(t.SubAgents[i].Topology)
+		}
+	}
+	walk(&b.Topology)
+	return out
+}
+
+// validateBuiltinPermissions checks the HITL block (§5.7.7). Auto-approve
+// entries are fully qualified and must resolve to a declared tool selection
+// anywhere in the topology; when the selection enumerates tool names the
+// entry's tool must be among them (an empty selection exposes every service
+// tool, so any name passes and resolution stays fail-closed at
+// materialization).
+func validateBuiltinPermissions(p *BuiltinPermissions, tools []BuiltinToolSelection) error {
+	if p == nil {
+		return nil
+	}
+	switch p.Mode {
+	case "", PermissionModeAutoApprove, PermissionModeInteractive:
+	default:
+		return fmt.Errorf("runtime.builtin.permissions.mode must be %q or %q", PermissionModeAutoApprove, PermissionModeInteractive)
+	}
+	if p.TimeoutSeconds < 0 || p.MaxPending < 0 {
+		return fmt.Errorf("runtime.builtin.permissions values must be non-negative")
+	}
+	if len(p.AutoApproveTools) > 0 && !p.Interactive() {
+		return fmt.Errorf("runtime.builtin.permissions.auto_approve_tools requires mode %q", PermissionModeInteractive)
+	}
+	seen := map[string]struct{}{}
+	for _, entry := range p.AutoApproveTools {
+		serviceID, toolName, ok := strings.Cut(entry, "/")
+		if !ok || strings.TrimSpace(serviceID) == "" || strings.TrimSpace(toolName) == "" {
+			return fmt.Errorf("runtime.builtin.permissions.auto_approve_tools entry %q must be <mcp_service_id>/<tool_name>", entry)
+		}
+		if _, dup := seen[entry]; dup {
+			return fmt.Errorf("runtime.builtin.permissions.auto_approve_tools entry %q is duplicated", entry)
+		}
+		seen[entry] = struct{}{}
+		matched := false
+		for _, sel := range tools {
+			if sel.MCPServiceID != serviceID {
+				continue
+			}
+			if len(sel.Tools) == 0 || slices.Contains(sel.Tools, toolName) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("runtime.builtin.permissions.auto_approve_tools entry %q does not resolve to a declared tool", entry)
+		}
 	}
 	return nil
 }

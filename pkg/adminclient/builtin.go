@@ -6,11 +6,23 @@ import (
 	"net/url"
 
 	adminapi "github.com/agent-guide/agent-gateway/pkg/admin"
+	builtinhost "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 )
 
 type BuiltinRouteConfig = builtinroute.BuiltinRouteConfig
 type BuiltinRouteView = adminapi.BuiltinRouteView
+type BuiltinRuntimeView = builtinhost.RuntimeView
+
+// GetBuiltinRuntime reads the ADK host runtime view: per-agent
+// materialization state plus pending interactive tool permissions.
+func (c *Client) GetBuiltinRuntime(ctx context.Context) (*BuiltinRuntimeView, error) {
+	var resp BuiltinRuntimeView
+	if err := c.do(ctx, http.MethodGet, "/admin/builtin/runtime", nil, &resp, true, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
 
 func (c *Client) ListBuiltinRoutes(ctx context.Context) ([]BuiltinRouteView, error) {
 	var resp itemsResponse[BuiltinRouteView]

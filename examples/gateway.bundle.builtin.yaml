@@ -122,6 +122,19 @@ agents:
         #   summarization:
         #     enabled: true
         #     trigger_tokens: 32000
+        # Optional human-in-the-loop tool permissions: in interactive mode a
+        # non-allowlisted MCP tool call suspends the turn (SSE `permission`
+        # event + done stop_reason permission_required) until the client
+        # resumes through POST /<builtin-route>/turn with a `permission`
+        # field carrying per-call allow/deny decisions. Fail-closed: an
+        # unanswered call is denied, and a pending decision expires after
+        # timeout_seconds.
+        # permissions:
+        #   mode: interactive
+        #   timeout_seconds: 600
+        #   max_pending: 32
+        #   auto_approve_tools:
+        #     - mcp-filesystem/read_text_file
         limits:
           # Fail-closed: reject (HTTP 429), never queue.
           max_concurrent_turns: 4

@@ -16,7 +16,9 @@ import (
 
 // dispatchBuiltin serves the builtin-agent turn ingress: POST /<route>/turn
 // with SSE, mirroring the ACP turn shape with the builtin event vocabulary
-// subset (session, delta, content, tool_call, usage, done, error).
+// subset (session, delta, content, tool_call, usage, permission, done,
+// error). A permission-carrying request resumes a suspended turn on this
+// request's stream (§5.7.7).
 func (h *Handler) dispatchBuiltin(w http.ResponseWriter, r *http.Request, next NextHandler, cfg routecore.AgentRouteConfig) error {
 	if !h.builtinEnabled {
 		return serveNextOrNotFound(next, w, r)
@@ -62,9 +64,12 @@ func (h *Handler) dispatchBuiltin(w http.ResponseWriter, r *http.Request, next N
 	}
 	req.Input = strings.TrimSpace(req.Input)
 	req.SessionID = strings.TrimSpace(req.SessionID)
-	if req.Input == "" {
+	// Exactly one of input and permission: input starts a turn, permission
+	// resumes one suspended on a tool-permission interrupt (§5.7.7). The host
+	// re-validates; this guard just gives body-shape mistakes a crisp 400.
+	if req.Input == "" && req.Permission == nil {
 		usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "invalid_request")
-		return httpjson.Error(w, http.StatusBadRequest, "input is required")
+		return httpjson.Error(w, http.StatusBadRequest, "input or permission is required")
 	}
 
 	// SSE headers are written lazily on the first event: everything the host
@@ -94,7 +99,8 @@ func builtinTurnErrorStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, builtinhost.ErrTurnLimitExceeded),
 		errors.Is(err, builtinhost.ErrSessionBusy),
-		errors.Is(err, builtinhost.ErrSessionLimitExceeded):
+		errors.Is(err, builtinhost.ErrSessionLimitExceeded),
+		errors.Is(err, builtinhost.ErrPermissionCapacity):
 		return http.StatusTooManyRequests
 	case errors.Is(err, builtinhost.ErrInvalidRequest):
 		return http.StatusBadRequest
@@ -115,6 +121,8 @@ func builtinTurnErrorType(err error) string {
 		return "session_busy"
 	case errors.Is(err, builtinhost.ErrSessionLimitExceeded):
 		return "session_limit_exceeded"
+	case errors.Is(err, builtinhost.ErrPermissionCapacity):
+		return "permission_capacity_exceeded"
 	case errors.Is(err, builtinhost.ErrInvalidRequest):
 		return "invalid_request"
 	default:

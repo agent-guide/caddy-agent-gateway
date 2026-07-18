@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +45,10 @@ type Host struct {
 	mu       sync.Mutex
 	entries  map[string]*hostEntry
 	sessions *sessionStore
+	// checkpoints and permissions carry suspended interactive turns (§5.7.7).
+	// Both are in-memory with the same restart-loss semantics as sessions.
+	checkpoints *memCheckPointStore
+	permissions *permissionRegistry
 }
 
 type hostEntry struct {
@@ -59,12 +65,14 @@ type hostEntry struct {
 
 func NewHost(cfg Config) *Host {
 	return &Host{
-		agents:   cfg.Agents,
-		models:   cfg.Models,
-		tools:    cfg.Tools,
-		observer: cfg.Observer,
-		entries:  map[string]*hostEntry{},
-		sessions: newSessionStore(),
+		agents:      cfg.Agents,
+		models:      cfg.Models,
+		tools:       cfg.Tools,
+		observer:    cfg.Observer,
+		entries:     map[string]*hostEntry{},
+		sessions:    newSessionStore(),
+		checkpoints: newMemCheckPointStore(),
+		permissions: newPermissionRegistry(),
 	}
 }
 
@@ -117,6 +125,12 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 	if a.Disabled {
 		return fmt.Errorf("%w: agent %q is disabled", ErrInvalidRequest, agentID)
 	}
+	if req.Input != "" && req.Permission != nil {
+		return fmt.Errorf("%w: input and permission are mutually exclusive", ErrInvalidRequest)
+	}
+	if req.Permission != nil {
+		return h.servePermissionTurn(ctx, a, req, emit)
+	}
 	if req.Input == "" {
 		return fmt.Errorf("%w: input is required", ErrInvalidRequest)
 	}
@@ -146,6 +160,16 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 		return err
 	}
 	sessionID := handle.sessionID()
+	// A session suspended on a pending permission only moves forward through
+	// an explicit resume or cancel; new input is rejected rather than
+	// silently discarding the suspended work (§5.7.7).
+	if pendingID, expired, live := h.permissions.liveForSession(agentID, sessionID); true {
+		h.deleteExpiredPermissions(expired)
+		if live {
+			handle.release()
+			return fmt.Errorf("%w: session has pending permission request %q; resume or cancel it first", ErrInvalidRequest, pendingID)
+		}
+	}
 	if mw := a.Runtime.Builtin.Middlewares; mw != nil && mw.PlanTask != nil && mw.PlanTask.Enabled {
 		// The plantask backend is stateless; the session's task board travels
 		// on the turn context so task tools operate session-scoped storage.
@@ -182,21 +206,319 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 	input = append(input, history...)
 	input = append(input, userMsg)
 
-	result, runErr := h.runTurn(turnCtx, entry, input, emit)
+	// Interactive mode runs under a preallocated checkpoint id so a
+	// tool-permission interrupt can suspend the turn; the id doubles as the
+	// permission request id. No checkpoint is written unless an interrupt
+	// happens.
+	var runOpts []adk.AgentRunOption
+	requestID := ""
+	if a.Runtime.Builtin.Permissions.Interactive() {
+		requestID, err = newPermissionRequestID()
+		if err != nil {
+			handle.release()
+			return err
+		}
+		runOpts = append(runOpts, adk.WithCheckPointID(requestID))
+	}
+
+	result, runErr := h.runTurn(turnCtx, entry, input, emit, runOpts...)
 	usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{
 		ModelSteps:  usage.Int(result.modelSteps),
 		ToolSteps:   usage.Int(result.toolSteps),
 		EventCounts: result.eventCounts,
 	})
 	if runErr != nil {
+		if requestID != "" {
+			// An error after a saved interrupt would orphan the checkpoint.
+			_ = h.checkpoints.Delete(context.Background(), requestID)
+		}
 		handle.release()
 		usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
 		_ = emit(TurnEvent{Event: EventError, Message: runErr.Error()})
 		return runErr
 	}
+	if result.interrupt != nil {
+		return h.suspendTurn(ctx, a, handle, requestID, userMsg, nil, result, emit)
+	}
 	handle.commit(append([]*schema.Message{userMsg}, result.transcript...))
 	usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "success"})
 	return emit(TurnEvent{Event: EventDone, StopReason: "end_turn"})
+}
+
+// suspendTurn parks an interrupted interactive turn: it registers the pending
+// permission (fail-closed on capacity), releases the session, and tells the
+// client what needs deciding. priorTranscript carries messages accumulated by
+// earlier segments of the same suspended turn.
+func (h *Host) suspendTurn(ctx context.Context, a agent.Agent, handle *sessionHandle, requestID string, userMsg *schema.Message, priorTranscript []*schema.Message, result turnResult, emit EventSink) error {
+	calls := pendingCallsFromInterrupt(result.interrupt)
+	if requestID == "" || len(calls) == 0 {
+		// Only the approval gate interrupts in a builtin graph; anything else
+		// (or an interrupt without a checkpoint id) is unresumable.
+		if requestID != "" {
+			_ = h.checkpoints.Delete(context.Background(), requestID)
+		}
+		handle.release()
+		usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
+		err := fmt.Errorf("builtin agent produced an unsupported interrupt")
+		_ = emit(TurnEvent{Event: EventError, Message: err.Error()})
+		return err
+	}
+	perms := a.Runtime.Builtin.Permissions
+	now := nowFunc()
+	pending := &pendingPermission{
+		requestID:  requestID,
+		agentID:    a.ID,
+		sessionID:  handle.sessionID(),
+		updatedAt:  a.UpdatedAt,
+		createdAt:  now,
+		expiresAt:  now.Add(permissionTimeout(perms)),
+		calls:      calls,
+		userMsg:    userMsg,
+		transcript: append(priorTranscript, result.transcript...),
+	}
+	expired, capReached := h.permissions.register(pending, permissionMaxPending(perms))
+	h.deleteExpiredPermissions(expired)
+	if capReached {
+		_ = h.checkpoints.Delete(context.Background(), requestID)
+		handle.release()
+		usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
+		_ = emit(TurnEvent{Event: EventError, Message: ErrPermissionCapacity.Error()})
+		return ErrPermissionCapacity
+	}
+	h.sessions.setPendingPermission(a.ID, handle.sessionID(), true)
+	handle.release()
+	span := usage.SpanFromContext(ctx)
+	span.AddAnnotation("permission_request_id", requestID)
+	result.eventCounts[EventPermission]++
+	span.SetExtension(usage.BuiltinExtension{
+		ResultStatus: "interrupted",
+		EventCounts:  result.eventCounts,
+	})
+	if err := emit(TurnEvent{Event: EventPermission, Data: permissionEventData(pending)}); err != nil {
+		return err
+	}
+	return emit(TurnEvent{Event: EventDone, StopReason: StopReasonPermissionRequired})
+}
+
+// servePermissionTurn resolves a suspended turn: cancel discards it, and
+// per-call decisions resume the checkpointed run on a fresh SSE stream.
+// Pending entries are one-shot — taken before any execution — so a request
+// resolves at most once no matter what happens next.
+func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnRequest, emit EventSink) error {
+	perm := req.Permission
+	requestID := strings.TrimSpace(perm.RequestID)
+	if requestID == "" {
+		return fmt.Errorf("%w: permission.request_id is required", ErrInvalidRequest)
+	}
+	if perm.Outcome != "" && perm.Outcome != "cancel" {
+		return fmt.Errorf("%w: permission.outcome must be empty or %q", ErrInvalidRequest, "cancel")
+	}
+	decisions := map[string]bool{}
+	for _, d := range perm.Decisions {
+		switch d.Outcome {
+		case "allow", "deny":
+		default:
+			return fmt.Errorf("%w: decision outcome for call %q must be %q or %q", ErrInvalidRequest, d.CallID, "allow", "deny")
+		}
+		if _, dup := decisions[d.CallID]; dup {
+			return fmt.Errorf("%w: duplicate decision for call %q", ErrInvalidRequest, d.CallID)
+		}
+		decisions[d.CallID] = d.Outcome == "allow"
+	}
+
+	pending, expired, ok := h.permissions.take(requestID)
+	h.deleteExpiredPermissions(expired)
+	if !ok {
+		return fmt.Errorf("%w: permission request %q not found or expired", ErrInvalidRequest, requestID)
+	}
+	dropPending := func() {
+		_ = h.checkpoints.Delete(context.Background(), requestID)
+		h.sessions.setPendingPermission(pending.agentID, pending.sessionID, false)
+	}
+	if pending.agentID != a.ID {
+		dropPending()
+		return fmt.Errorf("%w: permission request %q does not belong to agent %q", ErrInvalidRequest, requestID, a.ID)
+	}
+	if req.SessionID != "" && req.SessionID != pending.sessionID {
+		dropPending()
+		return fmt.Errorf("%w: permission request %q belongs to a different session", ErrInvalidRequest, requestID)
+	}
+	if !a.UpdatedAt.Equal(pending.updatedAt) {
+		// A checkpoint must resume on the graph that produced it.
+		dropPending()
+		return fmt.Errorf("%w: agent definition changed; permission request %q is invalidated", ErrInvalidRequest, requestID)
+	}
+	for callID := range decisions {
+		if !slices.ContainsFunc(pending.calls, func(c pendingCall) bool { return c.CallID == callID }) {
+			dropPending()
+			return fmt.Errorf("%w: decision references unknown call %q", ErrInvalidRequest, callID)
+		}
+	}
+
+	span := usage.SpanFromContext(ctx)
+	span.AddAnnotation("permission_request_id", requestID)
+	if perm.Outcome == "cancel" {
+		dropPending()
+		span.SetExtension(usage.BuiltinExtension{Operation: "resume", SessionID: pending.sessionID, ResultStatus: "cancelled"})
+		if err := emit(TurnEvent{Event: EventSession, SessionID: pending.sessionID}); err != nil {
+			return err
+		}
+		return emit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
+	}
+
+	entry, err := h.entry(ctx, a)
+	if err != nil {
+		dropPending()
+		return err
+	}
+	turnCtx, cancel := context.WithTimeout(ctx, entry.turnTimeout)
+	defer cancel()
+	handle, _, err := h.sessions.begin(turnCtx, a.ID, pending.sessionID)
+	if err != nil {
+		dropPending()
+		return err
+	}
+	if mw := a.Runtime.Builtin.Middlewares; mw != nil && mw.PlanTask != nil && mw.PlanTask.Enabled {
+		turnCtx = withTaskBoard(turnCtx, handle.board())
+	}
+	select {
+	case entry.turnSem <- struct{}{}:
+	default:
+		dropPending()
+		handle.release()
+		return ErrTurnLimitExceeded
+	}
+	entry.mu.Lock()
+	entry.turns++
+	entry.mu.Unlock()
+	defer func() {
+		entry.mu.Lock()
+		entry.turns--
+		entry.mu.Unlock()
+		<-entry.turnSem
+	}()
+	span.SetExtension(usage.BuiltinExtension{
+		Operation:    "resume",
+		SessionID:    pending.sessionID,
+		TopologyKind: entry.topologyKind,
+	})
+	if err := emit(TurnEvent{Event: EventSession, SessionID: pending.sessionID}); err != nil {
+		dropPending()
+		handle.release()
+		return err
+	}
+
+	// Unanswered calls are denied (fail-closed); every pending interrupt
+	// point gets targeted so no gate is left to re-interrupt on its own.
+	targets := make(map[string]any, len(pending.calls))
+	for _, c := range pending.calls {
+		targets[c.targetID] = &permissionDecision{Allow: decisions[c.CallID]}
+	}
+	result, runErr := h.resumeTurn(turnCtx, entry, requestID, targets, emit)
+	span.SetExtension(usage.BuiltinExtension{
+		ModelSteps:  usage.Int(result.modelSteps),
+		ToolSteps:   usage.Int(result.toolSteps),
+		EventCounts: result.eventCounts,
+	})
+	if runErr != nil {
+		dropPending()
+		handle.release()
+		span.SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
+		_ = emit(TurnEvent{Event: EventError, Message: runErr.Error()})
+		return runErr
+	}
+	if result.interrupt != nil {
+		// The continued run hit another gated call: re-suspend under the same
+		// request id (the runner rewrote the checkpoint in place).
+		return h.suspendTurn(ctx, a, handle, requestID, pending.userMsg, pending.transcript, result, emit)
+	}
+	_ = h.checkpoints.Delete(context.Background(), requestID)
+	transcript := make([]*schema.Message, 0, 1+len(pending.transcript)+len(result.transcript))
+	transcript = append(transcript, pending.userMsg)
+	transcript = append(transcript, pending.transcript...)
+	transcript = append(transcript, result.transcript...)
+	handle.commit(transcript)
+	h.sessions.setPendingPermission(pending.agentID, pending.sessionID, false)
+	span.SetExtension(usage.BuiltinExtension{ResultStatus: "success"})
+	return emit(TurnEvent{Event: EventDone, StopReason: "end_turn"})
+}
+
+// deleteExpiredPermissions drops the checkpoints and session pins of lazily
+// expired pending permissions.
+func (h *Host) deleteExpiredPermissions(expired []*pendingPermission) {
+	for _, p := range expired {
+		_ = h.checkpoints.Delete(context.Background(), p.requestID)
+		h.sessions.setPendingPermission(p.agentID, p.sessionID, false)
+	}
+}
+
+// pendingCallsFromInterrupt extracts the approval gate's root-cause interrupt
+// points; other interrupt sources yield nothing and fail the turn upstream.
+func pendingCallsFromInterrupt(info *adk.InterruptInfo) []pendingCall {
+	var calls []pendingCall
+	for _, ic := range info.InterruptContexts {
+		if ic == nil || !ic.IsRootCause {
+			continue
+		}
+		pi, ok := ic.Info.(*permissionInterruptInfo)
+		if !ok {
+			continue
+		}
+		calls = append(calls, pendingCall{
+			targetID:     ic.ID,
+			CallID:       pi.CallID,
+			MCPServiceID: pi.MCPServiceID,
+			ToolName:     pi.ToolName,
+			Arguments:    pi.Arguments,
+		})
+	}
+	return calls
+}
+
+// permissionEventData is the permission SSE event payload.
+func permissionEventData(p *pendingPermission) json.RawMessage {
+	view := pendingView(p)
+	raw, err := json.Marshal(map[string]any{
+		"request_id": view.RequestID,
+		"expires_at": view.ExpiresAt,
+		"calls":      view.Calls,
+	})
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
+// RuntimeView is the /admin/builtin/runtime payload: per-agent
+// materialization state plus the suspended interactive turns awaiting a
+// decision.
+type RuntimeView struct {
+	Agents             map[string]EntryState   `json:"agents"`
+	PendingPermissions []PendingPermissionView `json:"pending_permissions"`
+}
+
+// Runtime reports the host-wide runtime view for the Admin API.
+func (h *Host) Runtime() RuntimeView {
+	view := RuntimeView{Agents: map[string]EntryState{}, PendingPermissions: []PendingPermissionView{}}
+	if h == nil {
+		return view
+	}
+	h.mu.Lock()
+	ids := make([]string, 0, len(h.entries))
+	for id := range h.entries {
+		ids = append(ids, id)
+	}
+	h.mu.Unlock()
+	for _, id := range ids {
+		view.Agents[id] = h.State(id)
+	}
+	pending, expired := h.permissions.list()
+	h.deleteExpiredPermissions(expired)
+	slices.SortFunc(pending, func(a, b PendingPermissionView) int {
+		return strings.Compare(a.RequestID, b.RequestID)
+	})
+	view.PendingPermissions = pending
+	return view
 }
 
 // entry returns the cached materialization for the agent, rebuilding when the
@@ -229,7 +551,7 @@ func (h *Host) entry(ctx context.Context, a agent.Agent) (*hostEntry, error) {
 	}
 	entry := &hostEntry{
 		updatedAt:    a.UpdatedAt,
-		runner:       adk.NewRunner(ctx, adk.RunnerConfig{Agent: root, EnableStreaming: true}),
+		runner:       adk.NewRunner(ctx, adk.RunnerConfig{Agent: root, EnableStreaming: true, CheckPointStore: h.checkpoints}),
 		topologyKind: topologyKind,
 		turnTimeout:  timeout,
 		turnSem:      make(chan struct{}, maxTurns),
@@ -253,22 +575,50 @@ type turnResult struct {
 	toolSteps   int
 	eventCounts map[string]int
 	transcript  []*schema.Message
+	// interrupt is set when the run suspended on a checkpoint interrupt
+	// instead of completing (§5.7.7).
+	interrupt *adk.InterruptInfo
 }
 
-// runTurn drives the ADK runner and maps agent events onto the turn event
+// runTurn drives one ADK run and maps agent events onto the turn event
 // vocabulary. A panicking agent fails the turn, never the gateway process.
-func (h *Host) runTurn(ctx context.Context, entry *hostEntry, input []*schema.Message, emit EventSink) (result turnResult, err error) {
+func (h *Host) runTurn(ctx context.Context, entry *hostEntry, input []*schema.Message, emit EventSink, opts ...adk.AgentRunOption) (result turnResult, err error) {
 	result.eventCounts = map[string]int{}
-	countingEmit := func(ev TurnEvent) error {
-		result.eventCounts[ev.Event]++
-		return emit(ev)
-	}
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("builtin agent panicked: %v", r)
 		}
 	}()
-	iter := entry.runner.Run(ctx, input)
+	iter := entry.runner.Run(ctx, input, opts...)
+	err = h.driveIter(iter, emit, &result)
+	return result, err
+}
+
+// resumeTurn continues a checkpointed run with per-interrupt-point resume
+// targets.
+func (h *Host) resumeTurn(ctx context.Context, entry *hostEntry, requestID string, targets map[string]any, emit EventSink) (result turnResult, err error) {
+	result.eventCounts = map[string]int{}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("builtin agent panicked: %v", r)
+		}
+	}()
+	iter, err := entry.runner.ResumeWithParams(ctx, requestID, &adk.ResumeParams{Targets: targets})
+	if err != nil {
+		return result, fmt.Errorf("resume builtin turn: %w", err)
+	}
+	err = h.driveIter(iter, emit, &result)
+	return result, err
+}
+
+// driveIter consumes one run's event stream. Interrupt actions are recorded
+// on the result rather than treated as errors — the runner has already saved
+// the checkpoint by the time the event surfaces.
+func (h *Host) driveIter(iter *adk.AsyncIterator[*adk.AgentEvent], emit EventSink, result *turnResult) error {
+	countingEmit := func(ev TurnEvent) error {
+		result.eventCounts[ev.Event]++
+		return emit(ev)
+	}
 	for {
 		event, ok := iter.Next()
 		if !ok {
@@ -278,20 +628,24 @@ func (h *Host) runTurn(ctx context.Context, entry *hostEntry, input []*schema.Me
 			continue
 		}
 		if event.Err != nil {
-			return result, event.Err
+			return event.Err
+		}
+		if event.Action != nil && event.Action.Interrupted != nil {
+			result.interrupt = event.Action.Interrupted
+			continue
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			continue
 		}
-		msg, emitErr := h.emitMessageOutput(event.Output.MessageOutput, countingEmit, &result)
+		msg, emitErr := h.emitMessageOutput(event.Output.MessageOutput, countingEmit, result)
 		if emitErr != nil {
-			return result, emitErr
+			return emitErr
 		}
 		if msg != nil {
 			result.transcript = append(result.transcript, msg)
 		}
 	}
-	return result, nil
+	return nil
 }
 
 // emitMessageOutput maps one agent message (streaming or complete) onto turn

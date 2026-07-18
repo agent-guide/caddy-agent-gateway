@@ -246,6 +246,11 @@ needs deferred-tool support the gateway's providers do not expose),
 fork/model frontmatter), and `patchtoolcalls` (defensive completion of
 dangling tool exchanges). Of the ADK middlewares only `filesystem` remains
 unadopted, deferred with the same workspace question as reduction offload.
+Runner interrupt/checkpoint/resume is adopted for human-in-the-loop tool
+permissions (`agents-control-plane.md` §5.7.7, PB1b, implemented): the
+approval gate interrupts via `compose.Interrupt`, checkpoints to an
+in-memory store, and resumes with `ResumeWithParams` — no turn slot, no
+open stream, and no goroutine is held while a human decides.
 
 Nearly all eino development between v0.8.4 and v0.9.12 landed in ADK. For
 gateway-native agents, ADK is the building material and none of it should

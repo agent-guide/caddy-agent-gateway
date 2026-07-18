@@ -763,6 +763,156 @@ lower protocol layers still never import `pkg/agent`.
   increment depth and are enforced against `policy.max_agent_depth`, the same
   gate the dispatcher applies to inbound `X-Agent-Depth`.
 
+#### 5.7.7 Interrupt and human-in-the-loop (tool permissions)
+
+Status: implemented (PB1b). This section is the authoritative design; §11.7
+records the implementation notes.
+
+**Problem.** A builtin agent executes MCP tools with external side effects the
+moment the model asks. The ACP runtime already has a permission policy
+(`deny`/`auto_approve`/`interactive`); builtin currently has only the implicit
+equivalent of `auto_approve` over its declared tools. Operators need an
+interactive mode where a human approves or refuses individual tool executions.
+
+**Mechanism: ADK checkpoint interrupt/resume, not a blocking wait.** ACP
+`interactive` blocks the in-flight turn: the SSE stream stays open, the
+decision arrives on a side channel, and the waiting turn holds its resources.
+That shape is forced by the external agent process, which cannot be paused.
+The builtin host has a better primitive available — the eino ADK Runner's
+interrupt/checkpoint/resume cycle (verified against v0.9.12):
+
+- the approval gate wraps the `einotool` bridge at materialization time (the
+  same layer as `observedTool`), so it covers every node of every topology,
+  including sub-agents and the planexecute executor. On an unapproved call
+  the wrapper returns `compose.Interrupt(ctx, info)` (stateless — a rerun
+  re-invokes the gate with the same arguments, so there is no internal state
+  to restore); the ADK
+  ToolsNode folds it into a `CompositeInterrupt`, and the Runner (configured
+  with a `CheckPointStore` and a per-turn `adk.WithCheckPointID`) serializes
+  the full run state (gob; custom info/state types registered via
+  `schema.RegisterName`) and ends the run iterator with an
+  `AgentAction.Interrupted` event carrying `InterruptCtx` ids.
+- the host resumes with `Runner.ResumeWithParams(ctx, requestID,
+  &adk.ResumeParams{Targets: ...})`; the gated tool re-runs, reads the
+  decision through `compose.GetResumeContext`, and either executes (allow) or
+  returns a plain refusal tool message (deny) — deny is a tool *result*, not
+  an error, so the model sees the refusal and continues the turn.
+
+Between interrupt and resume the turn consumes nothing: no goroutine, no open
+SSE stream, no `max_concurrent_turns` slot — only a checkpoint blob in memory.
+That is the decisive advantage over porting the ACP blocking-wait shape, and
+it is why this feature adopts the Runner primitive.
+
+**Definition schema.** A root-level `permissions` block on `runtime.builtin`
+(applies to the whole topology; per-node modes are deliberately out of scope):
+
+```json
+"permissions": {
+  "mode": "auto_approve",
+  "timeout_seconds": 600,
+  "max_pending": 32,
+  "auto_approve_tools": ["<mcp_service_id>/<tool_name>", "..."]
+}
+```
+
+- `mode`: `auto_approve` (default — exactly today's behavior) or
+  `interactive`. There is no `deny` mode: builtin tools are operator-declared
+  allowlists already; a fully denied toolset is a definition without tools.
+- `timeout_seconds`: pending-decision TTL, fail-closed (default 600).
+- `max_pending`: cap on simultaneously pending permissions per agent
+  (default 32). Pending permissions hold no turn slots, so without a cap they
+  could accumulate without bound.
+- `auto_approve_tools`: bypass list in `interactive` mode, entries fully
+  qualified as `service_id/tool_name` (bare names could collide across
+  services). Validation requires every entry to resolve to a declared tool.
+- Gateway-local middleware tools (`skill`, the plantask task tools,
+  `tool_search`) are always exempt: they have no external side effects, and
+  gating them would interrupt on bookkeeping.
+
+**Turn protocol.** The event vocabulary gains `permission` (still a marked
+subset of the ACP vocabulary). When a gated call interrupts:
+
+1. the turn stream emits one `permission` event carrying `request_id` (the
+   checkpoint id, generated per turn), `expires_at`, and the pending tool
+   calls — each with `call_id` (the model's tool-call id), `mcp_service_id`,
+   `name`, and `arguments`; parallel tool calls in one assistant step
+   interrupt together and appear as one list;
+2. the stream then ends with `done`, `stop_reason: "permission_required"`
+   (the turn is suspended, not failed);
+3. the client resumes with `POST /<builtin-route>/turn` carrying
+   `session_id` and a `permission` field instead of `input`:
+
+```json
+{
+  "session_id": "s-1",
+  "permission": {
+    "request_id": "...",
+    "decisions": [
+      {"call_id": "...", "outcome": "allow"},
+      {"call_id": "...", "outcome": "deny"}
+    ]
+  }
+}
+```
+
+   The response is a new SSE stream continuing the turn to completion.
+   Outcomes are `allow` and `deny`; a pending call absent from `decisions`
+   is denied (fail-closed). `outcome: "cancel"` on the request level discards
+   the checkpoint and ends the turn with `done`, `stop_reason: "cancelled"`,
+   committing nothing.
+
+There is no separate `POST /<builtin-route>/permission` endpoint: for ACP that
+endpoint delivers a decision into a still-open stream, but for builtin the
+decision *is* the continuation request and produces the continuation stream.
+Reusing `/turn` keeps one ingress per route; `input` and `permission` are
+mutually exclusive in one request.
+
+**Pending-permission lifecycle (all in-memory, all fail-closed).**
+
+- The checkpoint store is an in-process `adk.CheckPointStore` (map keyed by
+  `request_id`, with `CheckPointDeleter` for cleanup). This is transient
+  interrupt state with the same restart-loss semantics as sessions — it is
+  *not* the hand-rolled durable checkpointing that PB2 forbids; when eino
+  v0.10 Runner persistence stabilizes, this store is the swap seam.
+- Alongside the checkpoint the host keeps the turn's commit set (user
+  message, partial transcript, event counts) so the resumed completion can
+  commit the full exchange; an interrupted turn commits nothing.
+- A session with a pending permission rejects new `input` turns with a
+  client-correctable `permission_pending` error carrying the `request_id` —
+  resume or cancel explicitly. (Silently discarding the pending work on new
+  input was considered and rejected: fail-closed beats convenience here.)
+- TTL expiry and agent definition updates both invalidate pending
+  permissions: resume validates that the definition `updated_at` still
+  matches the one the checkpoint was taken under, since a checkpoint must
+  resume on the graph that produced it. An invalidated or unknown
+  `request_id` is a client-correctable error; the session unlocks and the
+  next `input` turn proceeds fresh.
+- When `max_pending` is reached, a new interrupt fails its turn with
+  `permission_capacity_exceeded` instead of storing a checkpoint.
+- A resume request re-enters the normal turn pipeline: it acquires the
+  session lock and a `max_concurrent_turns` slot exactly like an `input`
+  turn, and runs under `turn_timeout_seconds`.
+
+**Observability.** The interrupted segment finishes its builtin turn span as
+`success` with `result_status: "interrupted"` and a `permission` entry in the
+event counts; the resumed segment is a new span with `operation: "resume"` on
+the same session. Inner LLM/MCP child spans attach to whichever segment
+executed them. Correlation across segments is by `session_id` plus
+`request_id` (recorded as a span annotation on both segments).
+
+**Admin surface.** `GET /admin/builtin/runtime` (new, mirroring
+`/admin/acp/runtime`) lists host entries and pending permissions (agent id,
+session id, request id, tool calls, expiry). An operator decision escape
+hatch (`POST /admin/builtin/runtime/permissions/{request_id}`, which would
+need headless continuation semantics — the resumed events go nowhere but the
+session transcript and metrics) is deferred until a concrete operator need
+appears; see §10.
+
+**Non-goals.** Durable pending permissions (eino v0.10 rule); per-node
+permission modes; approval of anything other than MCP tool executions (model
+calls and topology transfers stay ungated); model-native deferred/approval
+tool protocols.
+
 ## 6. Admin API Direction
 
 The existing `/admin/agents` endpoints are stubs. They should become the
@@ -1068,6 +1218,17 @@ per the PB1 restart-loss semantics. The dispatcher `builtin` enablement exists
 in the Caddy binary (`agw`); `agwd` does not expose builtin ingress, matching
 its ACP posture.
 
+**PB1b — interrupt and human-in-the-loop tool permissions:** implemented
+([5.7.7](#577-interrupt-and-human-in-the-loop-tool-permissions)).
+
+- root-level `permissions` block (`auto_approve` default / `interactive`),
+  approval gate over the `einotool` bridge, ADK Runner
+  checkpoint/interrupt/resume with an in-memory `CheckPointStore`
+- `permission` turn event + resume via `POST /<builtin-route>/turn` with a
+  `permission` field; every lifecycle edge (TTL, definition update, capacity,
+  unanswered calls) fails closed
+- `GET /admin/builtin/runtime` pending-permission view
+
 **PB2 — task backend and durable sessions:**
 
 - register `builtin` as the third `RuntimeBackend` when the P2 task layer
@@ -1223,8 +1384,9 @@ repeated here.
   agents, which is Workflows (P3), not multi-backend.
 - Builtin turn event vocabulary (see 5.7.5): **decided in PB1** — a marked
   subset of the ACP set (`session`, `delta`, `content`, `tool_call`, `usage`,
-  `done`, `error`) mapped from ADK Runner events; revisit only if the frontend
-  needs events outside it.
+  `done`, `error`) mapped from ADK Runner events; PB1b (5.7.7) adds
+  `permission` to the subset; revisit only if the frontend needs events
+  outside it.
 - Builtin session durability (see 5.7.4): PB1 shipped in-memory sessions
   (idle TTL, per-agent cap, message cap; histories survive definition updates
   but not restarts). The adoption bar for eino v0.10 Runner persistence
@@ -1236,6 +1398,14 @@ repeated here.
 - Definition update mid-turn: PB1 drains in-flight turns on the old graph;
   is a forced-cancel variant needed for stuck turns beyond
   `turn_timeout_seconds`?
+- Builtin HITL admin escape hatch (see 5.7.7): resolving a pending permission
+  from the Admin API requires headless continuation (the resumed turn's
+  events are visible only in the session transcript and metrics). Is that
+  operator flow needed, or does the data-plane resume cover real usage? The
+  read-only pending-permission view ships either way.
+- Builtin HITL scope: 5.7.7 gates MCP tool executions only. Is there a real
+  case for gating topology transfers or sub-agent handoffs (supervisor
+  routing decisions), or would that stay noise for operators?
 
 ## 11. Implementation Status
 
@@ -1401,3 +1571,34 @@ A post-implementation review tightened the following:
   the agent manager into the usage `AgentAttribution` holder after bootstrap,
   matching `caddy/gateway/app.go`. Without it, write-time `agent_id` stamping was
   silently inert under `agwd` (the attributor was never installed).
+
+### 11.7 Landed in PB1b — interactive tool permissions
+
+- Implemented exactly per 5.7.7 on eino v0.9.12: the approval gate
+  (`pkg/agent/builtin/permission.go`) interrupts through `compose.Interrupt`
+  with the tool-call payload as the user-facing info, the ADK Runner
+  checkpoints into an in-memory `CheckPointStore` shared across
+  materializations (request id = checkpoint id), and resume goes through
+  `Runner.ResumeWithParams` with every pending interrupt point targeted —
+  unanswered calls carry an explicit deny payload, so no gate is left to
+  re-interrupt on its own.
+- The gate wraps the einotool bridge *outside* the observability wrapper:
+  interrupted and denied calls never open an `mcp` child span, so usage
+  events only record executions that actually reached the MCP service.
+- A resumed run that hits another gated call re-suspends under the same
+  request id (the runner rewrites the checkpoint in place); the pending entry
+  is re-registered with accumulated transcript and refreshed expiry, and
+  replacement never counts against `max_pending`.
+- Deviation from none of the design decisions was needed. One addition the
+  design left implicit: an interrupt that yields no permission calls (some
+  non-gate component interrupting) fails the turn as unresumable rather than
+  suspending — only the approval gate is a sanctioned interrupt source in a
+  builtin graph.
+- The `permission` payload types registered for checkpoint gob serialization
+  go through `schema.RegisterName`, mirroring how ADK registers its own
+  checkpoint types.
+- Verified end to end against the real Runner (no mocked ADK): interrupt →
+  checkpoint gob round-trip → targeted resume → allow executes / deny returns
+  a refusal tool result the model sees; plus TTL expiry, definition-update
+  invalidation, capacity rejection, suspended-session input rejection, and
+  the `auto_approve_tools` bypass.

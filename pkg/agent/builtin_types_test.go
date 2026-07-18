@@ -235,6 +235,48 @@ func TestBuiltinValidationRules(t *testing.T) {
 			wantErr: "toolsearch requires the definition to declare tools",
 		},
 		{
+			name: "permissions mode must be a known value",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Permissions = &BuiltinPermissions{Mode: "ask"}
+			},
+			wantErr: "permissions.mode must be",
+		},
+		{
+			name: "permissions values must be non-negative",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Permissions = &BuiltinPermissions{Mode: PermissionModeInteractive, TimeoutSeconds: -1}
+			},
+			wantErr: "permissions values must be non-negative",
+		},
+		{
+			name: "auto_approve_tools requires interactive mode",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Permissions = &BuiltinPermissions{AutoApproveTools: []string{"fs/read_file"}}
+			},
+			wantErr: "auto_approve_tools requires mode",
+		},
+		{
+			name: "auto_approve_tools entries must be fully qualified",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Permissions = &BuiltinPermissions{Mode: PermissionModeInteractive, AutoApproveTools: []string{"read_file"}}
+			},
+			wantErr: "must be <mcp_service_id>/<tool_name>",
+		},
+		{
+			name: "auto_approve_tools entries must resolve to declared tools",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Permissions = &BuiltinPermissions{Mode: PermissionModeInteractive, AutoApproveTools: []string{"fs/write_file"}}
+			},
+			wantErr: "does not resolve to a declared tool",
+		},
+		{
+			name: "auto_approve_tools entries must be unique",
+			mutate: func(a *Agent) {
+				a.Runtime.Builtin.Permissions = &BuiltinPermissions{Mode: PermissionModeInteractive, AutoApproveTools: []string{"fs/read_file", "fs/read_file"}}
+			},
+			wantErr: "is duplicated",
+		},
+		{
 			name: "acp runtime must not carry a builtin block",
 			mutate: func(a *Agent) {
 				a.Runtime.Type = RuntimeTypeACP
