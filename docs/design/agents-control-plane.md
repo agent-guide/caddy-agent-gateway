@@ -48,9 +48,16 @@ package represents an LLM-native internal tool loop, including provider calls,
 memory retrieval, tool execution, and iteration control. Those concerns are
 better handled by dedicated agent frameworks and agent runtimes.
 
-The gateway may later support a built-in agent runtime if there is a concrete
-product requirement, but it must not define the core `agents` model or block
-the external control-plane roadmap.
+The gateway does, however, support an approved **builtin runtime** direction
+(see [5.7](#57-builtin-runtime-adk-hosted-agents)): agents hosted inside the
+gateway process, built on eino ADK. This does not conflict with the non-goal,
+because the gateway still does not implement a reasoning loop of its own — the
+loop, interrupt/resume machinery, and multi-agent topologies are delegated
+wholesale to eino ADK as building material, while the gateway owns exactly what
+it owns for every other runtime: definition, lifecycle, governance, resources,
+and observation. The builtin runtime is a third `runtime.type` behind the same
+`agents` model; it must not reshape that model and must not block the external
+control-plane roadmap.
 
 This direction supersedes the earlier roadmap note in
 `docs/architecture/architecture-overview.md` that described agent orchestration
@@ -155,17 +162,22 @@ Initial shape:
 }
 ```
 
-P0 implements `runtime.type = "acp"` only, but the model defines exactly two
-built-in runtime types, split by a single axis — **who owns the agent's process
-lifecycle**:
+P0 implements `runtime.type = "acp"` only, but the model defines three
+built-in runtime types, split by a single axis — **who owns the agent's
+lifecycle, and whether there is a separate process at all**:
 
-- `acp`: the **gateway** owns the lifecycle (process pool, sessions, permission
-  flow, transcript). For local, embeddable agents the gateway should drive
-  directly. A bespoke agent that needs this depth should be wrapped to speak ACP
-  (the same way `codex-acp` bridges codex), not given a new runtime type.
+- `acp`: the **gateway** owns the lifecycle of an **external process**
+  (process pool, sessions, permission flow, transcript). For local,
+  embeddable agent executables the gateway should drive directly. A bespoke
+  executable that needs this depth should be wrapped to speak ACP (the same
+  way `codex-acp` bridges codex), not given a new runtime type.
 - `http`: the **agent service** owns its own lifecycle; the gateway is only a
   client that hands it a task and observes the result. For business agents that
   expose a network endpoint and consume LLM/MCP through `resources`.
+- `builtin` (approved direction, design in [5.7](#57-builtin-runtime-adk-hosted-agents)):
+  there is **no separate process**. The agent is a persisted definition
+  materialized inside the gateway process by an eino-ADK-based host. The
+  gateway owns the agent's entire existence, not just a process around it.
 
 A `runtime.type = "http"` agent carries an `http` block instead of `acp`:
 
@@ -179,13 +191,21 @@ A `runtime.type = "http"` agent carries an `http` block instead of `acp`:
 }
 ```
 
+A `runtime.type = "builtin"` agent carries a `builtin` block holding the agent
+definition itself (model binding, prompt, tools, topology — see
+[5.7](#57-builtin-runtime-adk-hosted-agents) for the full schema). There is no
+backing service object and no `service_id`: the definition is genuinely
+agent-level config, which is exactly the case the runtime-specific-config rule
+below reserves the `runtime.<type>` block for.
+
 Crucially, **LLM and MCP are resources, not runtime types**. An agent's ability
 to use models and tools lives in `resources` (and is governed there), regardless
 of runtime. The runtime field only describes how the gateway dispatches work and
-observes it. There is intentionally no third "native non-ACP lifecycle" runtime:
-that need collapses into `acp` (wrap it) or `http` (don't manage its lifecycle).
-See [5.4](#54-runtime-backends) for the executor contract and the SPI escape
-hatch.
+observes it. There is intentionally no "native non-ACP external-process
+lifecycle" runtime: for a separate executable, that need collapses into `acp`
+(wrap it) or `http` (don't manage its lifecycle). `builtin` is not that case —
+it has no executable at all. See [5.4](#54-runtime-backends) for the executor
+contract and the SPI escape hatch.
 
 #### Generic policy vs runtime-specific config
 
@@ -366,10 +386,10 @@ Everything above the SPI — task state machine, scheduling, cancellation, retry
 `agent_id` attribution, audit — is shared and reused across backends. Only "hand
 the work to the agent and collect the result" differs per backend.
 
-#### Two built-in backends
+#### Built-in backends
 
-The classification axis is **who owns the agent's lifecycle**, which yields
-exactly two built-in backends:
+The classification axis is **who owns the agent's lifecycle, and whether a
+separate process exists**, which yields three built-in backends:
 
 - **`acp`** — the gateway owns the agent's process lifecycle. `StartTask` issues
   an ACP turn against the agent's `runtime.acp.service_id`, reusing the existing
@@ -385,16 +405,24 @@ exactly two built-in backends:
   task is a network call that runs to terminal state. A remote stateful agent
   still fits here — its "session" is just an id passed over HTTP; the gateway does
   not manage its process.
+- **`builtin`** — there is no process; the agent is a definition hosted
+  in-process (see [5.7](#57-builtin-runtime-adk-hosted-agents)). `StartTask`
+  materializes the definition's ADK object graph (or reuses the cached one) and
+  runs the task as an ADK Runner execution, streaming Runner events into task
+  events. Lands together with the P2 task layer as its third backend.
 
-#### No third native backend
+#### No bespoke external-process backend
 
 There is intentionally no bespoke "native, non-ACP, gateway-managed lifecycle"
-backend. That combination is contradictory: needing gateway-managed lifecycle
-*is* what ACP is for, so the answer is to wrap as ACP rather than reinvent it.
-Concretely:
+backend **for external executables**. That combination is contradictory: needing
+gateway-managed lifecycle for a separate process *is* what ACP is for, so the
+answer is to wrap as ACP rather than reinvent it. Concretely:
 
-- needs gateway-managed lifecycle (pool/sessions/permission) → wrap as `acp`
+- needs gateway-managed lifecycle for an executable (pool/sessions/permission)
+  → wrap as `acp`
 - does not need it (remote / self-managed / stateless) → `http`
+- is not an executable at all, but a declarative definition the gateway can
+  host → `builtin`
 
 #### SPI escape hatch (kept, not shipped)
 
@@ -499,6 +527,151 @@ leave P1-era events without reliable per-agent attribution. Concretely:
 `origin_agent_id` for cross-agent handoff is deferred to P2/P3, because there is
 nothing to stamp until handoff exists. It is added the same additive way when
 handoff ships.
+
+### 5.7 Builtin Runtime (ADK-Hosted Agents)
+
+Status: approved direction; design-only. The eino-side rationale, the reuse
+inventory, and the two bridge adapters are recorded in
+`docs/design/eino-reuse.md` §5; this section is the authoritative gateway-side
+design. Implementation phasing is in [§7 PB](#pb-builtin-runtime-track).
+
+#### 5.7.1 Model: the agent is data, not a program
+
+eino ADK is a library, not a runnable agent binary, so the builtin runtime
+cannot "start" an agent the way the `acp` runtime spawns `codex-acp`. Instead
+the gateway ships **one generic ADK host**, compiled into `agw`/`agwd`, and a
+builtin agent degenerates into a persisted definition under
+`runtime.builtin`. "Starting" the agent means the host materializes the ADK
+object graph — `adk.ChatModelAgent` plus tool adapters plus topology, driven by
+an `adk.Runner` — from that definition, in-process. No new process, no new
+binary. This is the `provider_type` pattern lifted to the agent layer:
+compile-time capability, runtime configuration.
+
+#### 5.7.2 Definition schema
+
+```json
+"runtime": {
+  "type": "builtin",
+  "builtin": {
+    "model": { "llm_route_id": "chat-main", "model": "smart" },
+    "system_prompt": "You are a triage agent...",
+    "generation": { "max_tokens": 8192, "temperature": 0.2 },
+    "tools": [
+      { "mcp_service_id": "filesystem-tools", "tools": ["read_file", "list_dir"] }
+    ],
+    "topology": {
+      "kind": "single",
+      "sub_agents": []
+    },
+    "middlewares": { "summarization": { "enabled": true } },
+    "limits": { "max_concurrent_turns": 4, "turn_timeout_seconds": 600 }
+  }
+}
+```
+
+Schema rules:
+
+- **`model` resolves through an LLM route**, not a raw provider. The host
+  enters ADK via the provider → `ToolCallingChatModel` adapter over the
+  route's `RoutedProvider`, so credential scheduling, candidate fallback,
+  retry classification, and LLM usage events apply unchanged. The referenced
+  route must appear in `routes.llm_route_ids` (route-binding uniqueness then
+  keeps attribution unambiguous, per [5.6](#56-agent-attribution)).
+- **`tools` reference gateway-managed MCP services** and enter ADK via the
+  MCP → `InvokableTool` adapter over `pkg/mcp/service` — in-process, no HTTP
+  loopback. MCP tool policy applies exactly as it does for route-dispatched
+  MCP traffic. Referenced services must appear in
+  `resources.mcp_service_ids`.
+- **`topology.kind`** enumerates what ADK exposes as parameterizable
+  structure: `single`, `sequential`, `parallel`, `loop`, `supervisor`,
+  `planexecute`, `deep`.
+- **Sub-agents are inline child definitions, not references to other
+  `Agent` objects.** Entries in `topology.sub_agents` are nested definition
+  objects (same schema, minus `limits`) that exist only as internal nodes of
+  this one agent. They have no first-class identity, no separate usage
+  attribution, and no admin surface. Referencing another `Agent` as a
+  sub-agent would make one agent a fan-out container over other agents'
+  runtimes — exactly what the [5.1](#51-agent) cardinality rules exclude;
+  coordinating first-class agents is Workflows (P3), not topology.
+- **`middlewares`** toggles the ADK middlewares that are safe as
+  configuration (`summarization`, `agentsmd`); each is off by default.
+
+#### 5.7.3 Escape hatch: compiled-in custom agents
+
+Definitions cover parameterizable structure. An agent that needs custom Go
+logic (bespoke tools, custom graph nodes) uses the repository's established
+extension pattern instead: implement a builtin-agent factory SPI, register it
+(mirroring `provider.RegisterProviderFactory`), and blank-import the package in
+`cmd/agw/main.go`, `cmd/agwd/main.go`, and `cmd/agwctl/cmd_gateway.go` (agwctl
+needs it so bundle `validate`/`apply` can check the factory name). The
+definition selects it with `topology.kind = "custom"` plus a `factory` name;
+validation rejects a factory name absent from the linked registry — the same
+contract `provider_type` has today.
+
+#### 5.7.4 Generic host and lifecycle
+
+Suggested package: `pkg/agent/builtin`. The host owns:
+
+- **Materialization cache**: the ADK object graph is built lazily on first
+  use and cached keyed by agent id + `updated_at`. A definition update
+  invalidates the cache and re-materializes on the next turn — config-driven,
+  no gateway restart. In-flight turns finish on the old graph (drain, not
+  cancel).
+- **Fault containment**: every turn runs under panic recovery — a panicking
+  agent fails that turn with a diagnosable error and must never take down the
+  gateway process. `limits.turn_timeout_seconds` bounds a turn;
+  `limits.max_concurrent_turns` bounds parallelism per agent; both
+  fail-closed (reject, not queue unboundedly).
+- **Disabled semantics**: a disabled agent rejects turns with a
+  client-correctable `400`, matching the disabled-ACP-service contract.
+- **Session state**: eino v0.9.x Runner interrupt/checkpoint state is
+  in-memory only; durable session persistence is a v0.10 alpha
+  (`eino-reuse.md` §6.2). PB1 therefore ships turns whose session state is
+  in-memory with documented restart-loss semantics; durable checkpoints are
+  deferred until eino v0.10 stabilizes and must not be hand-rolled before
+  that.
+
+Dependency direction stays intact: `pkg/agent/builtin` depends on `eino/adk`,
+the two bridge adapters, and the runtime managers. The bridges themselves live
+in neutral packages (suggested: `pkg/llm/provider/einomodel` and
+`pkg/mcp/einotool`) so they are reusable without importing `pkg/agent`, and the
+lower protocol layers still never import `pkg/agent`.
+
+#### 5.7.5 Execution surface
+
+- **Data-plane ingress**: a builtin agent is exposed through a
+  route-dispatched turn endpoint mirroring the ACP shape —
+  `POST /<builtin-route>/turn` streaming SSE — so clients and the frontend
+  keep one turn interaction language. The event vocabulary is mapped from ADK
+  Runner events onto the existing turn event names where semantics align
+  (`delta`, `content`, `tool_call`, `usage`, `done`, `error`); whether the
+  vocabulary is exactly the ACP set or a marked subset is an open question
+  (§10).
+- **Task layer**: the builtin runtime registers as the third
+  `RuntimeBackend` ([5.4](#54-runtime-backends)). `StartTask` materializes
+  (or reuses) the graph and runs the task as a Runner execution; the task
+  state machine, scheduling, cancellation, and audit stay shared and
+  backend-agnostic.
+
+#### 5.7.6 Observability and attribution
+
+- The host begins the interaction span itself and sets `AgentID` explicitly
+  on the span dimensions — the host knows which agent it is running, so
+  builtin attribution never needs the route → agent index and is always
+  exact.
+- Inner LLM calls flow through the `RoutedProvider` and produce
+  `llm_usage_events` as usual; inner MCP tool calls flow through
+  `pkg/mcp/service` and produce `mcp_usage_events`; both inherit `agent_id`
+  from the turn context.
+- Turn-level events get their own additive event family (route kind
+  `builtin`, a `builtin_usage_events` table following the same
+  `InteractionEvent` + extension pattern) when PB1 ships. Do not overload the
+  ACP event family: the dimensions differ (no service id, no permission
+  flow, topology/sub-agent step counts instead).
+- Depth governance: the host carries trace context and agent depth in the
+  turn context; nested topology steps and any outbound agent-to-agent calls
+  increment depth and are enforced against `policy.max_agent_depth`, the same
+  gate the dispatcher applies to inbound `X-Agent-Depth`.
 
 ## 6. Admin API Direction
 
@@ -762,6 +935,41 @@ Goals:
 The runtime implementation should remain conservative until real workflow
 needs are clear from UI and operator usage.
 
+### PB: Builtin Runtime Track
+
+The builtin runtime ([5.7](#57-builtin-runtime-adk-hosted-agents)) is its own
+track. PB0 has no dependency on P2/P3 and can proceed independently; PB2
+lands with the P2 task layer.
+
+**PB0 — bridge adapters (no agent-model change):**
+
+- MCP → `InvokableTool` adapter over `pkg/mcp/service` (suggested:
+  `pkg/mcp/einotool`)
+- `RoutedProvider` → `model.ToolCallingChatModel` adapter (suggested:
+  `pkg/llm/provider/einomodel`)
+- both are standalone libraries with tests; they are also independently
+  useful to any in-repo eino consumer
+
+**PB1 — runtime type, host, and ingress:**
+
+- `runtime.type = "builtin"` with the definition schema and validation from
+  [5.7.2](#572-definition-schema), including the compiled-in factory registry
+  check for `topology.kind = "custom"`
+- the generic ADK host (`pkg/agent/builtin`): materialization cache, panic
+  containment, limits, disabled semantics
+- route-dispatched turn ingress (`POST /<builtin-route>/turn`, SSE)
+- the `builtin` usage event family and explicit `AgentID` span stamping
+- workspace view keyed off `runtime.type = "builtin"` (definition summary,
+  materialization state, live turns — no ACP fields)
+- bundle/`adminclient`/`agwctl` parity, same as every other config object
+
+**PB2 — task backend and durable sessions:**
+
+- register `builtin` as the third `RuntimeBackend` when the P2 task layer
+  lands
+- adopt Runner session/checkpoint persistence only after eino v0.10
+  stabilizes; do not hand-roll durable agent state before that
+
 ## 8. Frontend Iteration Plan
 
 The frontend should shift from protocol-resource navigation to an agent console
@@ -908,10 +1116,24 @@ repeated here.
   service/instance) makes it hard for `acp` and would need an explicit
   session-routing model. This is distinct from coordinating *multiple distinct*
   agents, which is Workflows (P3), not multi-backend.
+- Builtin turn event vocabulary (see 5.7.5): exactly the ACP SSE event set, or
+  a marked subset/superset mapped from ADK Runner events? Decide when PB1's
+  ingress is implemented, against what the frontend actually renders.
+- Builtin session durability (see 5.7.4): what restart-loss semantics are
+  acceptable for PB1's in-memory sessions, and what is the adoption bar for
+  eino v0.10 Runner persistence?
+- Is the builtin host the first *enforced* budget point? Enforcement is
+  cheapest there (the gateway is the caller), but the budget model itself
+  (token/cost/turn) is still the open question above; do not let builtin ship
+  a divergent ad-hoc budget shape.
+- Definition update mid-turn: PB1 drains in-flight turns on the old graph;
+  is a forced-cancel variant needed for stuck turns beyond
+  `turn_timeout_seconds`?
 
 ## 11. Implementation Status
 
-P0 (P0a + P0b) and P1 are **implemented**. P2 and P3 remain design-only.
+P0 (P0a + P0b) and P1 are **implemented**. P2, P3, and the PB builtin-runtime
+track (§5.7, §7 PB) remain design-only.
 
 ### 11.1 Landed in P0a — agent object and CRUD
 

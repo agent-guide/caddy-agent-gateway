@@ -16,7 +16,10 @@ The documentation is organized into these categories:
 - `architecture/`
   - current implemented system architecture and request flow
 - `design/`
-  - design notes, technical specifications, and roadmap documents
+  - durable design notes, technical specifications, and roadmap documents
+- `plans/`
+  - time-bound execution plans tied to a version line; deleted once their
+    work lands and the permanent documents describe the result
 - `development/`
   - contributor-facing process or collaboration material
 
@@ -27,6 +30,7 @@ Category index:
 - [reference/](reference/README.md)
 - [architecture/](architecture/README.md)
 - [design/](design/README.md)
+- [plans/](plans/README.md)
 - [development/](development/README.md)
 
 ## Current Documents
@@ -46,7 +50,7 @@ Primary detailed documents:
 - [design/route-target-policy.md](design/route-target-policy.md): route target policy architecture
 - [design/memory.md](design/memory.md): memory subsystem design
 - [design/observability.md](design/observability.md): observability design
-- [design/observability-implementation.md](design/observability-implementation.md): observability implementation plan
+- [plans/observability-implementation.md](plans/observability-implementation.md): observability implementation plan
 - [design/protocol-support-roadmap.md](design/protocol-support-roadmap.md): protocol support roadmap
 - [development/ai-assisted-refactor-collaboration-templates.md](development/ai-assisted-refactor-collaboration-templates.md): contributor collaboration templates
 

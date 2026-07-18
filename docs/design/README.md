@@ -1,6 +1,8 @@
 # Design
 
-This section is for design notes, technical specifications, and roadmap documents.
+This section is for durable design notes, technical specifications, and
+roadmap documents that describe decisions and direction. Time-bound
+execution plans live in [`../plans/`](../plans/README.md) instead.
 
 Current design pages:
 
@@ -11,6 +13,5 @@ Current design pages:
 - [mcp-tool-policy.md](mcp-tool-policy.md)
 - [memory.md](memory.md)
 - [observability.md](observability.md)
-- [observability-implementation.md](observability-implementation.md)
 - [protocol-support-roadmap.md](protocol-support-roadmap.md)
-- [v0.4-completion.md](v0.4-completion.md)
+- [eino-reuse.md](eino-reuse.md)
