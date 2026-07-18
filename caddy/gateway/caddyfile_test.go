@@ -28,6 +28,15 @@ func TestParseAppFromCaddyfile(t *testing.T) {
 		metrics {
 			retention_days 14
 			max_agent_depth 3
+			otlp {
+				endpoint 127.0.0.1:4317
+				protocol grpc
+				insecure
+				components
+				header X-Auth-Token secret
+				service_name my-gateway
+				timeout_seconds 5
+			}
 		}
 
 		route openai-chat {
@@ -89,6 +98,16 @@ func TestParseAppFromCaddyfile(t *testing.T) {
 	}
 	if app.Metrics.RetentionDays != 14 || app.Metrics.MaxAgentDepth != 3 {
 		t.Fatalf("metrics = %+v, want retention_days=14 max_agent_depth=3", app.Metrics)
+	}
+	otlp := app.Metrics.OTLP
+	if otlp.Endpoint != "127.0.0.1:4317" || otlp.Protocol != "grpc" || !otlp.Insecure {
+		t.Fatalf("otlp = %+v, want endpoint=127.0.0.1:4317 protocol=grpc insecure", otlp)
+	}
+	if otlp.Headers["X-Auth-Token"] != "secret" || otlp.ServiceName != "my-gateway" || otlp.TimeoutSeconds != 5 {
+		t.Fatalf("otlp = %+v, want header X-Auth-Token=secret service_name=my-gateway timeout_seconds=5", otlp)
+	}
+	if !otlp.Components {
+		t.Fatalf("otlp = %+v, want components enabled", otlp)
 	}
 	if len(app.LLMRoutes) != 1 {
 		t.Fatalf("llm route count = %d, want 1", len(app.LLMRoutes))

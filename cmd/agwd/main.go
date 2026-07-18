@@ -56,6 +56,12 @@ func main() {
 	rootCmd.Flags().StringArrayVar(&opts.ProviderTypes, "provider-type", nil, "provider type enabled for this process; repeat to allow multiple types")
 	rootCmd.Flags().IntVar(&opts.Metrics.RetentionDays, "metrics-retention-days", 30, "retention window in days for persisted usage events")
 	rootCmd.Flags().IntVar(&opts.Metrics.MaxAgentDepth, "max-agent-depth", 0, "maximum inbound X-Agent-Depth allowed before rejecting a request; 0 disables enforcement")
+	rootCmd.Flags().StringVar(&opts.Metrics.OTLP.Endpoint, "metrics-otlp-endpoint", "", "OTLP collector endpoint (host:port or URL) for exporting usage events as spans; empty disables export")
+	rootCmd.Flags().StringVar(&opts.Metrics.OTLP.Protocol, "metrics-otlp-protocol", "grpc", "OTLP transport protocol: grpc or http")
+	rootCmd.Flags().BoolVar(&opts.Metrics.OTLP.Insecure, "metrics-otlp-insecure", false, "disable TLS for the OTLP exporter")
+	rootCmd.Flags().StringToStringVar(&opts.Metrics.OTLP.Headers, "metrics-otlp-header", nil, "header sent with every OTLP export request as name=value; repeat for multiple headers")
+	rootCmd.Flags().StringVar(&opts.Metrics.OTLP.ServiceName, "metrics-otlp-service-name", "", "OTel resource service.name for exported spans (default agent-gateway)")
+	rootCmd.Flags().BoolVar(&opts.Metrics.OTLP.Components, "metrics-otlp-components", false, "additionally export one span per eino chat-model component call, nested under the interaction span")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)

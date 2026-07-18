@@ -101,9 +101,90 @@ func parseMetrics(d *caddyfile.Dispenser, app *App) error {
 				return seg.ArgErr()
 			}
 			app.Metrics.MaxAgentDepth = v
+		case "otlp":
+			if seg.NextArg() {
+				return seg.ArgErr()
+			}
+			if err := parseMetricsOTLP(seg, app); err != nil {
+				return err
+			}
 		default:
 			return seg.Errf("unknown metrics subdirective: %s", seg.Val())
 		}
+	}
+	return nil
+}
+
+func parseMetricsOTLP(seg *caddyfile.Dispenser, app *App) error {
+	for seg.NextBlock(1) {
+		switch seg.Val() {
+		case "endpoint":
+			if !seg.NextArg() {
+				return seg.ArgErr()
+			}
+			app.Metrics.OTLP.Endpoint = seg.Val()
+			if seg.NextArg() {
+				return seg.ArgErr()
+			}
+		case "protocol":
+			if !seg.NextArg() {
+				return seg.ArgErr()
+			}
+			app.Metrics.OTLP.Protocol = seg.Val()
+			if seg.NextArg() {
+				return seg.ArgErr()
+			}
+		case "insecure":
+			if seg.NextArg() {
+				return seg.ArgErr()
+			}
+			app.Metrics.OTLP.Insecure = true
+		case "components":
+			if seg.NextArg() {
+				return seg.ArgErr()
+			}
+			app.Metrics.OTLP.Components = true
+		case "header":
+			if !seg.NextArg() {
+				return seg.ArgErr()
+			}
+			name := seg.Val()
+			if !seg.NextArg() {
+				return seg.ArgErr()
+			}
+			if app.Metrics.OTLP.Headers == nil {
+				app.Metrics.OTLP.Headers = make(map[string]string)
+			}
+			app.Metrics.OTLP.Headers[name] = seg.Val()
+			if seg.NextArg() {
+				return seg.ArgErr()
+			}
+		case "service_name":
+			if !seg.NextArg() {
+				return seg.ArgErr()
+			}
+			app.Metrics.OTLP.ServiceName = seg.Val()
+			if seg.NextArg() {
+				return seg.ArgErr()
+			}
+		case "timeout_seconds":
+			if !seg.NextArg() {
+				return seg.ArgErr()
+			}
+			v, err := strconv.Atoi(seg.Val())
+			if err != nil || v <= 0 {
+				return seg.Err("timeout_seconds must be a positive integer")
+			}
+			if seg.NextArg() {
+				return seg.ArgErr()
+			}
+			app.Metrics.OTLP.TimeoutSeconds = v
+		default:
+			return seg.Errf("unknown otlp subdirective: %s", seg.Val())
+		}
+	}
+	if err := app.Metrics.OTLP.Validate(); err != nil {
+		return seg.Err(err.Error())
 	}
 	return nil
 }

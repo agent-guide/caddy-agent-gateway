@@ -143,10 +143,14 @@ instrumented.
 Trace positioning (context for the constraints above): the gateway keeps
 one flat interaction event per request; `trace_id` / `span_id` /
 `parent_span_id` / `agent_depth` are correlation dimensions on usage
-events, not a span-tree subsystem. Sub-interaction detail (per provider
-attempt, per SDK retry), if ever needed as first-class spans, should flow
-through the `pipeline.OpenTelemetrySink` seam to an external tracing
-system rather than a gateway-owned trace store.
+events, not a span-tree subsystem. The tree view is delegated to external
+tracing systems: `internal/observability/otelexport` (behind the
+`pipeline.OpenTelemetrySink` seam) exports every usage event as one OTel
+span carrying the event's own ids, so an OTLP collector reconstructs the
+recorded span tree without the gateway owning a trace store. Detail finer
+than the event grain (per provider attempt, per SDK retry) is still not
+spanned; if ever needed, extend the exporter rather than the event
+tables.
 
 ### 4.2 `schema.ConcatMessages` for stream aggregation
 
@@ -177,7 +181,19 @@ layer.
 
 ### 4.4 eino-ext callbacks handlers for platform export
 
-Status: optional, adopt when an export target is requested.
+Status: the gateway-side OTel exit is implemented — usage events export as
+OTLP spans through `internal/observability/otelexport` behind
+`pipeline.OpenTelemetrySink`, enabled by the `metrics.otlp` config block.
+The callbacks→OTLP component tap is also implemented (`metrics.otlp`
+`components` toggle, off by default): a process-global callbacks handler
+exports one client-kind span per eino chat-model component call, parented
+under the interaction span resolved from the request context, so
+component-internal detail (call setup, per-call token usage, errors) nests
+inside the same trace tree. Registration follows the einotap pattern —
+handler registered once, the exporter behind it swapped atomically on
+config reload. For streaming calls the span ends when the component returns
+the stream (the drain duration lives on the interaction span); the handler
+closes its stream copy unread. Vendor callbacks handlers remain optional.
 
 eino-ext ships ready-made callbacks handlers as standalone modules under
 `eino-ext/callbacks/`: `apmplus`, `cozeloop`, `langfuse`, `langsmith`.
@@ -200,7 +216,10 @@ There is no vendor lock-in to these platforms; the OTel route is open:
   self-hosted collector. Langfuse also ingests OTLP natively, so even a
   Langfuse target does not require its proprietary handler.
 - On the gateway side, `pipeline.OpenTelemetrySink` is the vendor-neutral
-  usage-event exit.
+  usage-event exit, implemented by `internal/observability/otelexport`:
+  each usage event becomes one OTel span reusing the event's own W3C ids
+  (the events are correlation-complete, so no live tracer is needed),
+  batched by a `BatchSpanProcessor` and shipped over OTLP gRPC or HTTP.
 
 Default recommendation when export is requested: prefer the OTel route
 (custom handler or `libs/acl/opentelemetry`) → collector → backend of
@@ -376,8 +395,11 @@ infrastructure surfaces.
    the PB2 remainder (task backend, durable sessions after eino v0.10).
 4. Migrate openai/codex Responses paths to agentic* components after they
    graduate from Beta (§6.1).
-5. Register vendor callbacks handlers (§4.4) when export to an external
-   LLM-observability platform is requested.
+5. ~~Wire the gateway-side OTel exit (§4.4).~~ Done: usage events export
+   as OTLP spans via `internal/observability/otelexport` when
+   `metrics.otlp.endpoint` is configured. Vendor callbacks handlers stay
+   on-request for platforms that need component-level detail beyond the
+   usage-event grain.
 6. `FailoverChatModel`/`RetryChatModel` only if and when an ADK builtin
    runtime lands (§4.3, §5).
 

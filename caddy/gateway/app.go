@@ -10,6 +10,7 @@ import (
 
 	configstoresqlite "github.com/agent-guide/agent-gateway/caddy/configstore/sqlite"
 	"github.com/agent-guide/agent-gateway/internal/observability/einotap"
+	"github.com/agent-guide/agent-gateway/internal/observability/otelexport"
 	"github.com/agent-guide/agent-gateway/internal/observability/pipeline"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
@@ -37,8 +38,9 @@ type App struct {
 	ProviderTypes []provider.ProviderTypeSetting `json:"provider_types,omitempty"`
 	// LLMRoutes lists statically configured gateway LLM route configs from the Caddyfile app block.
 	LLMRoutes []routecore.AgentRouteConfig `json:"llm_routes,omitempty"`
-	// Metrics configures observability retention and agent-chain governance.
-	Metrics usage.Config `json:"metrics,omitempty"`
+	// Metrics configures observability retention, agent-chain governance, and
+	// optional OTLP span export of usage events.
+	Metrics usage.Config `json:"metrics,omitzero"`
 
 	logger           *zap.Logger
 	cliauthManager   *cliauth.Manager
@@ -214,7 +216,22 @@ func (a *App) provisionUsageService() {
 		return
 	}
 	promSink := pipeline.NewPrometheusSink()
-	svc := usage.NewUsageService(pipeline.NewEventPipeline(4096, sink, promSink), query)
+	sinks := []pipeline.Sink{sink, promSink}
+	if otlp := a.Metrics.Normalized().OTLP; otlp.Enabled() {
+		exporter, err := otelexport.New(context.Background(), otlp)
+		if err != nil {
+			a.logger.Warn("otlp usage exporter unavailable", zap.Error(err))
+		} else {
+			sinks = append(sinks, pipeline.NewOpenTelemetrySink(exporter))
+			if otlp.Components {
+				otelexport.EnableComponentTap(exporter)
+			}
+			a.logger.Info("otlp usage export enabled",
+				zap.String("endpoint", otlp.Endpoint), zap.String("protocol", otlp.Protocol),
+				zap.Bool("components", otlp.Components))
+		}
+	}
+	svc := usage.NewUsageService(pipeline.NewEventPipeline(4096, sinks...), query)
 	svc.AttachPrometheus(promSink)
 	a.usageService = svc
 }

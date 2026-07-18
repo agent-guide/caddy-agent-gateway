@@ -27,6 +27,16 @@
 		metrics {
 			retention_days 30
 			max_agent_depth 0
+			# Optional: export usage events as OpenTelemetry spans to an OTLP
+			# collector. Export is disabled when no endpoint is configured.
+			# otlp {
+			#	endpoint 127.0.0.1:4317
+			#	protocol grpc
+			#	insecure
+			#	header Authorization "Bearer token"
+			#	service_name agent-gateway
+			#	timeout_seconds 10
+			# }
 		}
 	}
 }

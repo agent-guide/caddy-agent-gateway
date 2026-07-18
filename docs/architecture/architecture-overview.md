@@ -446,6 +446,7 @@ The following are implemented enough to be production-shape code, even if still 
 - OpenAI-compatible and Anthropic-compatible ingress handlers
 - MCP dispatcher, upstream discovery, upstream execution, and runtime inspection
 - SQLite-backed usage metrics summaries and recent interaction event inspection
+- OTLP span export of usage events to an OpenTelemetry collector (opt-in via the `metrics.otlp` config)
 
 The following are partial or placeholder:
 
@@ -453,7 +454,6 @@ The following are partial or placeholder:
 - agent admin APIs
 - first-class non-HTTP MCP transports such as stdio in the active request path
 - full upstream progress relay back to MCP clients
-- operator-facing metrics exporter wiring
 - full memory retrieval and writeback in request path
 - the `agents` control plane is implemented through P0 + P1 (CRUD, workspace, observability, and write-time `agent_id` attribution); external tasks/scheduling (P2) and multi-agent workflows (P3) remain future work. The legacy `pkg/llm/agent` orchestrator has been removed.
 - richer static Caddyfile route syntax for all route fields
@@ -531,7 +531,6 @@ The most coherent next steps for the architecture are:
 - include MCP objects in bundle/export/apply flows
 - finish the missing admin handlers for memory
 - extend the `agents` control plane beyond P0 + P1 (which are implemented: `pkg/agent`, the `agents` store, `/admin/agents` CRUD + workspace + observability, and `agent_id` attribution) to external tasks/scheduling (P2) and multi-agent workflows (P3) (see [../design/agents-control-plane.md](../design/agents-control-plane.md))
-- wire operator-facing metrics exporters
 - expand enforcement of route policy beyond the currently active subset
 - integrate memory into the request path
 - expand Caddyfile route syntax to cover more of the existing route data model

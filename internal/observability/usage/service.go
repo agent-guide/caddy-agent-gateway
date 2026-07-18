@@ -3,8 +3,9 @@ package usage
 import "sync/atomic"
 
 type Config struct {
-	RetentionDays int `json:"retention_days,omitempty"`
-	MaxAgentDepth int `json:"max_agent_depth,omitempty"`
+	RetentionDays int        `json:"retention_days,omitempty"`
+	MaxAgentDepth int        `json:"max_agent_depth,omitempty"`
+	OTLP          OTLPConfig `json:"otlp,omitzero"`
 }
 
 func (c Config) Normalized() Config {
@@ -17,6 +18,7 @@ func (c Config) Normalized() Config {
 	if c.MaxAgentDepth < 0 {
 		c.MaxAgentDepth = 0
 	}
+	c.OTLP = c.OTLP.Normalized()
 	return c
 }
 
