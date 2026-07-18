@@ -49,6 +49,10 @@ func runGatewayExport(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	builtinRoutes, err := client.ListBuiltinRoutes(ctx)
+	if err != nil {
+		return err
+	}
 	agents, err := client.ListAgents(ctx)
 	if err != nil {
 		return err
@@ -96,6 +100,9 @@ func runGatewayExport(ctx context.Context, path string) error {
 	}
 	for _, item := range acpRoutes {
 		bundle.ACPRoutes = append(bundle.ACPRoutes, item.ACPRouteConfig)
+	}
+	for _, item := range builtinRoutes {
+		bundle.BuiltinRoutes = append(bundle.BuiltinRoutes, item.BuiltinRouteConfig)
 	}
 	for _, item := range agents {
 		bundle.Agents = append(bundle.Agents, item.Agent)
@@ -153,6 +160,9 @@ func sortGatewayBundle(bundle *gatewaybundle.GatewayBundle) {
 	})
 	sort.Slice(bundle.ACPRoutes, func(i, j int) bool {
 		return bundle.ACPRoutes[i].ID < bundle.ACPRoutes[j].ID
+	})
+	sort.Slice(bundle.BuiltinRoutes, func(i, j int) bool {
+		return bundle.BuiltinRoutes[i].ID < bundle.BuiltinRoutes[j].ID
 	})
 	sort.Slice(bundle.Agents, func(i, j int) bool {
 		return bundle.Agents[i].ID < bundle.Agents[j].ID

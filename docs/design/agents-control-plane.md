@@ -584,7 +584,23 @@ Schema rules:
   `resources.mcp_service_ids`.
 - **`topology.kind`** enumerates what ADK exposes as parameterizable
   structure: `single`, `sequential`, `parallel`, `loop`, `supervisor`,
-  `planexecute`, `deep`.
+  `planexecute`, `deep`. `topology.max_iterations` bounds the kind's
+  iteration loop (loop rounds, planexecute execute-replan rounds, deep
+  reasoning iterations); 0 uses the ADK default.
+- **`planexecute` configures its roles through `topology.plan_execute`**
+  (`planner`/`executor`/`replanner`), not `sub_agents`. Every role inherits
+  the node's model unless it overrides `model`/`generation`; the executor is
+  the only role that runs MCP tools (its `tools` replace the node's
+  selection, and its `max_iterations` bounds the inner tool-call loop). The
+  planner and replanner emit plans through forced tool calling, so their
+  models always resolve with `RequireTools`. The whole block is optional.
+- **`deep` reuses the node's own fields** — model, `system_prompt` as the
+  head instruction, tools, and optional `sub_agents` the head fans out to
+  through the prebuilt's task tool (the prebuilt adds a general-purpose
+  sub-agent by default, so `sub_agents` may be empty). The head always
+  resolves with `RequireTools` (it drives `write_todos` and the task tool);
+  filesystem/shell backends stay unset — a builtin agent has no workspace to
+  hand out.
 - **Sub-agents are inline child definitions, not references to other
   `Agent` objects.** Entries in `topology.sub_agents` are nested definition
   objects (same schema, minus `limits`) that exist only as internal nodes of
@@ -951,18 +967,30 @@ lands with the P2 task layer.
 - both are standalone libraries with tests; they are also independently
   useful to any in-repo eino consumer
 
-**PB1 — runtime type, host, and ingress:**
+**PB1 — runtime type, host, and ingress:** implemented.
 
 - `runtime.type = "builtin"` with the definition schema and validation from
   [5.7.2](#572-definition-schema), including the compiled-in factory registry
   check for `topology.kind = "custom"`
 - the generic ADK host (`pkg/agent/builtin`): materialization cache, panic
   containment, limits, disabled semantics
-- route-dispatched turn ingress (`POST /<builtin-route>/turn`, SSE)
-- the `builtin` usage event family and explicit `AgentID` span stamping
+- route-dispatched turn ingress (`POST /<builtin-route>/turn`, SSE) through
+  `pkg/gateway/builtinroute` and the dispatcher `builtin` enablement
+- the `builtin` usage event family and explicit `AgentID` span stamping; inner
+  model/tool calls get child spans (kinds `llm`/`mcp`) parented under the turn
 - workspace view keyed off `runtime.type = "builtin"` (definition summary,
   materialization state, live turns — no ACP fields)
 - bundle/`adminclient`/`agwctl` parity, same as every other config object
+
+Scope notes of the landed slice: every topology kind materializes —
+`single`, `sequential`, `parallel`, `loop`, `supervisor`, `planexecute`
+(role models via `topology.plan_execute`, per [5.7.2](#572-definition-schema)),
+`deep`, and `custom`. Middleware toggles cover
+`summarization` (using the agent's own model); `agentsmd` is deferred — it
+needs a file backend that builtin agents do not have. Sessions are in-memory
+per the PB1 restart-loss semantics. The dispatcher `builtin` enablement exists
+in the Caddy binary (`agw`); `agwd` does not expose builtin ingress, matching
+its ACP posture.
 
 **PB2 — task backend and durable sessions:**
 
@@ -1117,12 +1145,14 @@ repeated here.
   service/instance) makes it hard for `acp` and would need an explicit
   session-routing model. This is distinct from coordinating *multiple distinct*
   agents, which is Workflows (P3), not multi-backend.
-- Builtin turn event vocabulary (see 5.7.5): exactly the ACP SSE event set, or
-  a marked subset/superset mapped from ADK Runner events? Decide when PB1's
-  ingress is implemented, against what the frontend actually renders.
-- Builtin session durability (see 5.7.4): what restart-loss semantics are
-  acceptable for PB1's in-memory sessions, and what is the adoption bar for
-  eino v0.10 Runner persistence?
+- Builtin turn event vocabulary (see 5.7.5): **decided in PB1** — a marked
+  subset of the ACP set (`session`, `delta`, `content`, `tool_call`, `usage`,
+  `done`, `error`) mapped from ADK Runner events; revisit only if the frontend
+  needs events outside it.
+- Builtin session durability (see 5.7.4): PB1 shipped in-memory sessions
+  (idle TTL, per-agent cap, message cap; histories survive definition updates
+  but not restarts). The adoption bar for eino v0.10 Runner persistence
+  remains open.
 - Is the builtin host the first *enforced* budget point? Enforcement is
   cheapest there (the gateway is the caller), but the budget model itself
   (token/cost/turn) is still the open question above; do not let builtin ship
@@ -1135,8 +1165,13 @@ repeated here.
 
 P0 (P0a + P0b) and P1 are **implemented**. In the PB builtin-runtime track
 (§5.7, §7 PB), PB0 — the two bridge adapters (`pkg/mcp/einotool`,
-`pkg/llm/provider/einomodel`) — is **implemented**; PB1 and PB2 remain
-design-only, as do P2 and P3.
+`pkg/llm/provider/einomodel`) — and PB1 — the builtin runtime type, the
+generic ADK host (`pkg/agent/builtin`), route-dispatched turn ingress
+(`pkg/gateway/builtinroute` + dispatcher `builtin`), the `builtin` usage
+event family with explicit agent stamping and inner llm/mcp child spans, the
+workspace builtin view, and bundle/adminclient/agwctl parity — are
+**implemented** (see the §7 PB1 scope notes for the landed slice). PB2
+remains design-only, as do P2 and P3.
 
 ### 11.1 Landed in P0a — agent object and CRUD
 

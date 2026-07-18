@@ -33,6 +33,39 @@ func TestObserverGeneratesW3CTraceAndSpanIDs(t *testing.T) {
 	}
 }
 
+func TestFinishFallbackErrorTypeClassifiesByStatusClass(t *testing.T) {
+	sink := &captureEventSink{}
+	observer := NewObserver(sink)
+
+	span, _ := observer.Begin(t.Context(), InteractionDimensions{RouteKind: "builtin"})
+	span.Finish(InteractionOutcome{Success: false, StatusCode: 400})
+	span, _ = observer.Begin(t.Context(), InteractionDimensions{RouteKind: "builtin"})
+	span.Finish(InteractionOutcome{Success: false, StatusCode: 502})
+
+	if len(sink.events) != 2 {
+		t.Fatalf("events = %d, want 2", len(sink.events))
+	}
+	if got := sink.events[0].(BuiltinUsageEvent).ErrorType; got != "client_error" {
+		t.Fatalf("unannotated 4xx error_type = %q, want client_error", got)
+	}
+	if got := sink.events[1].(BuiltinUsageEvent).ErrorType; got != "internal_error" {
+		t.Fatalf("unannotated 5xx error_type = %q, want internal_error", got)
+	}
+}
+
+func TestDiscardSuppressesTheEvent(t *testing.T) {
+	sink := &captureEventSink{}
+	observer := NewObserver(sink)
+
+	span, _ := observer.Begin(t.Context(), InteractionDimensions{RouteKind: "builtin"})
+	span.Discard()
+	span.Finish(InteractionOutcome{Success: true, StatusCode: 200})
+
+	if len(sink.events) != 0 {
+		t.Fatalf("events = %d, want 0 after Discard", len(sink.events))
+	}
+}
+
 func TestLLMExtensionTokenDetailsReachEvent(t *testing.T) {
 	sink := &captureEventSink{}
 	observer := NewObserver(sink)

@@ -30,6 +30,13 @@ var mcpUsageInsertColumns = []string{
 	"arg_count", "result_status", "cancelled", "tool_args_json", "agent_id",
 }
 
+var builtinUsageInsertColumns = []string{
+	"event_id", "trace_id", "span_id", "parent_span_id", "agent_depth", "started_at", "finished_at",
+	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
+	"operation", "session_id", "topology_kind", "model_steps", "tool_steps",
+	"event_counts_json", "result_status", "agent_id",
+}
+
 var acpUsageInsertColumns = []string{
 	"event_id", "trace_id", "span_id", "parent_span_id", "agent_depth", "started_at", "finished_at",
 	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
@@ -71,6 +78,16 @@ func InsertACPUsageEvent(db *gorm.DB, ev usage.ACPUsageEvent) error {
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
 		ev.ServiceID, ev.AgentType, ev.Operation, ev.ThreadID, ev.SessionID, ev.PermissionRequestID, fresh,
 		string(counts), truncatePayload(ev.UsageJSON), ev.ResultStatus, nullString(ev.AgentID),
+	).Error
+}
+
+func InsertBuiltinUsageEvent(db *gorm.DB, ev usage.BuiltinUsageEvent) error {
+	counts, _ := json.Marshal(ev.EventCounts)
+	return db.Exec(usageInsertSQL("builtin_usage_events", builtinUsageInsertColumns),
+		ev.EventID, ev.TraceID, ev.SpanID, ev.ParentSpanID, ev.AgentDepth, unixMillis(ev.StartedAt), unixMillis(ev.FinishedAt),
+		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
+		ev.Operation, ev.SessionID, ev.TopologyKind, ev.ModelSteps, ev.ToolSteps,
+		string(counts), ev.ResultStatus, nullString(ev.AgentID),
 	).Error
 }
 

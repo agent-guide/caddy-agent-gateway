@@ -12,6 +12,7 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/adminclient"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -106,6 +107,9 @@ func runGatewayApply(ctx context.Context, path string) error {
 		return err
 	}
 	if err := applyACPRoutes(ctx, client, bundle, record); err != nil {
+		return err
+	}
+	if err := applyBuiltinRoutes(ctx, client, bundle, record); err != nil {
 		return err
 	}
 	// Agents are pure references over the objects above, so they apply last,
@@ -563,6 +567,46 @@ func applyACPRoutes(ctx context.Context, client *adminclient.Client, bundle *gat
 	return nil
 }
 
+func applyBuiltinRoutes(ctx context.Context, client *adminclient.Client, bundle *gatewaybundle.GatewayBundle, record func(kind, id, action string, err error)) error {
+	items, err := client.ListBuiltinRoutes(ctx)
+	if err != nil {
+		return err
+	}
+	current := map[string]adminclient.BuiltinRouteView{}
+	for _, item := range items {
+		current[item.ID] = item
+	}
+	for _, desired := range bundle.BuiltinRoutes {
+		desired.Normalize()
+		id := desired.ID
+		item, ok := current[id]
+		if !ok {
+			if _, err := client.CreateBuiltinRoute(ctx, desired); err != nil {
+				record("builtin_route", id, "error", fmt.Errorf("builtin_route %q create: %w", id, err))
+			} else {
+				record("builtin_route", id, "create", nil)
+			}
+			continue
+		}
+		if item.ReadOnly {
+			record("builtin_route", id, "error", fmt.Errorf("builtin_route %q is read-only", id))
+			continue
+		}
+		currentNorm := normalizeComparableBuiltinRoute(item.BuiltinRouteConfig)
+		desiredNorm := normalizeComparableBuiltinRoute(desired)
+		if reflect.DeepEqual(currentNorm, desiredNorm) {
+			record("builtin_route", id, "skip", nil)
+			continue
+		}
+		if _, err := client.UpdateBuiltinRoute(ctx, id, desired); err != nil {
+			record("builtin_route", id, "error", fmt.Errorf("builtin_route %q update: %w", id, err))
+		} else {
+			record("builtin_route", id, "update", nil)
+		}
+	}
+	return nil
+}
+
 func applyAgents(ctx context.Context, client *adminclient.Client, bundle *gatewaybundle.GatewayBundle, record func(kind, id, action string, err error)) error {
 	if len(bundle.Agents) == 0 {
 		return nil
@@ -611,13 +655,14 @@ func applyAgents(ctx context.Context, client *adminclient.Client, bundle *gatewa
 }
 
 type agentApplyReferences struct {
-	providers   map[string]struct{}
-	mcpServices map[string]struct{}
-	virtualKeys map[string]struct{}
-	llmRoutes   map[string]struct{}
-	mcpRoutes   map[string]struct{}
-	acpRoutes   map[string]struct{}
-	acpServices map[string]struct{}
+	providers     map[string]struct{}
+	mcpServices   map[string]struct{}
+	virtualKeys   map[string]struct{}
+	llmRoutes     map[string]struct{}
+	mcpRoutes     map[string]struct{}
+	acpRoutes     map[string]struct{}
+	builtinRoutes map[string]struct{}
+	acpServices   map[string]struct{}
 }
 
 func loadAgentApplyReferences(ctx context.Context, client *adminclient.Client) (*agentApplyReferences, error) {
@@ -645,18 +690,23 @@ func loadAgentApplyReferences(ctx context.Context, client *adminclient.Client) (
 	if err != nil {
 		return nil, err
 	}
+	builtinRoutes, err := client.ListBuiltinRoutes(ctx)
+	if err != nil {
+		return nil, err
+	}
 	acpServices, err := client.ListACPServices(ctx)
 	if err != nil {
 		return nil, err
 	}
 	refs := &agentApplyReferences{
-		providers:   map[string]struct{}{},
-		mcpServices: map[string]struct{}{},
-		virtualKeys: map[string]struct{}{},
-		llmRoutes:   map[string]struct{}{},
-		mcpRoutes:   map[string]struct{}{},
-		acpRoutes:   map[string]struct{}{},
-		acpServices: map[string]struct{}{},
+		providers:     map[string]struct{}{},
+		mcpServices:   map[string]struct{}{},
+		virtualKeys:   map[string]struct{}{},
+		llmRoutes:     map[string]struct{}{},
+		mcpRoutes:     map[string]struct{}{},
+		acpRoutes:     map[string]struct{}{},
+		builtinRoutes: map[string]struct{}{},
+		acpServices:   map[string]struct{}{},
 	}
 	for _, item := range providers {
 		refs.providers[item.Id] = struct{}{}
@@ -675,6 +725,9 @@ func loadAgentApplyReferences(ctx context.Context, client *adminclient.Client) (
 	}
 	for _, item := range acpRoutes {
 		refs.acpRoutes[item.ID] = struct{}{}
+	}
+	for _, item := range builtinRoutes {
+		refs.builtinRoutes[item.ID] = struct{}{}
 	}
 	for _, item := range acpServices {
 		refs.acpServices[item.ID] = struct{}{}
@@ -703,6 +756,7 @@ func (r *agentApplyReferences) validate(a agentpkg.Agent) error {
 	check("llm_route_id", a.Routes.LLMRouteIDs, r.llmRoutes)
 	check("mcp_route_id", a.Routes.MCPRouteIDs, r.mcpRoutes)
 	check("acp_route_id", a.Routes.ACPRouteIDs, r.acpRoutes)
+	check("builtin_route_id", a.Routes.BuiltinRouteIDs, r.builtinRoutes)
 	if serviceID := a.ACPServiceID(); serviceID != "" {
 		check("runtime.acp.service_id", []string{serviceID}, r.acpServices)
 	}
@@ -728,6 +782,14 @@ func normalizeComparableACPService(cfg acpservice.ServiceConfig) acpservice.Serv
 }
 
 func normalizeComparableACPRoute(cfg acproute.ACPRouteConfig) acproute.ACPRouteConfig {
+	cfg.Normalize()
+	cfg.CreatedAt = time.Time{}
+	cfg.UpdatedAt = time.Time{}
+	cfg.TargetPolicy = nil
+	return cfg
+}
+
+func normalizeComparableBuiltinRoute(cfg builtinroute.BuiltinRouteConfig) builtinroute.BuiltinRouteConfig {
 	cfg.Normalize()
 	cfg.CreatedAt = time.Time{}
 	cfg.UpdatedAt = time.Time{}

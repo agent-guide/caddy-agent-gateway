@@ -11,10 +11,12 @@ import (
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
+	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroute "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -28,31 +30,33 @@ import (
 
 // Handler handles Admin API requests under /admin/.
 type Handler struct {
-	cliauthManager          *cliauth.Manager
-	cliauthRefresher        *cliauth.AutoRefresher
-	credentialManager       *credentialmgr.Manager
-	configStoreBackend      configstore.ConfigStoreBackend
-	routeConfigManager      *routecore.AgentRouteConfigManager
-	sharedLLMRouteResolver  *llmroute.LLMRouteResolver
-	sharedMCPRouteResolver  *mcproute.MCPRouteResolver
-	sharedACPRouteResolver  *acproute.ACPRouteResolver
-	sharedMCPServiceManager *mcpservice.Manager
-	sharedACPServiceManager *acpservice.Manager
-	agentManager            *agentpkg.Manager
-	virtualKeyManager       *virtualkeypkg.VirtualKeyManager
-	providerManager         *gateway.ProviderManager
-	modelCatalog            modelcatalog.Service
-	mcpRuntimeRegistry      *mcpruntime.Registry
-	acpRuntimeManager       *acpruntime.Manager
-	usageObserver           usage.InteractionObserver
-	usageQuery              usage.QueryService
-	usageStats              usage.RuntimeStats
-	usagePrometheus         usage.PrometheusProvider
-	mux                     *http.ServeMux
-	logger                  *zap.Logger
-	cliAuthMu               sync.RWMutex
-	cliAuthSessions         map[string]cliAuthStatus // login_id -> cliAuthStatus
-	cliAuthActive           map[string]string        // cliname -> login_id
+	cliauthManager             *cliauth.Manager
+	cliauthRefresher           *cliauth.AutoRefresher
+	credentialManager          *credentialmgr.Manager
+	configStoreBackend         configstore.ConfigStoreBackend
+	routeConfigManager         *routecore.AgentRouteConfigManager
+	sharedLLMRouteResolver     *llmroute.LLMRouteResolver
+	sharedMCPRouteResolver     *mcproute.MCPRouteResolver
+	sharedACPRouteResolver     *acproute.ACPRouteResolver
+	sharedBuiltinRouteResolver *builtinroute.BuiltinRouteResolver
+	sharedMCPServiceManager    *mcpservice.Manager
+	sharedACPServiceManager    *acpservice.Manager
+	agentManager               *agentpkg.Manager
+	builtinHost                *builtinpkg.Host
+	virtualKeyManager          *virtualkeypkg.VirtualKeyManager
+	providerManager            *gateway.ProviderManager
+	modelCatalog               modelcatalog.Service
+	mcpRuntimeRegistry         *mcpruntime.Registry
+	acpRuntimeManager          *acpruntime.Manager
+	usageObserver              usage.InteractionObserver
+	usageQuery                 usage.QueryService
+	usageStats                 usage.RuntimeStats
+	usagePrometheus            usage.PrometheusProvider
+	mux                        *http.ServeMux
+	logger                     *zap.Logger
+	cliAuthMu                  sync.RWMutex
+	cliAuthSessions            map[string]cliAuthStatus // login_id -> cliAuthStatus
+	cliAuthActive              map[string]string        // cliname -> login_id
 }
 
 // NewHandler constructs an admin Handler.
@@ -70,9 +74,11 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 	var sharedLLMRouteResolver *llmroute.LLMRouteResolver
 	var sharedMCPRouteResolver *mcproute.MCPRouteResolver
 	var sharedACPRouteResolver *acproute.ACPRouteResolver
+	var sharedBuiltinRouteResolver *builtinroute.BuiltinRouteResolver
 	var sharedMCPServiceManager *mcpservice.Manager
 	var sharedACPServiceManager *acpservice.Manager
 	var agentManager *agentpkg.Manager
+	var builtinHost *builtinpkg.Host
 	var virtualKeyManager *virtualkeypkg.VirtualKeyManager
 	var providerManager *gateway.ProviderManager
 	var modelCatalogSvc modelcatalog.Service
@@ -91,9 +97,11 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 		sharedLLMRouteResolver = agentGateway.LLMRouteResolver()
 		sharedMCPRouteResolver = agentGateway.MCPRouteResolver()
 		sharedACPRouteResolver = agentGateway.ACPRouteResolver()
+		sharedBuiltinRouteResolver = agentGateway.BuiltinRouteResolver()
 		sharedMCPServiceManager = agentGateway.MCPServiceManager()
 		sharedACPServiceManager = agentGateway.ACPServiceManager()
 		agentManager = agentGateway.AgentManager()
+		builtinHost = agentGateway.BuiltinHost()
 		virtualKeyManager = agentGateway.VirtualKeyManager()
 		providerManager = agentGateway.ProviderManager()
 		modelCatalogSvc = agentGateway.ModelCatalog()
@@ -106,29 +114,31 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 	}
 
 	h := &Handler{
-		cliauthManager:          cliauthMgr,
-		cliauthRefresher:        cliauthRefresher,
-		credentialManager:       credentialMgr,
-		configStoreBackend:      configStoreBackend,
-		routeConfigManager:      routeConfigManager,
-		sharedLLMRouteResolver:  sharedLLMRouteResolver,
-		sharedMCPRouteResolver:  sharedMCPRouteResolver,
-		sharedACPRouteResolver:  sharedACPRouteResolver,
-		sharedMCPServiceManager: sharedMCPServiceManager,
-		sharedACPServiceManager: sharedACPServiceManager,
-		agentManager:            agentManager,
-		virtualKeyManager:       virtualKeyManager,
-		providerManager:         providerManager,
-		modelCatalog:            modelCatalogSvc,
-		mcpRuntimeRegistry:      mcpRuntimeRegistry,
-		acpRuntimeManager:       acpRuntimeManager,
-		usageObserver:           usageObserver,
-		usageQuery:              usageQuery,
-		usageStats:              usageStats,
-		usagePrometheus:         usagePrometheus,
-		logger:                  logger,
-		cliAuthSessions:         map[string]cliAuthStatus{},
-		cliAuthActive:           map[string]string{},
+		cliauthManager:             cliauthMgr,
+		cliauthRefresher:           cliauthRefresher,
+		credentialManager:          credentialMgr,
+		configStoreBackend:         configStoreBackend,
+		routeConfigManager:         routeConfigManager,
+		sharedLLMRouteResolver:     sharedLLMRouteResolver,
+		sharedMCPRouteResolver:     sharedMCPRouteResolver,
+		sharedACPRouteResolver:     sharedACPRouteResolver,
+		sharedBuiltinRouteResolver: sharedBuiltinRouteResolver,
+		sharedMCPServiceManager:    sharedMCPServiceManager,
+		sharedACPServiceManager:    sharedACPServiceManager,
+		agentManager:               agentManager,
+		builtinHost:                builtinHost,
+		virtualKeyManager:          virtualKeyManager,
+		providerManager:            providerManager,
+		modelCatalog:               modelCatalogSvc,
+		mcpRuntimeRegistry:         mcpRuntimeRegistry,
+		acpRuntimeManager:          acpRuntimeManager,
+		usageObserver:              usageObserver,
+		usageQuery:                 usageQuery,
+		usageStats:                 usageStats,
+		usagePrometheus:            usagePrometheus,
+		logger:                     logger,
+		cliAuthSessions:            map[string]cliAuthStatus{},
+		cliAuthActive:              map[string]string{},
 	}
 	h.mux = http.NewServeMux()
 	// The Admin API does not authenticate requests itself; protect the mount
@@ -198,4 +208,15 @@ func (h *Handler) acpRouteResolver() (*acproute.ACPRouteResolver, error) {
 		return nil, configstore.ErrUnknownStoreName
 	}
 	return acproute.NewACPRouteResolver(manager), nil
+}
+
+func (h *Handler) builtinRouteResolver() (*builtinroute.BuiltinRouteResolver, error) {
+	if h.sharedBuiltinRouteResolver != nil {
+		return h.sharedBuiltinRouteResolver, nil
+	}
+	manager := h.routeConfigManagerForRoutes()
+	if manager == nil {
+		return nil, configstore.ErrUnknownStoreName
+	}
+	return builtinroute.NewBuiltinRouteResolver(manager), nil
 }

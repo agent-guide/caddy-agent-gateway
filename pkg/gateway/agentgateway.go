@@ -11,10 +11,12 @@ import (
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
+	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	acproutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	builtinroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -23,8 +25,10 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	credentialmgrscheduler "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	einomodelbridge "github.com/agent-guide/agent-gateway/pkg/llm/provider/einomodel"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
+	einocomponentmodel "github.com/cloudwego/eino/components/model"
 	"go.uber.org/zap"
 )
 
@@ -49,29 +53,31 @@ type BootstrapOptions struct {
 type AgentGateway struct {
 	mu sync.RWMutex
 
-	configured          bool
-	configStoreBackend  configstore.ConfigStoreBackend
-	routeConfigManager  *routecore.AgentRouteConfigManager
-	llmRouteResolver    *llmroutepkg.LLMRouteResolver
-	mcpRouteResolver    *mcproutepkg.MCPRouteResolver
-	acpRouteResolver    *acproutepkg.ACPRouteResolver
-	virtualKeyManager   *virtualkeypkg.VirtualKeyManager
-	providerManager     *ProviderManager
-	cliauthManager      *cliauth.Manager
-	cliauthRefresher    *cliauth.AutoRefresher
-	credentialManager   *credentialmgr.Manager
-	credentialScheduler credentialmgrscheduler.CredentialScheduler
-	modelCatalog        modelcatalog.Service
-	mcpServiceManager   *mcpservice.Manager
-	mcpRuntimeRegistry  *mcpruntime.Registry
-	acpServiceManager   *acpservice.Manager
-	acpRuntimeManager   *acpruntime.Manager
-	agentManager        *agentpkg.Manager
-	usageObserver       usage.InteractionObserver
-	usageQuery          usage.QueryService
-	usageStats          usage.RuntimeStats
-	usagePrometheus     usage.PrometheusProvider
-	usageConfig         usage.Config
+	configured           bool
+	configStoreBackend   configstore.ConfigStoreBackend
+	routeConfigManager   *routecore.AgentRouteConfigManager
+	llmRouteResolver     *llmroutepkg.LLMRouteResolver
+	mcpRouteResolver     *mcproutepkg.MCPRouteResolver
+	acpRouteResolver     *acproutepkg.ACPRouteResolver
+	builtinRouteResolver *builtinroutepkg.BuiltinRouteResolver
+	builtinHost          *builtinpkg.Host
+	virtualKeyManager    *virtualkeypkg.VirtualKeyManager
+	providerManager      *ProviderManager
+	cliauthManager       *cliauth.Manager
+	cliauthRefresher     *cliauth.AutoRefresher
+	credentialManager    *credentialmgr.Manager
+	credentialScheduler  credentialmgrscheduler.CredentialScheduler
+	modelCatalog         modelcatalog.Service
+	mcpServiceManager    *mcpservice.Manager
+	mcpRuntimeRegistry   *mcpruntime.Registry
+	acpServiceManager    *acpservice.Manager
+	acpRuntimeManager    *acpruntime.Manager
+	agentManager         *agentpkg.Manager
+	usageObserver        usage.InteractionObserver
+	usageQuery           usage.QueryService
+	usageStats           usage.RuntimeStats
+	usagePrometheus      usage.PrometheusProvider
+	usageConfig          usage.Config
 }
 
 func NewAgentGateway() *AgentGateway {
@@ -125,6 +131,17 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	if err := g.configureModelCatalog(ctx, opts.ConfigStoreBackend, opts.Logger); err != nil {
 		return err
 	}
+	// The builtin host is constructed last: it consumes the agent manager, the
+	// LLM route layer (through the RoutedProvider -> eino chat model adapter),
+	// the MCP service manager, and the usage observer configured above.
+	if g.agentManager != nil {
+		g.builtinHost = builtinpkg.NewHost(builtinpkg.Config{
+			Agents:   g.agentManager,
+			Models:   routedChatModelResolver{gateway: g},
+			Tools:    g.mcpServiceManager,
+			Observer: g.usageObserver,
+		})
+	}
 	g.configured = true
 	return nil
 }
@@ -139,6 +156,8 @@ func (g *AgentGateway) Reset() {
 	g.llmRouteResolver = nil
 	g.mcpRouteResolver = nil
 	g.acpRouteResolver = nil
+	g.builtinRouteResolver = nil
+	g.builtinHost = nil
 	g.virtualKeyManager = nil
 	g.providerManager = nil
 	g.cliauthManager = nil
@@ -229,6 +248,19 @@ func (g *AgentGateway) ACPRouteResolver() *acproutepkg.ACPRouteResolver {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.acpRouteResolver
+}
+
+func (g *AgentGateway) BuiltinRouteResolver() *builtinroutepkg.BuiltinRouteResolver {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.builtinRouteResolver
+}
+
+// BuiltinHost returns the in-process ADK host serving builtin-runtime agents.
+func (g *AgentGateway) BuiltinHost() *builtinpkg.Host {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.builtinHost
 }
 
 func (g *AgentGateway) VirtualKeyManager() *virtualkeypkg.VirtualKeyManager {
@@ -438,6 +470,7 @@ func (g *AgentGateway) configureRouteResolver(ctx context.Context, configStoreBa
 	g.llmRouteResolver = llmroutepkg.NewLLMRouteResolver(g.routeConfigManager)
 	g.mcpRouteResolver = mcproutepkg.NewMCPRouteResolver(g.routeConfigManager)
 	g.acpRouteResolver = acproutepkg.NewACPRouteResolver(g.routeConfigManager)
+	g.builtinRouteResolver = builtinroutepkg.NewBuiltinRouteResolver(g.routeConfigManager)
 
 	return nil
 }
@@ -485,7 +518,10 @@ func (g *AgentGateway) configureAgentManager(ctx context.Context, configStoreBac
 		return err
 	}
 	manager := agentpkg.NewManager(store)
-	manager.SetRouteLookup(acpRouteServiceLookup{resolver: g.acpRouteResolver})
+	manager.SetRouteLookup(agentRouteLookup{
+		acp:     g.acpRouteResolver,
+		builtin: g.builtinRouteResolver,
+	})
 	if err := manager.Refresh(ctx); err != nil {
 		return fmt.Errorf("load agents: %w", err)
 	}
@@ -493,18 +529,19 @@ func (g *AgentGateway) configureAgentManager(ctx context.Context, configStoreBac
 	return nil
 }
 
-// acpRouteServiceLookup adapts the ACP route resolver to the agent manager's
-// ACPRouteServiceLookup seam so the manager can validate acp_route_ids without
-// depending on the resolver type directly.
-type acpRouteServiceLookup struct {
-	resolver *acproutepkg.ACPRouteResolver
+// agentRouteLookup adapts the ACP and builtin route resolvers to the agent
+// manager's lookup seams so the manager can validate acp_route_ids and
+// builtin_route_ids without depending on the resolver types directly.
+type agentRouteLookup struct {
+	acp     *acproutepkg.ACPRouteResolver
+	builtin *builtinroutepkg.BuiltinRouteResolver
 }
 
-func (l acpRouteServiceLookup) ACPRouteServiceID(ctx context.Context, routeID string) (string, error) {
-	if l.resolver == nil {
+func (l agentRouteLookup) ACPRouteServiceID(ctx context.Context, routeID string) (string, error) {
+	if l.acp == nil {
 		return "", fmt.Errorf("acp route resolver is not configured")
 	}
-	route, err := l.resolver.ResolveByID(ctx, routeID)
+	route, err := l.acp.ResolveByID(ctx, routeID)
 	if err != nil {
 		return "", err
 	}
@@ -512,6 +549,48 @@ func (l acpRouteServiceLookup) ACPRouteServiceID(ctx context.Context, routeID st
 		return "", fmt.Errorf("acp route %q not found", routeID)
 	}
 	return route.ServiceID, nil
+}
+
+func (l agentRouteLookup) BuiltinRouteAgentID(ctx context.Context, routeID string) (string, error) {
+	if l.builtin == nil {
+		return "", fmt.Errorf("builtin route resolver is not configured")
+	}
+	route, err := l.builtin.ResolveByID(ctx, routeID)
+	if err != nil {
+		return "", err
+	}
+	if route == nil {
+		return "", fmt.Errorf("builtin route %q not found", routeID)
+	}
+	return route.AgentID, nil
+}
+
+// routedChatModelResolver implements the builtin host's ChatModelResolver:
+// every builtin model reference resolves through an LLM route into a
+// RoutedProvider wrapped by the einomodel bridge, so credential scheduling,
+// candidate fallback, and usage attribution apply unchanged to in-process
+// agents.
+type routedChatModelResolver struct {
+	gateway *AgentGateway
+}
+
+func (r routedChatModelResolver) ResolveChatModel(ctx context.Context, llmRouteID, model string, requireTools bool) (einocomponentmodel.ToolCallingChatModel, error) {
+	resolver := r.gateway.LLMRouteResolver()
+	if resolver == nil {
+		return nil, fmt.Errorf("llm route resolver is not configured")
+	}
+	route, err := resolver.ResolveByID(ctx, llmRouteID)
+	if err != nil {
+		return nil, err
+	}
+	if route == nil {
+		return nil, fmt.Errorf("llm route %q not found", llmRouteID)
+	}
+	routed, err := r.gateway.NewRoutedProvider(route, llmroutepkg.RequestRequirements{Model: model, RequireTools: requireTools})
+	if err != nil {
+		return nil, err
+	}
+	return einomodelbridge.New(routed, model)
 }
 
 func (g *AgentGateway) configureVirtualKeyManager(ctx context.Context, configStoreBackend configstore.ConfigStoreBackend) error {

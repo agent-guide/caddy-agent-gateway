@@ -13,6 +13,7 @@ import (
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -31,18 +32,19 @@ const (
 var envVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 type GatewayBundle struct {
-	APIVersion            string                        `json:"apiVersion"`
-	Kind                  string                        `json:"kind"`
-	Providers             []provider.ProviderConfig     `json:"providers,omitempty"`
-	ManagedModels         []modelcatalog.ManagedModel   `json:"managedModels,omitempty"`
-	LLMRoutes             []routecore.AgentRouteConfig  `json:"llmRoutes,omitempty"`
-	VirtualKeys           []BundleVirtualKey            `json:"virtualKeys,omitempty"`
-	CLIAuthAuthenticators []CLIAuthAuthenticator        `json:"cliAuthAuthenticators,omitempty"`
-	MCPServices           []mcpservice.MCPServiceConfig `json:"mcpServices,omitempty"`
-	MCPRoutes             []mcproute.MCPRouteConfig     `json:"mcpRoutes,omitempty"`
-	ACPServices           []acpservice.ServiceConfig    `json:"acpServices,omitempty"`
-	ACPRoutes             []acproute.ACPRouteConfig     `json:"acpRoutes,omitempty"`
-	Agents                []agentpkg.Agent              `json:"agents,omitempty"`
+	APIVersion            string                            `json:"apiVersion"`
+	Kind                  string                            `json:"kind"`
+	Providers             []provider.ProviderConfig         `json:"providers,omitempty"`
+	ManagedModels         []modelcatalog.ManagedModel       `json:"managedModels,omitempty"`
+	LLMRoutes             []routecore.AgentRouteConfig      `json:"llmRoutes,omitempty"`
+	VirtualKeys           []BundleVirtualKey                `json:"virtualKeys,omitempty"`
+	CLIAuthAuthenticators []CLIAuthAuthenticator            `json:"cliAuthAuthenticators,omitempty"`
+	MCPServices           []mcpservice.MCPServiceConfig     `json:"mcpServices,omitempty"`
+	MCPRoutes             []mcproute.MCPRouteConfig         `json:"mcpRoutes,omitempty"`
+	ACPServices           []acpservice.ServiceConfig        `json:"acpServices,omitempty"`
+	ACPRoutes             []acproute.ACPRouteConfig         `json:"acpRoutes,omitempty"`
+	BuiltinRoutes         []builtinroute.BuiltinRouteConfig `json:"builtinRoutes,omitempty"`
+	Agents                []agentpkg.Agent                  `json:"agents,omitempty"`
 }
 
 type BundleVirtualKey struct {
@@ -242,18 +244,8 @@ func (b *GatewayBundle) validate(_ bool) error {
 		} else {
 			virtualKeys[id] = struct{}{}
 		}
-		for _, routeID := range b.VirtualKeys[i].AllowedRouteIDs {
-			trimmedRouteID := strings.TrimSpace(routeID)
-			if trimmedRouteID == "" {
-				errs.Append(fmt.Errorf("virtualKeys[%q]: allowed_route_ids entries must not be empty", id))
-				continue
-			}
-			if len(routeIDs) > 0 {
-				if _, ok := routeIDs[trimmedRouteID]; !ok {
-					errs.Append(fmt.Errorf("virtualKeys[%q]: allowed_route_id %q does not exist in bundle llmRoutes", id, trimmedRouteID))
-				}
-			}
-		}
+		// allowed_route_ids are validated after every route family has been
+		// collected — virtual keys may restrict to routes of any kind.
 	}
 	authenticators := map[string]struct{}{}
 	for i := range b.CLIAuthAuthenticators {
@@ -355,6 +347,72 @@ func (b *GatewayBundle) validate(_ bool) error {
 			acpRouteServiceByID[id] = b.ACPRoutes[i].ServiceID
 		}
 	}
+	builtinRouteIDs := map[string]struct{}{}
+	builtinRouteAgentByID := map[string]string{}
+	for i := range b.BuiltinRoutes {
+		b.BuiltinRoutes[i].Normalize()
+		id := b.BuiltinRoutes[i].ID
+		if id == "" {
+			errs.Append(fmt.Errorf("builtinRoutes[%d].id is required", i))
+			continue
+		}
+		if err := routecore.ValidateRouteID(id); err != nil {
+			errs.Append(fmt.Errorf("builtinRoutes[%d]: %w", i, err))
+		}
+		if _, exists := builtinRouteIDs[id]; exists {
+			errs.Append(fmt.Errorf("builtinRoutes[%q]: duplicate id", id))
+		} else {
+			builtinRouteIDs[id] = struct{}{}
+		}
+		if b.BuiltinRoutes[i].Kind != builtinroute.RouteKindBuiltin {
+			errs.Append(fmt.Errorf("builtinRoutes[%q]: kind must be %q", id, builtinroute.RouteKindBuiltin))
+		}
+		if b.BuiltinRoutes[i].AgentID == "" {
+			errs.Append(fmt.Errorf("builtinRoutes[%q]: agent_id is required", id))
+		} else {
+			builtinRouteAgentByID[id] = b.BuiltinRoutes[i].AgentID
+		}
+	}
+	// Routes of every kind share one persisted store, so route ids form one
+	// global namespace: detect cross-family duplicates and validate virtual-key
+	// allowed_route_ids against the union.
+	allRouteIDs := map[string]string{}
+	for family, ids := range map[string]map[string]struct{}{
+		"llmRoutes":     routeIDs,
+		"mcpRoutes":     mcpRouteIDs,
+		"acpRoutes":     acpRouteIDs,
+		"builtinRoutes": builtinRouteIDs,
+	} {
+		for id := range ids {
+			if other, exists := allRouteIDs[id]; exists {
+				first, second := family, other
+				if first > second {
+					first, second = second, first
+				}
+				errs.Append(fmt.Errorf("route id %q is duplicated across %s and %s", id, first, second))
+				continue
+			}
+			allRouteIDs[id] = family
+		}
+	}
+	for i := range b.VirtualKeys {
+		id := strings.TrimSpace(b.VirtualKeys[i].ID)
+		if id == "" {
+			continue
+		}
+		for _, routeID := range b.VirtualKeys[i].AllowedRouteIDs {
+			trimmedRouteID := strings.TrimSpace(routeID)
+			if trimmedRouteID == "" {
+				errs.Append(fmt.Errorf("virtualKeys[%q]: allowed_route_ids entries must not be empty", id))
+				continue
+			}
+			if len(allRouteIDs) > 0 {
+				if _, ok := allRouteIDs[trimmedRouteID]; !ok {
+					errs.Append(fmt.Errorf("virtualKeys[%q]: allowed_route_id %q does not exist in bundle routes", id, trimmedRouteID))
+				}
+			}
+		}
+	}
 	agentIDs := map[string]struct{}{}
 	agentServiceBindings := map[string]string{}
 	agentRouteBindings := map[string]string{}
@@ -397,11 +455,29 @@ func (b *GatewayBundle) validate(_ bool) error {
 		checkRefs("llm_route_id", agent.Routes.LLMRouteIDs, routeIDs, "llmRoutes")
 		checkRefs("mcp_route_id", agent.Routes.MCPRouteIDs, mcpRouteIDs, "mcpRoutes")
 		checkRefs("acp_route_id", agent.Routes.ACPRouteIDs, acpRouteIDs, "acpRoutes")
+		checkRefs("builtin_route_id", agent.Routes.BuiltinRouteIDs, builtinRouteIDs, "builtinRoutes")
 		for _, routeID := range agentRouteIDs(*agent) {
 			if owner, exists := agentRouteBindings[routeID]; exists {
 				errs.Append(fmt.Errorf("agents[%q]: route %q is already bound by agent %q", id, routeID, owner))
 			} else {
 				agentRouteBindings[routeID] = id
+			}
+		}
+
+		// builtin_route_ids are only valid on builtin-runtime agents; that rule
+		// lives in Agent.Validate (invoked above). Each referenced route must
+		// target this agent (intra-bundle form of manager.checkRouteConsistency);
+		// only enforced for routes defined in this bundle — cross-bundle routes
+		// are resolved at apply time.
+		if agent.Runtime.Type == agentpkg.RuntimeTypeBuiltin {
+			for _, routeID := range agent.Routes.BuiltinRouteIDs {
+				routeAgent, ok := builtinRouteAgentByID[routeID]
+				if !ok {
+					continue
+				}
+				if routeAgent != id {
+					errs.Append(fmt.Errorf("agents[%q]: builtin_route_id %q targets agent %q, not this agent", id, routeID, routeAgent))
+				}
 			}
 		}
 
@@ -465,6 +541,16 @@ func agentRouteIDs(agent agentpkg.Agent) []string {
 		out = append(out, routeID)
 	}
 	for _, routeID := range agent.Routes.ACPRouteIDs {
+		if routeID == "" {
+			continue
+		}
+		if _, ok := seen[routeID]; ok {
+			continue
+		}
+		seen[routeID] = struct{}{}
+		out = append(out, routeID)
+	}
+	for _, routeID := range agent.Routes.BuiltinRouteIDs {
 		if routeID == "" {
 			continue
 		}

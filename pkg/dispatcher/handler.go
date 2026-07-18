@@ -10,6 +10,7 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
+	builtinroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
 	"go.uber.org/zap"
@@ -22,16 +23,18 @@ type NextHandler interface {
 
 // Handler dispatches gateway requests to the route-selected LLM API handler.
 type Handler struct {
-	apiHandlers map[string]LLMApiHandler
-	gateway     *gateway.AgentGateway
-	logger      *zap.Logger
-	mcpEnabled  bool
-	acpEnabled  bool
+	apiHandlers    map[string]LLMApiHandler
+	gateway        *gateway.AgentGateway
+	logger         *zap.Logger
+	mcpEnabled     bool
+	acpEnabled     bool
+	builtinEnabled bool
 }
 
 type HandlerOptions struct {
-	EnableMCP bool
-	EnableACP bool
+	EnableMCP     bool
+	EnableACP     bool
+	EnableBuiltin bool
 }
 
 // NewHandler constructs a runtime dispatcher handler.
@@ -43,19 +46,20 @@ func NewHandler(agentGateway *gateway.AgentGateway, apiHandlers map[string]LLMAp
 		apiHandlers = map[string]LLMApiHandler{}
 	}
 	handler := &Handler{
-		apiHandlers: apiHandlers,
-		gateway:     agentGateway,
-		logger:      logger,
-		mcpEnabled:  opts.EnableMCP,
-		acpEnabled:  opts.EnableACP,
+		apiHandlers:    apiHandlers,
+		gateway:        agentGateway,
+		logger:         logger,
+		mcpEnabled:     opts.EnableMCP,
+		acpEnabled:     opts.EnableACP,
+		builtinEnabled: opts.EnableBuiltin,
 	}
 	return handler
 }
 
 // Validate verifies the dispatcher has at least one configured ingress protocol handler.
 func (h *Handler) Validate() error {
-	if h == nil || (len(h.apiHandlers) == 0 && !h.mcpEnabled && !h.acpEnabled) {
-		return fmt.Errorf("agent_route_dispatcher requires at least one llm_api, mcp, or acp")
+	if h == nil || (len(h.apiHandlers) == 0 && !h.mcpEnabled && !h.acpEnabled && !h.builtinEnabled) {
+		return fmt.Errorf("agent_route_dispatcher requires at least one llm_api, mcp, acp, or builtin")
 	}
 	return nil
 }
@@ -139,10 +143,19 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 	if virtualKey != nil {
 		virtualKeyID = virtualKey.ID
 	}
-	span, spanCtx := h.gateway.UsageObserver().Begin(r.Context(), usage.InteractionDimensions{
+	dims := usage.InteractionDimensions{
 		TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID, ParentSpanID: traceCtx.ParentSpanID, AgentDepth: traceCtx.AgentDepth,
 		RouteID: cfg.ID, RouteKind: string(cfg.Kind), RouteProtocol: string(cfg.Protocol), VirtualKeyID: virtualKeyID,
-	})
+	}
+	// Builtin routes carry their target agent in the route config; stamp it
+	// explicitly so builtin attribution never depends on the route -> agent
+	// index (§5.7.6).
+	if cfg.Kind == routecore.RouteKindBuiltin {
+		if agentID, err := builtinroutepkg.DecodeTargetAgentID(cfg.TargetPolicy); err == nil && agentID != "" {
+			dims.AgentID = agentID
+		}
+	}
+	span, spanCtx := h.gateway.UsageObserver().Begin(r.Context(), dims)
 	r = r.WithContext(spanCtx)
 	defer func() {
 		status := rec.StatusCode()
@@ -157,6 +170,8 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 		return h.dispatchMCP(rec, r, next, cfg)
 	case routecore.RouteKindACP:
 		return h.dispatchACP(rec, r, next, cfg)
+	case routecore.RouteKindBuiltin:
+		return h.dispatchBuiltin(rec, r, next, cfg)
 	default:
 		return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusServiceUnavailable, rec, r, "dispatch route", "route kind is not configured", fmt.Errorf("route %q kind %q is not configured", cfg.ID, cfg.Kind))
 	}
@@ -251,6 +266,9 @@ func RewriteLLMRoutePath(r *http.Request, prefix string) *http.Request {
 }
 
 func serveNextOrNotFound(next NextHandler, w http.ResponseWriter, r *http.Request) error {
+	// The dispatcher is not handling this request; drop its interaction span
+	// so passthrough requests do not emit usage events.
+	usage.SpanFromContext(r.Context()).Discard()
 	if next != nil {
 		return next.ServeHTTP(w, r)
 	}

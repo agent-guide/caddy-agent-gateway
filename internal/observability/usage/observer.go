@@ -21,15 +21,32 @@ type InteractionSpan interface {
 	SetExtension(v any)
 	AddAnnotation(key, value string)
 	Finish(outcome InteractionOutcome)
+	// Discard ends the span without emitting an event. Dispatch paths that
+	// turn out not to handle the request (path passthrough to the next
+	// handler) use it so unhandled requests do not pollute usage events.
+	Discard()
 }
 
 type spanContextKey struct{}
+
+type dimsContextKey struct{}
 
 func ContextWithSpan(ctx context.Context, span InteractionSpan) context.Context {
 	if span == nil {
 		return ctx
 	}
 	return context.WithValue(ctx, spanContextKey{}, span)
+}
+
+// DimensionsFromContext returns the resolved dimensions of the interaction
+// span carried by ctx (trace/span ids populated, agent_id resolved). In-process
+// callers use it to derive child-span dimensions for nested interactions.
+func DimensionsFromContext(ctx context.Context) (InteractionDimensions, bool) {
+	if ctx == nil {
+		return InteractionDimensions{}, false
+	}
+	dims, ok := ctx.Value(dimsContextKey{}).(InteractionDimensions)
+	return dims, ok
 }
 
 func SpanFromContext(ctx context.Context) InteractionSpan {
@@ -71,6 +88,7 @@ func (o Observer) Begin(ctx context.Context, dims InteractionDimensions) (Intera
 			agentID = resolved
 		}
 	}
+	dims.AgentID = agentID
 	eventID := uuid.NewString()
 	span := &eventSpan{
 		sink: o.sink,
@@ -88,6 +106,7 @@ func (o Observer) Begin(ctx context.Context, dims InteractionDimensions) (Intera
 			AgentID:       agentID,
 		},
 	}
+	ctx = context.WithValue(ctx, dimsContextKey{}, dims)
 	return span, ContextWithSpan(ctx, span)
 }
 
@@ -98,6 +117,7 @@ type eventSpan struct {
 	llm         LLMExtension
 	mcp         MCPExtension
 	acp         ACPExtension
+	builtin     BuiltinExtension
 	annotations map[string]string
 	finished    bool
 }
@@ -127,6 +147,12 @@ func (s *eventSpan) SetExtension(v any) {
 		if ext != nil {
 			mergeACP(&s.acp, *ext)
 		}
+	case BuiltinExtension:
+		mergeBuiltin(&s.builtin, ext)
+	case *BuiltinExtension:
+		if ext != nil {
+			mergeBuiltin(&s.builtin, *ext)
+		}
 	}
 }
 
@@ -140,6 +166,15 @@ func (s *eventSpan) AddAnnotation(key, value string) {
 		s.annotations = map[string]string{}
 	}
 	s.annotations[key] = value
+}
+
+func (s *eventSpan) Discard() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.finished = true
+	s.mu.Unlock()
 }
 
 func (s *eventSpan) Finish(outcome InteractionOutcome) {
@@ -165,12 +200,17 @@ func (s *eventSpan) Finish(outcome InteractionOutcome) {
 		base.ErrorType = s.annotations["error_type"]
 	}
 	if base.ErrorType == "" && !base.Success {
-		base.ErrorType = "internal_error"
+		if base.StatusCode >= 400 && base.StatusCode < 500 {
+			base.ErrorType = "client_error"
+		} else {
+			base.ErrorType = "internal_error"
+		}
 	}
 	base.LatencyMS = base.FinishedAt.Sub(base.StartedAt).Milliseconds()
 	llm := s.llm
 	mcp := s.mcp
 	acp := s.acp
+	builtin := s.builtin
 	sink := s.sink
 	s.mu.Unlock()
 
@@ -184,6 +224,8 @@ func (s *eventSpan) Finish(outcome InteractionOutcome) {
 		sink.Enqueue(mcpEvent(base, mcp))
 	case "acp":
 		sink.Enqueue(acpEvent(base, acp))
+	case "builtin":
+		sink.Enqueue(builtinEvent(base, builtin))
 	default:
 		sink.Enqueue(base)
 	}
@@ -253,6 +295,22 @@ func mcpEvent(base InteractionEvent, ext MCPExtension) MCPUsageEvent {
 		ev.Cancelled = *ext.Cancelled
 	}
 	ev.ToolArgsJSON = ext.ToolArgsJSON
+	return ev
+}
+
+func builtinEvent(base InteractionEvent, ext BuiltinExtension) BuiltinUsageEvent {
+	ev := BuiltinUsageEvent{InteractionEvent: base}
+	ev.Operation = ext.Operation
+	ev.SessionID = ext.SessionID
+	ev.TopologyKind = ext.TopologyKind
+	if ext.ModelSteps != nil {
+		ev.ModelSteps = *ext.ModelSteps
+	}
+	if ext.ToolSteps != nil {
+		ev.ToolSteps = *ext.ToolSteps
+	}
+	ev.EventCounts = ext.EventCounts
+	ev.ResultStatus = ext.ResultStatus
 	return ev
 }
 

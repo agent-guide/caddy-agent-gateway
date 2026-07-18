@@ -20,6 +20,7 @@ import (
 	dispatcherpkg "github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -59,6 +60,7 @@ type recordingSpan struct {
 
 func (s *recordingSpan) SetExtension(any)             {}
 func (s *recordingSpan) AddAnnotation(string, string) {}
+func (s *recordingSpan) Discard()                     {}
 func (s *recordingSpan) Finish(outcome usage.InteractionOutcome) {
 	if s.outcome.StatusCode == 0 {
 		s.outcome = outcome
@@ -992,6 +994,122 @@ func TestACPRouteCreateRejectsSlashID(t *testing.T) {
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusBadRequest {
 		t.Fatalf("expected slash id to be rejected with 400, got status %d", createRec.Code)
+	}
+}
+
+// TestBuiltinRouteAutoIDIsSlashFreeAndAddressable mirrors the ACP guard for
+// builtin routes: an auto-generated id must be slash-free and addressable
+// through the "{id}" pattern.
+func TestBuiltinRouteAutoIDIsSlashFreeAndAddressable(t *testing.T) {
+	handler := NewHandler(newTestAgentGateway(&testConfigStore{
+		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
+	}, nil, nil, nil, nil), nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+
+	createBody, err := json.Marshal(builtinroute.BuiltinRouteConfig{
+		AgentRouteConfig: builtinroute.AgentRouteConfig{
+			MatchPolicy: builtinroute.RouteMatch{PathPrefix: "/agents/helper"},
+		},
+		AgentID: "helper-agent",
+	})
+	if err != nil {
+		t.Fatalf("marshal builtin route: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/builtin/routes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("unexpected create status: got %d want %d", createRec.Code, http.StatusCreated)
+	}
+
+	var created BuiltinRouteView
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created builtin route: %v", err)
+	}
+	if strings.ContainsAny(created.ID, "/\\") {
+		t.Fatalf("auto-generated route id must be slash-free: %q", created.ID)
+	}
+	if created.ID != "builtin:helper-agent:agents-helper" {
+		t.Fatalf("unexpected auto-generated route id: %q", created.ID)
+	}
+	if created.AgentID != "helper-agent" {
+		t.Fatalf("created route agent_id = %q, want helper-agent", created.AgentID)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/builtin/routes/"+created.ID, nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("unexpected get status: got %d want %d", getRec.Code, http.StatusOK)
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/admin/builtin/routes/"+created.ID, nil)
+	delReq.Header.Set("Authorization", "Bearer "+token)
+	delRec := httptest.NewRecorder()
+	handler.ServeHTTP(delRec, delReq)
+	if delRec.Code != http.StatusOK {
+		t.Fatalf("unexpected delete status: got %d want %d", delRec.Code, http.StatusOK)
+	}
+}
+
+// TestBuiltinRouteCreateRejectsSlashID ensures an explicit slash-bearing
+// builtin route id is rejected with a 400 client error, not a 500.
+func TestBuiltinRouteCreateRejectsSlashID(t *testing.T) {
+	handler := NewHandler(newTestAgentGateway(&testConfigStore{
+		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
+	}, nil, nil, nil, nil), nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+
+	createBody, err := json.Marshal(builtinroute.BuiltinRouteConfig{
+		AgentRouteConfig: builtinroute.AgentRouteConfig{
+			ID:          "builtin/with/slash",
+			MatchPolicy: builtinroute.RouteMatch{PathPrefix: "/agents"},
+		},
+		AgentID: "helper-agent",
+	})
+	if err != nil {
+		t.Fatalf("marshal builtin route: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/builtin/routes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected slash id to be rejected with 400, got status %d", createRec.Code)
+	}
+}
+
+// TestBuiltinRouteCreateRequiresAgentID ensures a builtin route without an
+// agent_id target is rejected with a 400 client error.
+func TestBuiltinRouteCreateRequiresAgentID(t *testing.T) {
+	handler := NewHandler(newTestAgentGateway(&testConfigStore{
+		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
+	}, nil, nil, nil, nil), nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+
+	createBody, err := json.Marshal(builtinroute.BuiltinRouteConfig{
+		AgentRouteConfig: builtinroute.AgentRouteConfig{
+			ID:          "builtin-helper",
+			MatchPolicy: builtinroute.RouteMatch{PathPrefix: "/agents/helper"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal builtin route: %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/builtin/routes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing agent_id to be rejected with 400, got status %d", createRec.Code)
+	}
+	if !strings.Contains(createRec.Body.String(), "agent_id is required") {
+		t.Fatalf("error should name agent_id, got: %s", createRec.Body.String())
 	}
 }
 

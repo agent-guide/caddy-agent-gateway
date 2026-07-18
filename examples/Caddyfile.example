@@ -64,5 +64,9 @@ http://127.0.0.1:8080 {
 		# `acp` exposes POST /<acp-route>/turn with SSE for codex/opencode.
 		mcp
 		acp
+		# Enable builtin-agent turn ingress: agents with runtime.type = "builtin"
+		# (hosted by the in-process ADK host) are exposed through builtin routes
+		# as POST /<builtin-route>/turn with SSE.
+		builtin
 	}
 }

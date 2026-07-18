@@ -114,6 +114,30 @@ func mergeMCP(dst *MCPExtension, src MCPExtension) {
 	}
 }
 
+func mergeBuiltin(dst *BuiltinExtension, src BuiltinExtension) {
+	if src.Operation != "" {
+		dst.Operation = src.Operation
+	}
+	if src.SessionID != "" {
+		dst.SessionID = src.SessionID
+	}
+	if src.TopologyKind != "" {
+		dst.TopologyKind = src.TopologyKind
+	}
+	if src.ModelSteps != nil {
+		dst.ModelSteps = src.ModelSteps
+	}
+	if src.ToolSteps != nil {
+		dst.ToolSteps = src.ToolSteps
+	}
+	if len(src.EventCounts) > 0 {
+		dst.EventCounts = src.EventCounts
+	}
+	if src.ResultStatus != "" {
+		dst.ResultStatus = src.ResultStatus
+	}
+}
+
 func mergeACP(dst *ACPExtension, src ACPExtension) {
 	if src.ServiceID != "" {
 		dst.ServiceID = src.ServiceID

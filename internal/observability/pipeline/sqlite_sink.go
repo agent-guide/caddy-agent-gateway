@@ -53,6 +53,8 @@ func (s *SQLiteSink) Write(ev any) error {
 		return sqlite.InsertMCPUsageEvent(s.db, typed)
 	case usage.ACPUsageEvent:
 		return sqlite.InsertACPUsageEvent(s.db, typed)
+	case usage.BuiltinUsageEvent:
+		return sqlite.InsertBuiltinUsageEvent(s.db, typed)
 	default:
 		return nil
 	}

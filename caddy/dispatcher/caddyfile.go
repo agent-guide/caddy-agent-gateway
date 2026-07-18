@@ -54,12 +54,17 @@ func (h *AgentRouteDispatcher) UnmarshalCaddyfile(d *caddyfile.Dispenser) error 
 				return d.ArgErr()
 			}
 			h.EnableACP = true
+		case "builtin":
+			if d.NextArg() {
+				return d.ArgErr()
+			}
+			h.EnableBuiltin = true
 		default:
 			return d.Errf("unknown subdirective: %s", d.Val())
 		}
 	}
-	if len(h.APIHandlersRaw) == 0 && !h.EnableMCP && !h.EnableACP {
-		return d.Err("agent_route_dispatcher requires at least one llm_api, mcp, or acp")
+	if len(h.APIHandlersRaw) == 0 && !h.EnableMCP && !h.EnableACP && !h.EnableBuiltin {
+		return d.Err("agent_route_dispatcher requires at least one llm_api, mcp, acp, or builtin")
 	}
 	return nil
 }

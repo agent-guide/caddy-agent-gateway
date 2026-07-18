@@ -189,3 +189,29 @@ func TestAgentRouteResolveTargetUsesDirectProviderWhenModelNameIsPresent(t *test
 		t.Fatalf("LogicalModel = %q, want empty in direct-provider mode", target.LogicalModel)
 	}
 }
+
+func TestAgentRouteResolveTargetDirectProviderEmptyModelUsesProviderDefault(t *testing.T) {
+	route := LLMRoute{
+		AgentRouteConfig: AgentRouteConfig{ID: "chat-prod"},
+		TargetPolicy: &RouteDirectProviderPolicy{
+			ProviderTarget: DirectProviderTarget{ProviderID: "openai-main"},
+		},
+	}
+
+	target, err := route.ResolveTarget(
+		context.Background(),
+		testModelCatalogResolver{},
+		testProviderConfigResolver{
+			configs: map[string]provider.ProviderConfig{
+				"openai-main": {Id: "openai-main", ProviderType: "openai", DefaultModel: "gpt-4.1"},
+			},
+		},
+		RequestRequirements{},
+	)
+	if err != nil {
+		t.Fatalf("ResolveTarget returned error: %v", err)
+	}
+	if target.UpstreamModel != "gpt-4.1" {
+		t.Fatalf("UpstreamModel = %q, want the provider default gpt-4.1", target.UpstreamModel)
+	}
+}

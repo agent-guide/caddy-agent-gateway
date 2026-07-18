@@ -68,6 +68,8 @@ func eventMetrics(ev any) (kind string, success bool, tokens int) {
 		return "mcp", e.Success, 0
 	case usage.ACPUsageEvent:
 		return "acp", e.Success, 0
+	case usage.BuiltinUsageEvent:
+		return "builtin", e.Success, 0
 	default:
 		return "", false, 0
 	}

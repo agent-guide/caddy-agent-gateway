@@ -210,11 +210,12 @@ every exit.
 
 ## 5. Multi-Agent Orchestration Track (`eino/adk`)
 
-Status: direction approved — the gateway will support a `builtin` agent
-runtime built on ADK, as a third runtime type alongside `acp` and `http`.
-The detailed design (agent definition schema, Admin API surface, lifecycle
-semantics) must be extended into `docs/design/agents-control-plane.md`
-before implementation.
+Status: implemented (PB1). The gateway supports the `builtin` agent runtime
+built on ADK as a third runtime type alongside `acp` and `http`: the generic
+ADK host lives in `pkg/agent/builtin`, turn ingress in
+`pkg/gateway/builtinroute` plus the dispatcher `builtin` enablement, and the
+authoritative design (definition schema, lifecycle, observability, landed
+scope) is `docs/design/agents-control-plane.md` §5.7 and §7 PB.
 
 Nearly all eino development between v0.8.4 and v0.9.12 landed in ADK. For
 gateway-native agents, ADK is the building material and none of it should
@@ -357,10 +358,11 @@ infrastructure surfaces.
    instrumenting the self-implemented providers with the callback aspect
    functions so coverage is uniform (§4.1).~~ Done.
 2. Use `schema.ConcatMessages` for any new stream-aggregation code (§4.2).
-3. Build the `builtin` agent runtime on ADK (§5): the detailed design lives
-   in `agents-control-plane.md` §5.7 and the two §5.3 bridges have landed
-   (`pkg/mcp/einotool`, `pkg/llm/provider/einomodel`); next is the generic
-   ADK host and the agent-definition schema (§5.1, PB1).
+   The builtin host's turn loop already does.
+3. ~~Build the `builtin` agent runtime on ADK (§5).~~ Done (PB1): bridges,
+   generic ADK host, definition schema, turn ingress, and management parity
+   all landed; see `agents-control-plane.md` §7 PB for the scope notes and
+   the PB2 remainder (task backend, durable sessions after eino v0.10).
 4. Migrate openai/codex Responses paths to agentic* components after they
    graduate from Beta (§6.1).
 5. Register vendor callbacks handlers (§4.4) when export to an external

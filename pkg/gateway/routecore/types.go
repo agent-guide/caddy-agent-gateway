@@ -9,9 +9,10 @@ import (
 type RouteKind string
 
 const (
-	RouteKindLLM RouteKind = "llm"
-	RouteKindMCP RouteKind = "mcp"
-	RouteKindACP RouteKind = "acp"
+	RouteKindLLM     RouteKind = "llm"
+	RouteKindMCP     RouteKind = "mcp"
+	RouteKindACP     RouteKind = "acp"
+	RouteKindBuiltin RouteKind = "builtin"
 )
 
 type RouteProtocol string
@@ -22,6 +23,7 @@ const (
 	RouteProtocolCC        RouteProtocol = "cc"
 	RouteProtocolMCP       RouteProtocol = "mcp"
 	RouteProtocolACP       RouteProtocol = "acp"
+	RouteProtocolBuiltin   RouteProtocol = "builtin"
 )
 
 type RouteTargetPolicyKind string
@@ -31,6 +33,7 @@ const (
 	RouteTargetPolicyKindLogicalModel   RouteTargetPolicyKind = "logical-model"
 	RouteTargetPolicyKindMCPService     RouteTargetPolicyKind = "mcp-service"
 	RouteTargetPolicyKindACPService     RouteTargetPolicyKind = "acp-service"
+	RouteTargetPolicyKindBuiltinAgent   RouteTargetPolicyKind = "builtin-agent"
 )
 
 type AgentRouteConfig struct {

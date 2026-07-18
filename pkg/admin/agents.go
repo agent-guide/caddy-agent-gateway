@@ -12,8 +12,10 @@ import (
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
+	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 )
 
@@ -153,13 +155,41 @@ func (h *Handler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 // returns summaries, counts, runtime state, and references — never full session
 // transcripts. The frontend drills into the linked ACP endpoints for content.
 type AgentWorkspace struct {
-	Agent       agentpkg.Agent       `json:"agent"`
-	Runtime     string               `json:"runtime"`
-	ACPService  *ACPServiceView      `json:"acp_service,omitempty"`
-	ACPRoutes   []agentRouteRef      `json:"acp_routes,omitempty"`
-	RuntimeView *agentRuntimeSummary `json:"runtime_view,omitempty"`
-	Usage       *usage.ACPSummary    `json:"usage,omitempty"`
-	Links       map[string]string    `json:"links,omitempty"`
+	Agent       agentpkg.Agent        `json:"agent"`
+	Runtime     string                `json:"runtime"`
+	ACPService  *ACPServiceView       `json:"acp_service,omitempty"`
+	ACPRoutes   []agentRouteRef       `json:"acp_routes,omitempty"`
+	Builtin     *BuiltinWorkspaceView `json:"builtin,omitempty"`
+	RuntimeView *agentRuntimeSummary  `json:"runtime_view,omitempty"`
+	Usage       *usage.ACPSummary     `json:"usage,omitempty"`
+	Links       map[string]string     `json:"links,omitempty"`
+}
+
+// BuiltinWorkspaceView is the builtin-runtime slice of the agent workspace: a
+// condensed definition summary, the ADK host materialization state, and the
+// agent's builtin routes.
+type BuiltinWorkspaceView struct {
+	Definition BuiltinDefinitionSummary `json:"definition"`
+	HostState  builtinpkg.EntryState    `json:"host_state"`
+	Routes     []builtinAgentRouteRef   `json:"routes,omitempty"`
+}
+
+// BuiltinDefinitionSummary condenses the persisted builtin definition. Limits
+// report configured values only; zero means the host default applies.
+type BuiltinDefinitionSummary struct {
+	LLMRouteID           string   `json:"llm_route_id"`
+	Model                string   `json:"model,omitempty"`
+	TopologyKind         string   `json:"topology_kind"`
+	ToolServiceIDs       []string `json:"tool_service_ids,omitempty"`
+	MaxConcurrentTurns   int      `json:"max_concurrent_turns,omitempty"`
+	TurnTimeoutSeconds   int      `json:"turn_timeout_seconds,omitempty"`
+	SummarizationEnabled bool     `json:"summarization_enabled"`
+}
+
+type builtinAgentRouteRef struct {
+	ID         string `json:"id"`
+	PathPrefix string `json:"path_prefix,omitempty"`
+	AgentID    string `json:"agent_id"`
 }
 
 type agentRouteRef struct {
@@ -199,7 +229,67 @@ func (h *Handler) handleGetAgentWorkspace(w http.ResponseWriter, r *http.Request
 	if serviceID != "" {
 		h.assembleACPWorkspace(r.Context(), &ws, serviceID)
 	}
+	if a.Runtime.Type == agentpkg.RuntimeTypeBuiltin {
+		h.assembleBuiltinWorkspace(r.Context(), &ws, a)
+	}
 	_ = httpjson.Write(w, http.StatusOK, ws)
+}
+
+// assembleBuiltinWorkspace fills the builtin-runtime slice: the definition
+// summary, the ADK host materialization state, and the agent's builtin routes.
+func (h *Handler) assembleBuiltinWorkspace(ctx context.Context, ws *AgentWorkspace, a agentpkg.Agent) {
+	view := &BuiltinWorkspaceView{HostState: h.builtinHost.State(a.ID)}
+	if b := a.Runtime.Builtin; b != nil {
+		kind := b.Topology.Kind
+		if kind == "" {
+			kind = agentpkg.TopologyKindSingle
+		}
+		view.Definition = BuiltinDefinitionSummary{
+			LLMRouteID:   b.Model.LLMRouteID,
+			Model:        b.Model.Model,
+			TopologyKind: kind,
+		}
+		for _, sel := range b.Tools {
+			view.Definition.ToolServiceIDs = append(view.Definition.ToolServiceIDs, sel.MCPServiceID)
+		}
+		if b.Limits != nil {
+			view.Definition.MaxConcurrentTurns = b.Limits.MaxConcurrentTurns
+			view.Definition.TurnTimeoutSeconds = b.Limits.TurnTimeoutSeconds
+		}
+		if b.Middlewares != nil && b.Middlewares.Summarization != nil {
+			view.Definition.SummarizationEnabled = b.Middlewares.Summarization.Enabled
+		}
+	}
+	view.Routes = h.builtinRoutesForAgent(ctx, a.Routes.BuiltinRouteIDs)
+	ws.Builtin = view
+}
+
+// builtinRoutesForAgent resolves the agent's declared builtin route ids into
+// route references; a dangling or non-builtin id is skipped.
+func (h *Handler) builtinRoutesForAgent(ctx context.Context, routeIDs []string) []builtinAgentRouteRef {
+	if h.sharedBuiltinRouteResolver == nil {
+		return nil
+	}
+	var refs []builtinAgentRouteRef
+	for _, routeID := range routeIDs {
+		cfg, err := h.sharedBuiltinRouteResolver.GetConfig(ctx, routeID)
+		if err != nil {
+			continue
+		}
+		if cfg.Kind != builtinroute.RouteKindBuiltin {
+			continue
+		}
+		route, err := builtinroute.NewBuiltinRouteConfigFromConfig(cfg)
+		if err != nil {
+			continue
+		}
+		refs = append(refs, builtinAgentRouteRef{
+			ID:         route.ID,
+			PathPrefix: route.MatchPolicy.PathPrefix,
+			AgentID:    route.AgentID,
+		})
+	}
+	return refs
 }
 
 func (h *Handler) assembleACPWorkspace(ctx context.Context, ws *AgentWorkspace, serviceID string) {
@@ -325,6 +415,7 @@ func agentAttributionFilter(a agentpkg.Agent) *usage.AttributionFilter {
 	f.RouteIDs = append(f.RouteIDs, a.Routes.LLMRouteIDs...)
 	f.RouteIDs = append(f.RouteIDs, a.Routes.MCPRouteIDs...)
 	f.RouteIDs = append(f.RouteIDs, a.Routes.ACPRouteIDs...)
+	f.RouteIDs = append(f.RouteIDs, a.Routes.BuiltinRouteIDs...)
 	// Only the ACP runtime service is a safe service-level fallback: it is bound
 	// by at most one agent (P0 one-runtime-one-agent), so a service-keyed event
 	// attributes unambiguously. MCP service resources have no such uniqueness

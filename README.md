@@ -15,6 +15,7 @@ This repository builds three binaries:
 - manage providers, routes, VirtualKeys, credentials, and CLI auth through an Admin API
 - support MCP gateway routing, discovery, execution, and runtime inspection
 - expose the first native ACP control surface for codex/opencode agent routing
+- host builtin agents in-process on eino ADK: an agent defined as pure configuration (model via an LLM route, tools via MCP services, declarative topology), served as `POST /<builtin-route>/turn` with SSE
 - run with either a Caddyfile-based runtime or a standalone daemon with a config store
 
 ## Architecture
@@ -28,8 +29,9 @@ This repository builds three binaries:
 
 A typical request flows in four hops: ① a consumer calls the gateway over HTTP / ACP → ② the gateway launches and drives an agent → ③ the agent calls back through the gateway for LLM / MCP → ④ the gateway proxies that call to upstream resources (LLM providers, MCP servers, RAG). Because both directions pass through the gateway, it adds VirtualKey auth, routing, and config across the board, and observability is first-class: every hop is captured as audit logs, token usage, and call-chain traces for multi-agent governance.
 
-The gateway supports two integration paths for the agents themselves:
+The gateway supports three integration paths for the agents themselves:
 
+- **No-code (builtin)**: define an agent as pure configuration — model through a gateway LLM route, tools through gateway-managed MCP services, topology (single, sequential, parallel, loop, supervisor, planexecute, deep) — and the gateway's in-process eino ADK host materializes and runs it. No process to ship, no code to write.
 - **Low-code**: drive off-the-shelf CLI coding agents (Codex, Claude Code, OpenCode) directly over ACP — no custom code required.
 - **Full control**: bring your own agent in any stack and let the gateway manage and observe it.
 

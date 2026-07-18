@@ -259,7 +259,7 @@ func TestGatewayMCPServiceListCommand(t *testing.T) {
 				"token":    "test-token",
 				"username": "admin",
 			})
-		case "/admin/acp/services", "/admin/acp/routes", "/admin/agents":
+		case "/admin/acp/services", "/admin/acp/routes", "/admin/builtin/routes", "/admin/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/mcp/services":
 			user, pass, ok := r.BasicAuth()
@@ -1113,6 +1113,8 @@ cliAuthAuthenticators:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/acp/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
+		case r.URL.Path == "/admin/builtin/routes" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/services" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/routes" && r.Method == http.MethodGet:
@@ -1268,6 +1270,8 @@ cliAuthAuthenticators:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/acp/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
+		case r.URL.Path == "/admin/builtin/routes" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/services" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/routes" && r.Method == http.MethodGet:
@@ -1344,6 +1348,8 @@ providers:
 		case r.URL.Path == "/admin/acp/services" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/acp/routes" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
+		case r.URL.Path == "/admin/builtin/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/services" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
@@ -1462,7 +1468,7 @@ func TestGatewayExportCommand(t *testing.T) {
 					},
 				},
 			})
-		case "/admin/acp/services", "/admin/acp/routes", "/admin/agents":
+		case "/admin/acp/services", "/admin/acp/routes", "/admin/builtin/routes", "/admin/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/mcp/services":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
@@ -1583,7 +1589,7 @@ func TestGatewayExportThenValidateRoundTrip(t *testing.T) {
 					},
 				},
 			})
-		case "/admin/acp/services", "/admin/acp/routes", "/admin/agents":
+		case "/admin/acp/services", "/admin/acp/routes", "/admin/builtin/routes", "/admin/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/mcp/services":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
@@ -1633,7 +1639,7 @@ func TestGatewayExportCommandIncludesMCPServicesAndRoutes(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/cliauth/authenticators":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
-		case "/admin/acp/services", "/admin/acp/routes", "/admin/agents":
+		case "/admin/acp/services", "/admin/acp/routes", "/admin/builtin/routes", "/admin/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/mcp/services":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -1739,6 +1745,8 @@ mcpRoutes:
 		case r.URL.Path == "/admin/acp/services" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/acp/routes" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
+		case r.URL.Path == "/admin/builtin/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/services" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})

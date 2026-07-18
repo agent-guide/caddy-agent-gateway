@@ -65,6 +65,14 @@ func MigrateUsageTables(db *gorm.DB) error {
 			permission_request_id TEXT, fresh_session INTEGER, event_counts_json TEXT, usage_json TEXT,
 			result_status TEXT, agent_id TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS builtin_usage_events (
+			event_id TEXT PRIMARY KEY, trace_id TEXT, span_id TEXT NOT NULL, parent_span_id TEXT,
+			agent_depth INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL,
+			route_id TEXT, route_kind TEXT NOT NULL DEFAULT 'builtin', route_protocol TEXT, virtual_key_id TEXT,
+			success INTEGER NOT NULL DEFAULT 0, status_code INTEGER, error_type TEXT, latency_ms INTEGER,
+			operation TEXT, session_id TEXT, topology_kind TEXT, model_steps INTEGER NOT NULL DEFAULT 0,
+			tool_steps INTEGER NOT NULL DEFAULT 0, event_counts_json TEXT, result_status TEXT, agent_id TEXT
+		)`,
 	}
 	for _, stmt := range tables {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -116,6 +124,10 @@ func MigrateUsageTables(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_trace ON acp_usage_events (trace_id, started_at) WHERE trace_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_thread ON acp_usage_events (thread_id, started_at) WHERE thread_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_agent ON acp_usage_events (agent_id, started_at) WHERE agent_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_builtin_events_started ON builtin_usage_events (started_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_builtin_events_route ON builtin_usage_events (route_id, started_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_builtin_events_trace ON builtin_usage_events (trace_id, started_at) WHERE trace_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_builtin_events_agent ON builtin_usage_events (agent_id, started_at) WHERE agent_id IS NOT NULL`,
 	}
 	for _, stmt := range indexes {
 		if err := db.Exec(stmt).Error; err != nil {
@@ -187,7 +199,7 @@ func CleanupUsageEvents(db *gorm.DB, retention time.Duration) error {
 		return nil
 	}
 	cutoff := time.Now().UTC().Add(-retention).UnixMilli()
-	for _, table := range []string{"llm_usage_events", "mcp_usage_events", "acp_usage_events"} {
+	for _, table := range []string{"llm_usage_events", "mcp_usage_events", "acp_usage_events", "builtin_usage_events"} {
 		if err := db.Exec("DELETE FROM "+table+" WHERE started_at < ?", cutoff).Error; err != nil {
 			return err
 		}

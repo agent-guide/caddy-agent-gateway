@@ -18,6 +18,14 @@ type ACPRouteServiceLookup interface {
 	ACPRouteServiceID(ctx context.Context, routeID string) (string, error)
 }
 
+// BuiltinRouteAgentLookup resolves a builtin route id to the agent id the route
+// targets. Optional companion to ACPRouteServiceLookup: when the wired route
+// lookup also implements it, the manager enforces that an agent's
+// builtin_route_ids all target that agent.
+type BuiltinRouteAgentLookup interface {
+	BuiltinRouteAgentID(ctx context.Context, routeID string) (string, error)
+}
+
 // Manager owns agent CRUD plus the in-memory route/service -> agent index used
 // for write-time attribution. The index is rebuilt on every mutation and never
 // read from the config store on the hot path.
@@ -220,19 +228,33 @@ func (m *Manager) checkRouteUniqueness(ctx context.Context, a Agent, excludeID s
 }
 
 // checkRouteConsistency enforces that every acp_route_id resolves to the agent's
-// runtime service. Skipped when no route lookup is wired.
+// runtime service, and that every builtin_route_id targets this agent. Each
+// check is skipped when the corresponding lookup is not wired.
 func (m *Manager) checkRouteConsistency(ctx context.Context, a Agent) error {
-	serviceID := a.ACPServiceID()
-	if serviceID == "" || m.routeLookup == nil {
-		return nil
-	}
-	for _, routeID := range a.Routes.ACPRouteIDs {
-		routeService, err := m.routeLookup.ACPRouteServiceID(ctx, routeID)
-		if err != nil {
-			return fmt.Errorf("resolve acp route %q: %w", routeID, err)
+	if serviceID := a.ACPServiceID(); serviceID != "" && m.routeLookup != nil {
+		for _, routeID := range a.Routes.ACPRouteIDs {
+			routeService, err := m.routeLookup.ACPRouteServiceID(ctx, routeID)
+			if err != nil {
+				return fmt.Errorf("resolve acp route %q: %w", routeID, err)
+			}
+			if routeService != serviceID {
+				return fmt.Errorf("acp route %q targets service %q, not the agent runtime service %q", routeID, routeService, serviceID)
+			}
 		}
-		if routeService != serviceID {
-			return fmt.Errorf("acp route %q targets service %q, not the agent runtime service %q", routeID, routeService, serviceID)
+	}
+	if a.Runtime.Type == RuntimeTypeBuiltin && len(a.Routes.BuiltinRouteIDs) > 0 {
+		lookup, ok := m.routeLookup.(BuiltinRouteAgentLookup)
+		if !ok {
+			return nil
+		}
+		for _, routeID := range a.Routes.BuiltinRouteIDs {
+			routeAgent, err := lookup.BuiltinRouteAgentID(ctx, routeID)
+			if err != nil {
+				return fmt.Errorf("resolve builtin route %q: %w", routeID, err)
+			}
+			if routeAgent != a.ID {
+				return fmt.Errorf("builtin route %q targets agent %q, not this agent %q", routeID, routeAgent, a.ID)
+			}
 		}
 	}
 	return nil
@@ -332,6 +354,11 @@ func agentRouteIDs(a Agent) map[string]struct{} {
 		}
 	}
 	for _, routeID := range a.Routes.MCPRouteIDs {
+		if routeID != "" {
+			out[routeID] = struct{}{}
+		}
+	}
+	for _, routeID := range a.Routes.BuiltinRouteIDs {
 		if routeID != "" {
 			out[routeID] = struct{}{}
 		}

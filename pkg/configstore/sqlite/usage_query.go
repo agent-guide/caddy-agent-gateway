@@ -40,6 +40,11 @@ func (q *UsageQueries) Summary() (usage.Summary, error) {
 		FROM acp_usage_events`).Row().Scan(&out.ACP.RequestCount, &out.ACP.TurnCount, &out.ACP.SuccessCount, &out.ACP.FailureCount, &out.ACP.AvgLatencyMS); err != nil {
 		return out, err
 	}
+	if err := q.db.Raw(`SELECT COUNT(*), COALESCE(SUM(CASE WHEN operation='turn' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(success),0), COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0), COALESCE(AVG(latency_ms),0)
+		FROM builtin_usage_events`).Row().Scan(&out.Builtin.RequestCount, &out.Builtin.TurnCount, &out.Builtin.SuccessCount, &out.Builtin.FailureCount, &out.Builtin.AvgLatencyMS); err != nil {
+		return out, err
+	}
 	return out, nil
 }
 
@@ -73,7 +78,8 @@ func (q *UsageQueries) ListInteractions(opts usage.EventListOptions) (usage.Even
 	query := "SELECT * FROM (" +
 		"SELECT " + baseCols + ", NULL AS service_id, NULL AS session_id, NULL AS operation, NULL AS tool_name, upstream_model, " + llmExtra + " FROM llm_usage_events UNION ALL " +
 		"SELECT " + baseCols + ", service_id, NULL AS session_id, NULL AS operation, tool_name, NULL AS upstream_model, " + nullExtra + " FROM mcp_usage_events UNION ALL " +
-		"SELECT " + baseCols + ", service_id, session_id, operation, NULL AS tool_name, NULL AS upstream_model, " + nullExtra + " FROM acp_usage_events) interactions"
+		"SELECT " + baseCols + ", service_id, session_id, operation, NULL AS tool_name, NULL AS upstream_model, " + nullExtra + " FROM acp_usage_events UNION ALL " +
+		"SELECT " + baseCols + ", NULL AS service_id, session_id, operation, NULL AS tool_name, NULL AS upstream_model, " + nullExtra + " FROM builtin_usage_events) interactions"
 	return q.listRows(query, "interactions", filters, opts)
 }
 
@@ -167,7 +173,8 @@ func (q *UsageQueries) InteractionsSummary(opts usage.BreakdownOptions) (usage.B
 		FROM (` +
 		"SELECT " + baseCols + ", NULL AS service_id, NULL AS session_id FROM llm_usage_events UNION ALL " +
 		"SELECT " + baseCols + ", service_id, NULL AS session_id FROM mcp_usage_events UNION ALL " +
-		"SELECT " + baseCols + ", service_id, session_id FROM acp_usage_events) interactions"
+		"SELECT " + baseCols + ", service_id, session_id FROM acp_usage_events UNION ALL " +
+		"SELECT " + baseCols + ", NULL AS service_id, session_id FROM builtin_usage_events) interactions"
 	where, args, err := buildTimeWhere(opts.From, opts.To)
 	if err != nil {
 		return usage.BreakdownResponse{}, err
@@ -351,6 +358,12 @@ func eventTable(kind string) (string, map[string]string, error) {
 		return "acp_usage_events", map[string]string{
 			"route_id": "route_id", "route_protocol": "route_protocol", "service_id": "service_id", "virtual_key_id": "virtual_key_id",
 			"agent_type": "agent_type", "operation": "operation", "thread_id": "thread_id", "session_id": "session_id",
+			"agent_id": "agent_id",
+		}, nil
+	case "builtin":
+		return "builtin_usage_events", map[string]string{
+			"route_id": "route_id", "virtual_key_id": "virtual_key_id", "operation": "operation",
+			"session_id": "session_id", "topology_kind": "topology_kind", "result_status": "result_status",
 			"agent_id": "agent_id",
 		}, nil
 	default:

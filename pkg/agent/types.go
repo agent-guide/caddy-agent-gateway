@@ -23,6 +23,10 @@ const (
 	// RuntimeTypeHTTP: the agent service owns its own lifecycle; the gateway is
 	// only a client. P0 defines the shape but does not dispatch to it yet.
 	RuntimeTypeHTTP = "http"
+	// RuntimeTypeBuiltin: no separate process at all — the agent is a persisted
+	// definition materialized by the in-process generic ADK host
+	// (docs/design/agents-control-plane.md §5.7).
+	RuntimeTypeBuiltin = "builtin"
 )
 
 // Agent is a first-class management object representing an operator-facing agent
@@ -47,9 +51,10 @@ type Agent struct {
 // Runtime is authoritative for execution. It binds the agent to exactly one
 // runtime backend instance, selected by Type.
 type Runtime struct {
-	Type string       `json:"type"`
-	ACP  *ACPRuntime  `json:"acp,omitempty"`
-	HTTP *HTTPRuntime `json:"http,omitempty"`
+	Type    string          `json:"type"`
+	ACP     *ACPRuntime     `json:"acp,omitempty"`
+	HTTP    *HTTPRuntime    `json:"http,omitempty"`
+	Builtin *BuiltinRuntime `json:"builtin,omitempty"`
 }
 
 // ACPRuntime holds only the binding to an ACP service. ACP operational config
@@ -69,9 +74,10 @@ type HTTPRuntime struct {
 // Routes are management/display references used to surface matching ingress
 // routes and to drive attribution; they do not select the execution backend.
 type Routes struct {
-	ACPRouteIDs []string `json:"acp_route_ids,omitempty"`
-	LLMRouteIDs []string `json:"llm_route_ids,omitempty"`
-	MCPRouteIDs []string `json:"mcp_route_ids,omitempty"`
+	ACPRouteIDs     []string `json:"acp_route_ids,omitempty"`
+	LLMRouteIDs     []string `json:"llm_route_ids,omitempty"`
+	MCPRouteIDs     []string `json:"mcp_route_ids,omitempty"`
+	BuiltinRouteIDs []string `json:"builtin_route_ids,omitempty"`
 }
 
 // Resources is a management view of what the agent is allowed to use. It is not
@@ -129,16 +135,23 @@ func (a *Agent) Normalize() {
 			a.Runtime.ACP.ServiceID = strings.TrimSpace(a.Runtime.ACP.ServiceID)
 		}
 		a.Runtime.HTTP = nil
+		a.Runtime.Builtin = nil
 	case RuntimeTypeHTTP:
 		if a.Runtime.HTTP != nil {
 			a.Runtime.HTTP.Endpoint = strings.TrimSpace(a.Runtime.HTTP.Endpoint)
 			a.Runtime.HTTP.AuthRef = strings.TrimSpace(a.Runtime.HTTP.AuthRef)
 		}
 		a.Runtime.ACP = nil
+		a.Runtime.Builtin = nil
+	case RuntimeTypeBuiltin:
+		a.Runtime.Builtin.normalize()
+		a.Runtime.ACP = nil
+		a.Runtime.HTTP = nil
 	}
 	a.Routes.ACPRouteIDs = normalizeIDs(a.Routes.ACPRouteIDs)
 	a.Routes.LLMRouteIDs = normalizeIDs(a.Routes.LLMRouteIDs)
 	a.Routes.MCPRouteIDs = normalizeIDs(a.Routes.MCPRouteIDs)
+	a.Routes.BuiltinRouteIDs = normalizeIDs(a.Routes.BuiltinRouteIDs)
 	a.Resources.ProviderIDs = normalizeIDs(a.Resources.ProviderIDs)
 	a.Resources.MCPServiceIDs = normalizeIDs(a.Resources.MCPServiceIDs)
 	a.Resources.VirtualKeyIDs = normalizeIDs(a.Resources.VirtualKeyIDs)
@@ -159,6 +172,9 @@ func (a Agent) Validate() error {
 		if a.Runtime.HTTP != nil {
 			return fmt.Errorf("runtime.http must be empty for acp runtime")
 		}
+		if a.Runtime.Builtin != nil {
+			return fmt.Errorf("runtime.builtin must be empty for acp runtime")
+		}
 	case RuntimeTypeHTTP:
 		if a.Runtime.HTTP == nil || a.Runtime.HTTP.Endpoint == "" {
 			return fmt.Errorf("runtime.http.endpoint is required for http runtime")
@@ -166,10 +182,29 @@ func (a Agent) Validate() error {
 		if a.Runtime.ACP != nil {
 			return fmt.Errorf("runtime.acp must be empty for http runtime")
 		}
+		if a.Runtime.Builtin != nil {
+			return fmt.Errorf("runtime.builtin must be empty for http runtime")
+		}
+	case RuntimeTypeBuiltin:
+		if a.Runtime.ACP != nil {
+			return fmt.Errorf("runtime.acp must be empty for builtin runtime")
+		}
+		if a.Runtime.HTTP != nil {
+			return fmt.Errorf("runtime.http must be empty for builtin runtime")
+		}
+		if err := a.validateBuiltin(); err != nil {
+			return err
+		}
 	case "":
 		return fmt.Errorf("runtime.type is required")
 	default:
 		return fmt.Errorf("unsupported runtime.type %q", a.Runtime.Type)
+	}
+	// builtin_route_ids bind turn ingress to the builtin host; letting another
+	// runtime claim them would occupy the route -> agent attribution slot and
+	// block the actual target agent from declaring its own route.
+	if a.Runtime.Type != RuntimeTypeBuiltin && len(a.Routes.BuiltinRouteIDs) > 0 {
+		return fmt.Errorf("routes.builtin_route_ids is only valid for builtin runtime agents")
 	}
 	if a.Policy.MaxAgentDepth < 0 {
 		return fmt.Errorf("policy.max_agent_depth must be non-negative")

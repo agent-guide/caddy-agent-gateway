@@ -100,10 +100,17 @@ func (p *RouteDirectProviderPolicy) ResolveTarget(ctx context.Context, routeID s
 	if err != nil {
 		return nil, err
 	}
+	// Resolve an empty requested model to the provider's default here rather
+	// than inside the provider, so the executed upstream model is explicit in
+	// the request and truthful in usage events.
+	upstreamModel := req.Model
+	if upstreamModel == "" {
+		upstreamModel = cfg.DefaultModel
+	}
 	return &ResolvedTarget{
 		ProviderID:      providerID,
 		ProviderType:    cfg.ProviderType,
-		UpstreamModel:   req.Model,
+		UpstreamModel:   upstreamModel,
 		CredentialScope: credentialScope,
 	}, nil
 }

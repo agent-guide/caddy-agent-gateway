@@ -149,9 +149,10 @@ func (s *InMemorySink) Enqueue(v any) bool {
 }
 
 type Summary struct {
-	LLM LLMSummary `json:"llm"`
-	MCP MCPSummary `json:"mcp"`
-	ACP ACPSummary `json:"acp"`
+	LLM     LLMSummary     `json:"llm"`
+	MCP     MCPSummary     `json:"mcp"`
+	ACP     ACPSummary     `json:"acp"`
+	Builtin BuiltinSummary `json:"builtin"`
 }
 
 type EventListOptions struct {
@@ -228,6 +229,14 @@ type MCPSummary struct {
 }
 
 type ACPSummary struct {
+	RequestCount int64 `json:"request_count"`
+	TurnCount    int64 `json:"turn_count"`
+	SuccessCount int64 `json:"success_count"`
+	FailureCount int64 `json:"failure_count"`
+	AvgLatencyMS int64 `json:"avg_latency_ms"`
+}
+
+type BuiltinSummary struct {
 	RequestCount int64 `json:"request_count"`
 	TurnCount    int64 `json:"turn_count"`
 	SuccessCount int64 `json:"success_count"`

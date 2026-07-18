@@ -85,6 +85,23 @@ type ACPUsageEvent struct {
 	ResultStatus        string
 }
 
+// BuiltinUsageEvent captures one builtin-agent turn served by the in-process
+// ADK host. It deliberately does not reuse the ACP family: builtin turns have
+// no backing service and no permission flow, and carry topology step counts
+// instead.
+type BuiltinUsageEvent struct {
+	InteractionEvent
+	Operation    string
+	SessionID    string
+	TopologyKind string
+	// ModelSteps counts assistant model outputs and ToolSteps counts tool
+	// executions observed during the turn.
+	ModelSteps   int
+	ToolSteps    int
+	EventCounts  map[string]int
+	ResultStatus string
+}
+
 type LLMExtension struct {
 	LLMAPI           string
 	APIOperation     string
@@ -137,6 +154,16 @@ type ACPExtension struct {
 	EventCounts         map[string]int
 	UsageJSON           string
 	ResultStatus        string
+}
+
+type BuiltinExtension struct {
+	Operation    string
+	SessionID    string
+	TopologyKind string
+	ModelSteps   *int
+	ToolSteps    *int
+	EventCounts  map[string]int
+	ResultStatus string
 }
 
 type InteractionDimensions struct {

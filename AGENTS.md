@@ -12,7 +12,7 @@ The current primary LLM path is:
 5. in logical-model routes, the model catalog resolves the logical model to one concrete `(provider_id, upstream_model)` binding
 6. the selected provider executes `Generate` or `Stream`
 
-MCP is also active now through `agent_route_dispatcher` with MCP enabled, `pkg/gateway/mcproute`, `pkg/mcp/service`, and MCP Admin APIs. ACP is being implemented natively through `pkg/acp`, `pkg/gateway/acproute`, dispatcher turn handling, and ACP Admin APIs. Metrics now persist LLM/MCP/ACP usage events (with optional `agent_id` attribution) and expose Admin summaries/events. The agent control plane is active through `pkg/agent`, the `agents` config store, and `/admin/agents` Admin APIs (P0 + P1). Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
+MCP is also active now through `agent_route_dispatcher` with MCP enabled, `pkg/gateway/mcproute`, `pkg/mcp/service`, and MCP Admin APIs. ACP is being implemented natively through `pkg/acp`, `pkg/gateway/acproute`, dispatcher turn handling, and ACP Admin APIs. The builtin agent runtime is active: agents with `runtime.type = "builtin"` are persisted definitions materialized by the in-process eino ADK host (`pkg/agent/builtin`) and exposed through builtin routes (`pkg/gateway/builtinroute`, dispatcher `builtin` enablement, `POST /<builtin-route>/turn` SSE). Metrics now persist LLM/MCP/ACP/builtin usage events (with optional `agent_id` attribution) and expose Admin summaries/events. The agent control plane is active through `pkg/agent`, the `agents` config store, and `/admin/agents` Admin APIs (P0 + P1 + PB1). Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
 
 ## Change Policy
 
@@ -88,6 +88,7 @@ Responsibilities:
 - when `mcp` is configured, resolve `MCPRoute` requests, parse MCP JSON-RPC, and invoke `pkg/mcp/service`
 - track in-flight MCP requests and progress through the shared runtime registry
 - when `acp` is configured, resolve `ACPRoute` requests, parse the gateway ACP turn request, and invoke `pkg/acp/runtime`
+- when `builtin` is configured, resolve `BuiltinRoute` requests, stamp the route's target agent id on the interaction span, and invoke the in-process ADK host (`pkg/agent/builtin`) for `POST /<builtin-route>/turn` SSE
 
 ### Protocol handler modules
 
@@ -389,23 +390,85 @@ managers; those packages must not depend on `pkg/agent`.
 Important files:
 
 - `types.go`: the `Agent` model. Runtime is `acp` (gateway owns the lifecycle via
-  an ACP `service_id`) or `http` (the agent owns its own lifecycle). LLM and MCP
-  are `resources`, not runtime types. `policy` is runtime-agnostic; ACP
-  operational config stays on the ACP service.
+  an ACP `service_id`), `http` (the agent owns its own lifecycle), or `builtin`
+  (no separate process — a persisted definition materialized by the in-process
+  ADK host). LLM and MCP are `resources`, not runtime types. `policy` is
+  runtime-agnostic; ACP operational config stays on the ACP service.
+- `builtin_types.go`: the `runtime.builtin` definition schema — model resolved
+  through an LLM route (must appear in `routes.llm_route_ids`), tools referencing
+  MCP services (must appear in `resources.mcp_service_ids`), topology kinds
+  `single`/`sequential`/`parallel`/`loop`/`supervisor`/`planexecute`/`deep`/
+  `custom` (`planexecute` configures roles through the optional
+  `topology.plan_execute` block — `planner`/`executor`/`replanner` inherit the
+  node's model unless overridden, and only the executor carries tools; `deep`
+  reuses the node's own fields with optional `sub_agents`; `custom`
+  requires a factory name registered in the linked binary and is root-only —
+  a factory receives the whole `BuiltinRuntime` definition, so a nested custom
+  node is rejected at validation and again at materialization), inline-only
+  sub-agent definitions, a `summarization` middleware toggle, and fail-closed
+  `limits` (`max_concurrent_turns`, `turn_timeout_seconds`).
 - `manager.go`: agent CRUD plus the in-memory route/service → agent index. It
   enforces P0 one-runtime-one-agent (a `service_id` is bound by at most one
-  agent), route-binding uniqueness (any LLM/MCP/ACP `route_id` is owned by at
-  most one agent, so the route → agent attribution mapping stays unambiguous),
-  and `acp_route_ids` → runtime-service consistency, and implements
-  `ResolveAgentID` (the `usage.AgentAttributor` seam). `Refresh` rebuilds the
-  index defensively: a `service_id` or `route_id` that resolves to more than one
-  agent is dropped from the map (and `ResolveAgentID` returns `ok=false`) rather
-  than silently picking a last writer.
+  agent), route-binding uniqueness (any LLM/MCP/ACP/builtin `route_id` is owned
+  by at most one agent, so the route → agent attribution mapping stays
+  unambiguous), `acp_route_ids` → runtime-service and `builtin_route_ids` →
+  target-agent consistency, and implements `ResolveAgentID` (the
+  `usage.AgentAttributor` seam). `Refresh` rebuilds the index defensively: a
+  `service_id` or `route_id` that resolves to more than one agent is dropped
+  from the map (and `ResolveAgentID` returns `ok=false`) rather than silently
+  picking a last writer.
 
 Agents are a first-class gateway-bundle object (apply/export/validate) and have
 an `agwctl gateway agent` read surface; create/update flow through the bundle.
 See `docs/design/agents-control-plane.md` (including the §11 implementation
 status) for the full direction.
+
+### `pkg/agent/builtin/`
+
+The generic eino ADK host for builtin-runtime agents (§5.7 of
+`agents-control-plane.md`). One host instance (owned by `AgentGateway`) serves
+every builtin agent:
+
+- materialization cache keyed by agent id + `updated_at`; a definition update
+  re-materializes on the next turn while in-flight turns drain on the old graph
+- the agent's model resolves through its LLM route into a `RoutedProvider`
+  wrapped by the `einomodel` bridge, so credential scheduling, candidate
+  fallback, and LLM usage events apply unchanged; a node that carries tools
+  (and every tool-calling head: the supervisor head, the deep head, and the
+  planexecute planner/replanner) resolves with `RequireTools`, so
+  logical-model routes only bind tool-capable candidates; MCP tools come
+  through the `einotool` bridge (fail-closed name selection)
+- every turn runs under panic recovery; `max_concurrent_turns` and
+  `turn_timeout_seconds` are fail-closed (reject, not queue); a disabled agent
+  rejects turns as a client-correctable error
+- sessions are in-memory conversation histories (idle TTL, per-agent cap,
+  message cap) with documented restart-loss semantics; durable checkpoints wait
+  for eino v0.10 and must not be hand-rolled before that. Turns on one session
+  are serialized through a context-aware wait that happens before the
+  concurrency semaphore (waiting same-session turns never occupy
+  `max_concurrent_turns` slots and abort with `session_busy` on turn timeout
+  or client disconnect); a new session beyond the cap with nothing evictable
+  is rejected (`session_limit_exceeded`), never queued; cap eviction runs only
+  when a new session is created and never touches the session a turn is
+  reusing (a continued conversation cannot lose its history to the evictor)
+- observability: the dispatcher stamps the route's target agent id on the turn
+  span; the host opens child spans for inner model calls (kind `llm`) and tool
+  executions (kind `mcp`), parented under the turn span and carrying the agent
+  id, so inner traffic produces `llm_usage_events`/`mcp_usage_events` as usual
+- turn events use the shared vocabulary subset `session`, `delta`, `content`,
+  `tool_call`, `usage`, `done`, `error`
+- custom Go agents register through `builtin.RegisterFactory` (mirroring
+  provider registration) and are selected with `topology.kind = "custom"`;
+  factory packages must be blank-imported in `cmd/agw/main.go`,
+  `cmd/agwd/main.go`, and `cmd/agwctl/cmd_gateway.go`
+
+### `pkg/gateway/builtinroute/`
+
+Defines the builtin route config expansion and runtime route model, mirroring
+`acproute` with an `agent_id` target instead of a service. Route ids are
+slash-free and deterministic (`builtin:<agent_id>:<path-slug>` when `id` is
+empty). The dispatcher serves `POST /<builtin-route>/turn` when `builtin` is
+enabled.
 
 ### `internal/observability/`
 
@@ -413,11 +476,11 @@ Owns durable usage events and query helpers.
 
 Important packages:
 
-- `internal/observability/usage`: event models (with an optional `agent_id` attribution tag and the LLM token detail fields `cached_tokens`/`reasoning_tokens`), observer/span interfaces, no-op observer, the `AgentAttributor` seam plus the settable `AgentAttribution` holder, usage service, Prometheus exposition rendering, and metrics config (`retention_days`, `max_agent_depth`)
+- `internal/observability/usage`: event models (with an optional `agent_id` attribution tag and the LLM token detail fields `cached_tokens`/`reasoning_tokens`), observer/span interfaces, no-op observer, the `AgentAttributor` seam plus the settable `AgentAttribution` holder, usage service, Prometheus exposition rendering, and metrics config (`retention_days`, `max_agent_depth`). A failed span without an explicit `error_type` falls back by status class (`client_error` for 4xx, `internal_error` otherwise), and `InteractionSpan.Discard` ends a span without emitting — the dispatcher discards the span whenever it passes a request through to the next handler, so unhandled requests never appear in usage events
 - `internal/observability/pipeline`: buffered event pipeline, SQLite sink (with a background retention janitor), the in-process Prometheus counter sink, and an `OpenTelemetrySink` adapter seam (no exporter is wired; sinks are passed to `NewEventPipeline` in `caddy/gateway/app.go` and `standalone/server/server.go`, so wiring one is an in-tree change)
 - `internal/observability/einotap`: the process-global eino callbacks handler. It folds chat-model component detail into the current interaction span on the synchronous `OnEnd` timing only — merge-never-emit, no stream timings, no stream copies — and `einotap.Register()` is called from both bootstrap paths under a `sync.Once`, so Caddy config reloads cannot double-register it
 
-SQLite usage tables are typed event tables (`llm_usage_events`, `mcp_usage_events`, `acp_usage_events`) created by the metrics sink through the sqlite backend's `UsageDB()` capability. They carry a nullable `agent_id` attribution column, stamped at write time by the observer when the originating route resolves to exactly one agent. They are separate from generic JSON config stores. Time-series and breakdown queries scan these event tables directly; there are no internal rollup tables. Use the Prometheus exposition (`GET /admin/metrics/prometheus`) plus an external system (Prometheus/Grafana) for high-volume aggregation, trends, and alerting.
+SQLite usage tables are typed event tables (`llm_usage_events`, `mcp_usage_events`, `acp_usage_events`, `builtin_usage_events`) created by the metrics sink through the sqlite backend's `UsageDB()` capability. They carry a nullable `agent_id` attribution column, stamped at write time by the observer when the originating route resolves to exactly one agent. They are separate from generic JSON config stores. Time-series and breakdown queries scan these event tables directly; there are no internal rollup tables. Use the Prometheus exposition (`GET /admin/metrics/prometheus`) plus an external system (Prometheus/Grafana) for high-volume aggregation, trends, and alerting.
 
 The `metrics` Caddyfile block and `agwd` flags configure usage retention cleanup and agent-depth enforcement. Retention is applied at startup and by a periodic janitor in the SQLite sink. The dispatcher rejects requests when inbound `X-Agent-Depth` reaches the configured `max_agent_depth`; `0` disables the gate.
 
@@ -487,8 +550,8 @@ Important current directives:
 
 - `provider_types` is startup-only provider type availability; when omitted all registered provider types are enabled
 - providers use `provider_type <name>`
-- LLM routes use `protocol <openai|anthropic|cc>`, MCP routes use `protocol mcp`, and ACP routes use `protocol acp`
-- `agent_route_dispatcher` uses `llm_api <name>` for LLM protocol handlers, `mcp` to enable MCP protocol handling, and `acp` to enable ACP turn handling
+- LLM routes use `protocol <openai|anthropic|cc>`, MCP routes use `protocol mcp`, ACP routes use `protocol acp`, and builtin routes use `protocol builtin`
+- `agent_route_dispatcher` uses `llm_api <name>` for LLM protocol handlers, `mcp` to enable MCP protocol handling, `acp` to enable ACP turn handling, and `builtin` to enable builtin-agent turn handling
 - auth uses `virtualkey`, not `local_api_key`
 
 ## Admin API Notes
@@ -520,10 +583,16 @@ Implemented ACP families:
 - `/admin/acp/routes/...`
 - `/admin/acp/runtime/...`
 
+Implemented builtin families:
+
+- `/admin/builtin/routes/...`
+
 Implemented agent families:
 
 - `/admin/agents/...` (CRUD plus `/{id}/workspace`, `/{id}/activity`,
-  `/{id}/usage`, `/{id}/interactions`, `/{id}/resources`, `/{id}/health`)
+  `/{id}/usage`, `/{id}/interactions`, `/{id}/resources`, `/{id}/health`;
+  the workspace view carries a builtin slice — definition summary, host
+  materialization state, builtin routes — for `runtime.type = "builtin"`)
 
 Stubbed families currently return `501 Not Implemented`:
 

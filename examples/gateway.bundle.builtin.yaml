@@ -1,0 +1,242 @@
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+
+# Builtin agent bundle example — an in-process ADK-hosted agent behind the
+# gateway (no separate agent process; the definition below is materialized by
+# the compiled-in eino ADK host).
+#
+# Apply with:
+#   agwctl gateway apply -f examples/gateway.bundle.builtin.yaml
+#
+# Prerequisites:
+#   - DEEPSEEK_API_KEY set before apply
+#   - the dispatcher site block enables builtin turn handling:
+#       agent_route_dispatcher {
+#           llm_api openai
+#           builtin
+#       }
+#
+# Talk to the agent (SSE events: session, delta, content, tool_call, usage,
+# done, error):
+#   curl -N -X POST http://127.0.0.1:8080/agents/support/turn \
+#     -H 'Content-Type: application/json' \
+#     -d '{"input": "hello"}'
+# Continue the conversation with the session id from the `session` event:
+#   curl -N -X POST http://127.0.0.1:8080/agents/support/turn \
+#     -H 'Content-Type: application/json' \
+#     -d '{"session_id": "<sid>", "input": "and one more thing"}'
+# Sessions are in-memory: histories do not survive a gateway restart.
+
+providers:
+
+  - id: deepseek-main
+    provider_type: deepseek
+    api_key: ${DEEPSEEK_API_KEY}
+    default_model: deepseek-chat
+
+llmRoutes:
+
+  # The agent's model resolves through this route, so credential scheduling,
+  # candidate fallback, and llm_usage_events apply to the agent's inner calls
+  # exactly as they do to external LLM traffic.
+  - id: chat-main
+    protocol: openai
+    match_policy:
+      path_prefix: /llm/chat
+      methods:
+        - POST
+    auth_policy:
+      require_virtual_key: true
+    target_policy:
+      provider_target:
+        provider_id: deepseek-main
+      credential_type_order:
+        - api_key
+
+  # Route bindings are unique across agents: a route id may appear in at most
+  # one agent's routes block, so each builtin agent needs its own LLM route
+  # (uncomment together with the research-team agent below).
+  # - id: chat-alt
+  #   protocol: openai
+  #   match_policy:
+  #     path_prefix: /llm/chat-alt
+  #     methods:
+  #       - POST
+  #   auth_policy:
+  #     require_virtual_key: true
+  #   target_policy:
+  #     provider_target:
+  #       provider_id: deepseek-main
+  #     credential_type_order:
+  #       - api_key
+
+# Optional: MCP services referenced by the agent's tools. A node that carries
+# tools resolves its model with RequireTools, so on logical-model routes only
+# tool-capable candidates bind.
+#
+# mcpServices:
+#
+#   - id: mcp-filesystem
+#     name: Filesystem MCP Service (stdio)
+#     transport: stdio
+#     command: npx
+#     args:
+#       - -y
+#       - "@modelcontextprotocol/server-filesystem"
+#       - /private/tmp
+#     env:
+#       NODE_ENV: production
+
+agents:
+
+  - id: support
+    name: Support Agent
+    description: Answers product questions.
+    runtime:
+      type: builtin
+      builtin:
+        model:
+          # Must appear in routes.llm_route_ids below.
+          llm_route_id: chat-main
+          # Optional: route target name (logical-model routes) or upstream
+          # model (direct-provider routes); the provider default applies when
+          # omitted.
+          # model: deepseek-chat
+        system_prompt: You are a concise support agent for the agent-gateway project.
+        generation:
+          max_tokens: 2048
+          temperature: 0.2
+        # Optional MCP tools; every mcp_service_id must appear in
+        # resources.mcp_service_ids. Tool name selection is fail-closed —
+        # a missing tool is an apply-time error, not a silent skip.
+        # tools:
+        #   - mcp_service_id: mcp-filesystem
+        #     tools:
+        #       - read_text_file
+        topology:
+          # single | sequential | parallel | loop | supervisor | planexecute |
+          # deep | custom (custom is root-only and requires a factory
+          # registered in the linked binary).
+          kind: single
+        # middlewares:
+        #   summarization:
+        #     enabled: true
+        #     trigger_tokens: 32000
+        limits:
+          # Fail-closed: reject (HTTP 429), never queue.
+          max_concurrent_turns: 4
+          turn_timeout_seconds: 120
+    routes:
+      llm_route_ids:
+        - chat-main
+      builtin_route_ids:
+        - builtin-support
+    resources: {}
+    #   mcp_service_ids:
+    #     - mcp-filesystem
+    policy: {}
+
+  # Multi-agent topology example: a supervisor head that transfers to inline
+  # sub-agents (sub-agents inherit the root model unless they declare their
+  # own; the supervisor head always requires a tool-capable model because
+  # sub-agent transfer is tool-calling). It binds its own LLM route (chat-alt
+  # above) because a route id may be owned by at most one agent.
+  #
+  # - id: research-team
+  #   name: Research Team
+  #   runtime:
+  #     type: builtin
+  #     builtin:
+  #       model:
+  #         llm_route_id: chat-alt
+  #       system_prompt: Coordinate the researcher and the writer to answer the user.
+  #       topology:
+  #         kind: supervisor
+  #         sub_agents:
+  #           - name: researcher
+  #             description: Gathers facts for the task.
+  #             system_prompt: Collect the facts needed to answer. Be thorough.
+  #           - name: writer
+  #             description: Writes the final answer.
+  #             system_prompt: Write a clear, short answer from the researcher's notes.
+  #   routes:
+  #     llm_route_ids:
+  #       - chat-alt
+  #     builtin_route_ids:
+  #       - builtin-research-team
+  #   resources: {}
+  #   policy: {}
+
+  # planexecute example: a plan-execute-replan loop. Roles are configured
+  # through topology.plan_execute and inherit the root model unless they
+  # override it; only the executor runs MCP tools. The planner and replanner
+  # always require a tool-capable model (plans are emitted through forced
+  # tool calls). max_iterations bounds the execute-replan rounds.
+  #
+  # - id: planner-agent
+  #   name: Planner Agent
+  #   runtime:
+  #     type: builtin
+  #     builtin:
+  #       model:
+  #         llm_route_id: chat-alt
+  #       topology:
+  #         kind: planexecute
+  #         max_iterations: 10
+  #         plan_execute:
+  #           executor:
+  #             tools:
+  #               - mcp_service_id: mcp-filesystem
+  #             max_iterations: 20
+  #   routes:
+  #     llm_route_ids:
+  #       - chat-alt
+  #     builtin_route_ids:
+  #       - builtin-planner-agent
+  #   resources:
+  #     mcp_service_ids:
+  #       - mcp-filesystem
+  #   policy: {}
+
+  # deep example: a tool-driven head with a write_todos planning tool and a
+  # task tool that fans out to sub-agents (a general-purpose sub-agent exists
+  # by default, so sub_agents may be omitted). The head always requires a
+  # tool-capable model.
+  #
+  # - id: deep-agent
+  #   name: Deep Agent
+  #   runtime:
+  #     type: builtin
+  #     builtin:
+  #       model:
+  #         llm_route_id: chat-alt
+  #       system_prompt: Solve the task end to end; delegate research to sub-agents.
+  #       topology:
+  #         kind: deep
+  #         sub_agents:
+  #           - name: researcher
+  #             description: Gathers facts for the task.
+  #   routes:
+  #     llm_route_ids:
+  #       - chat-alt
+  #     builtin_route_ids:
+  #       - builtin-deep-agent
+  #   resources: {}
+  #   policy: {}
+
+builtinRoutes:
+
+  # id defaults to the slash-free builtin:<agent_id>:<path-slug> when omitted.
+  - id: builtin-support
+    agent_id: support
+    match_policy:
+      path_prefix: /agents/support
+    auth_policy:
+      require_virtual_key: false
+
+  # - id: builtin-research-team
+  #   agent_id: research-team
+  #   match_policy:
+  #     path_prefix: /agents/research-team
+  #   auth_policy:
+  #     require_virtual_key: true

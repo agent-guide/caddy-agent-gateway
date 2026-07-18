@@ -411,6 +411,22 @@ func printGatewayACPRoutesTable(items []adminclient.ACPRouteView) {
 	printTable(headers, rows)
 }
 
+func printGatewayBuiltinRoutesTable(items []adminclient.BuiltinRouteView) {
+	headers := []string{"ID", "PATH-PREFIX", "AGENT-ID", "VIRTUALKEY", "DISABLED", "SOURCE"}
+	rows := make([][]string, 0, len(items))
+	for _, item := range items {
+		rows = append(rows, []string{
+			dash(item.ID),
+			dash(item.MatchPolicy.PathPrefix),
+			dash(item.AgentID),
+			boolStr(item.AuthPolicy.RequireVirtualKey),
+			boolStr(item.Disabled),
+			dash(item.Source),
+		})
+	}
+	printTable(headers, rows)
+}
+
 func printGatewayACPRuntimeOverview(runtime *adminclient.ACPRuntimeView) {
 	if runtime == nil {
 		runtime = &adminclient.ACPRuntimeView{}

@@ -150,6 +150,13 @@ func (h *Handler) Routes() []Route {
 		{Method: http.MethodDelete, Path: "/admin/acp/runtime/threads/{service_id}/{thread_id}", Handler: h.handleCloseACPThread},
 		{Method: http.MethodPost, Path: "/admin/acp/runtime/permissions/{request_id}", Handler: h.handleResolveACPPermission},
 
+		// Builtin agent routes
+		{Method: http.MethodGet, Path: "/admin/builtin/routes", Handler: h.handleListBuiltinRoutes},
+		{Method: http.MethodPost, Path: "/admin/builtin/routes", Handler: h.handleCreateBuiltinRoute},
+		{Method: http.MethodGet, Path: "/admin/builtin/routes/{id}", Handler: h.handleGetBuiltinRoute},
+		{Method: http.MethodPut, Path: "/admin/builtin/routes/{id}", Handler: h.handleUpdateBuiltinRoute},
+		{Method: http.MethodDelete, Path: "/admin/builtin/routes/{id}", Handler: h.handleDeleteBuiltinRoute},
+
 		// Memory
 		{Method: http.MethodGet, Path: "/admin/memory/config", Handler: h.handleGetMemoryConfig},
 		{Method: http.MethodPut, Path: "/admin/memory/config", Handler: h.handleSetMemoryConfig},

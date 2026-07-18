@@ -390,6 +390,143 @@ agents:
 	}
 }
 
+func TestValidateBuiltinRouteRequiresAgentID(t *testing.T) {
+	bundle, err := DecodeYAML([]byte(`
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+builtinRoutes:
+  - id: builtin-helper
+    match_policy:
+      path_prefix: /agents/helper
+`))
+	if err != nil {
+		t.Fatalf("DecodeYAML() error = %v", err)
+	}
+
+	err = bundle.ValidateForConfigStore()
+	if err == nil {
+		t.Fatal("ValidateForConfigStore() error = nil, want agent_id required error")
+	}
+	if !strings.Contains(err.Error(), `builtinRoutes["builtin-helper"]: agent_id is required`) {
+		t.Fatalf("ValidateForConfigStore() error = %v, want agent_id required", err)
+	}
+}
+
+func TestValidateVirtualKeyAllowsBuiltinRouteIDs(t *testing.T) {
+	bundle, err := DecodeYAML([]byte(`
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+builtinRoutes:
+  - id: builtin-helper
+    agent_id: helper
+    match_policy:
+      path_prefix: /agents/helper
+virtualKeys:
+  - id: vk-builtin-only
+    name: builtin only
+    allowed_route_ids:
+      - builtin-helper
+`))
+	if err != nil {
+		t.Fatalf("DecodeYAML() error = %v", err)
+	}
+	if err := bundle.ValidateForConfigStore(); err != nil {
+		t.Fatalf("ValidateForConfigStore() error = %v, want a virtual key restricted to a builtin route to validate", err)
+	}
+}
+
+func TestValidateRejectsCrossFamilyDuplicateRouteIDs(t *testing.T) {
+	bundle, err := DecodeYAML([]byte(`
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+llmRoutes:
+  - id: shared-id
+    kind: llm
+    protocol: openai
+    match_policy:
+      path_prefix: /v1
+    target_policy:
+      kind: direct-provider
+      provider_id: openai-main
+builtinRoutes:
+  - id: shared-id
+    agent_id: helper
+    match_policy:
+      path_prefix: /agents/helper
+`))
+	if err != nil {
+		t.Fatalf("DecodeYAML() error = %v", err)
+	}
+	err = bundle.ValidateForConfigStore()
+	if err == nil || !strings.Contains(err.Error(), `route id "shared-id" is duplicated across`) {
+		t.Fatalf("ValidateForConfigStore() error = %v, want cross-family duplicate id error", err)
+	}
+}
+
+func TestValidateAgentsRejectsBuiltinRouteIDsOnNonBuiltinRuntime(t *testing.T) {
+	bundle, err := DecodeYAML([]byte(`
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+builtinRoutes:
+  - id: builtin-helper
+    agent_id: helper
+    match_policy:
+      path_prefix: /agents/helper
+agents:
+  - id: squatter
+    name: Squatter
+    runtime:
+      type: http
+      http:
+        endpoint: http://agent.example
+    routes:
+      builtin_route_ids:
+        - builtin-helper
+`))
+	if err != nil {
+		t.Fatalf("DecodeYAML() error = %v", err)
+	}
+	err = bundle.ValidateForConfigStore()
+	if err == nil || !strings.Contains(err.Error(), `builtin_route_ids is only valid for builtin runtime agents`) {
+		t.Fatalf("ValidateForConfigStore() error = %v, want non-builtin builtin_route_ids rejection", err)
+	}
+}
+
+func TestValidateAgentsRejectsBuiltinRouteAgentMismatch(t *testing.T) {
+	bundle, err := DecodeYAML([]byte(`
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+builtinRoutes:
+  - id: builtin-other
+    agent_id: agent-b
+    match_policy:
+      path_prefix: /agents/other
+agents:
+  - id: agent-a
+    name: Agent A
+    runtime:
+      type: builtin
+      builtin:
+        model:
+          llm_route_id: llm-main
+    routes:
+      llm_route_ids:
+        - llm-main
+      builtin_route_ids:
+        - builtin-other
+`))
+	if err != nil {
+		t.Fatalf("DecodeYAML() error = %v", err)
+	}
+	err = bundle.ValidateForConfigStore()
+	if err == nil {
+		t.Fatalf("expected builtin route agent mismatch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "builtin-other") {
+		t.Fatalf("error should name the mismatched route, got: %v", err)
+	}
+}
+
 func TestValidateAggregatesErrors(t *testing.T) {
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: wrong
@@ -454,7 +591,7 @@ cliAuthAuthenticators:
 		`providers["dup"]: duplicate id`,
 		`managedModels["openai-main/gpt-4.1"]: duplicate provider_id/upstream_model`,
 		`llmRoutes["route-a"]: duplicate id`,
-		`virtualKeys["vk-a"]: allowed_route_id "missing-route" does not exist in bundle llmRoutes`,
+		`virtualKeys["vk-a"]: allowed_route_id "missing-route" does not exist in bundle routes`,
 		`virtualKeys["vk-a"]: duplicate id`,
 		`cliAuthAuthenticators["codex"]: duplicate name`,
 		`cliAuthAuthenticators["missing-authenticator"]: unknown authenticator`,

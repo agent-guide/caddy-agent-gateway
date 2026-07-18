@@ -13,3 +13,4 @@ type NoopSpan struct{}
 func (NoopSpan) SetExtension(any)             {}
 func (NoopSpan) AddAnnotation(string, string) {}
 func (NoopSpan) Finish(InteractionOutcome)    {}
+func (NoopSpan) Discard()                     {}
