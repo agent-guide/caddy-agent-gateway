@@ -70,7 +70,8 @@ func MigrateUsageTables(db *gorm.DB) error {
 			agent_depth INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL,
 			route_id TEXT, route_kind TEXT NOT NULL DEFAULT 'builtin', route_protocol TEXT, virtual_key_id TEXT,
 			success INTEGER NOT NULL DEFAULT 0, status_code INTEGER, error_type TEXT, latency_ms INTEGER,
-			operation TEXT, session_id TEXT, topology_kind TEXT, model_steps INTEGER NOT NULL DEFAULT 0,
+			operation TEXT, session_id TEXT, run_id TEXT, permission_request_id TEXT,
+			link_trace_id TEXT, link_span_id TEXT, topology_kind TEXT, model_steps INTEGER NOT NULL DEFAULT 0,
 			tool_steps INTEGER NOT NULL DEFAULT 0, event_counts_json TEXT, result_status TEXT, agent_id TEXT
 		)`,
 	}
@@ -92,6 +93,10 @@ func MigrateUsageTables(db *gorm.DB) error {
 		{"acp_usage_events", "agent_id TEXT"},
 		{"llm_usage_events", "cached_tokens INTEGER"},
 		{"llm_usage_events", "reasoning_tokens INTEGER"},
+		{"builtin_usage_events", "run_id TEXT"},
+		{"builtin_usage_events", "permission_request_id TEXT"},
+		{"builtin_usage_events", "link_trace_id TEXT"},
+		{"builtin_usage_events", "link_span_id TEXT"},
 	}
 	for _, add := range additive {
 		if err := db.Exec("ALTER TABLE " + add.table + " ADD COLUMN " + add.column).Error; err != nil {
@@ -127,6 +132,7 @@ func MigrateUsageTables(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_started ON builtin_usage_events (started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_route ON builtin_usage_events (route_id, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_trace ON builtin_usage_events (trace_id, started_at) WHERE trace_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_builtin_events_run ON builtin_usage_events (run_id, started_at) WHERE run_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_agent ON builtin_usage_events (agent_id, started_at) WHERE agent_id IS NOT NULL`,
 	}
 	for _, stmt := range indexes {

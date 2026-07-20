@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/agent"
 	basemcp "github.com/agent-guide/agent-gateway/pkg/mcp"
 )
@@ -57,6 +59,8 @@ func fetchDocCaller(output string) *fakeToolCaller {
 
 type permissionEventPayload struct {
 	RequestID string                  `json:"request_id"`
+	RunID     string                  `json:"run_id"`
+	SessionID string                  `json:"session_id"`
 	ExpiresAt time.Time               `json:"expires_at"`
 	Calls     []PendingPermissionCall `json:"calls"`
 }
@@ -64,9 +68,13 @@ type permissionEventPayload struct {
 // suspendOneTurn runs one input turn to the permission interrupt and returns
 // the session id and the permission payload.
 func suspendOneTurn(t *testing.T, host *Host, agentID string) (string, permissionEventPayload) {
+	return suspendOneTurnContext(t, t.Context(), host, agentID)
+}
+
+func suspendOneTurnContext(t *testing.T, ctx context.Context, host *Host, agentID string) (string, permissionEventPayload) {
 	t.Helper()
 	sink := &collectedEvents{}
-	if err := host.ServeTurn(t.Context(), agentID, TurnRequest{Input: "do it"}, sink.sink); err != nil {
+	if err := host.ServeTurn(ctx, agentID, TurnRequest{Input: "do it"}, sink.sink); err != nil {
 		t.Fatalf("interactive turn error = %v", err)
 	}
 	names := sink.names()
@@ -82,10 +90,73 @@ func suspendOneTurn(t *testing.T, host *Host, agentID string) (string, permissio
 	if err := json.Unmarshal(perms[0].Data, &payload); err != nil {
 		t.Fatalf("permission payload %s: %v", perms[0].Data, err)
 	}
-	if payload.RequestID == "" || len(payload.Calls) == 0 {
-		t.Fatalf("permission payload = %+v, want request id and calls", payload)
+	payload.RequestID = perms[0].RequestID
+	payload.RunID = perms[0].RunID
+	payload.SessionID = perms[0].SessionID
+	if payload.RequestID == "" || payload.RunID == "" || payload.SessionID == "" || len(payload.Calls) == 0 {
+		t.Fatalf("permission payload = %+v, want correlation ids and calls", payload)
 	}
-	return sink.byName(EventSession)[0].SessionID, payload
+	var rawData map[string]any
+	if err := json.Unmarshal(perms[0].Data, &rawData); err != nil {
+		t.Fatalf("permission payload map %s: %v", perms[0].Data, err)
+	}
+	for _, key := range []string{"request_id", "run_id", "session_id"} {
+		if _, duplicated := rawData[key]; duplicated {
+			t.Fatalf("permission data duplicates top-level %q: %s", key, perms[0].Data)
+		}
+	}
+	for _, event := range sink.snapshot() {
+		if event.RunID != payload.RunID || event.SessionID != payload.SessionID {
+			t.Fatalf("event %+v correlation differs from permission payload %+v", event, payload)
+		}
+	}
+	if perms[0].RequestID != payload.RequestID || dones[0].RequestID != payload.RequestID {
+		t.Fatalf("permission lifecycle request ids = %q/%q, want %q", perms[0].RequestID, dones[0].RequestID, payload.RequestID)
+	}
+	return payload.SessionID, payload
+}
+
+func TestPermissionResumePreservesRunAndLinksOriginalSpan(t *testing.T) {
+	events := &usage.InMemorySink{}
+	observer := usage.NewObserver(events)
+	host := NewHost(Config{
+		Agents:   &fakeAgentSource{agents: map[string]agent.Agent{"gated": interactiveAgent("gated")}},
+		Models:   &fakeModelResolver{model: gatedToolModel()},
+		Tools:    fetchDocCaller("x"),
+		Observer: observer,
+	})
+	originalTraceID := "11111111111111111111111111111111"
+	originalSpanID := "2222222222222222"
+	turnSpan, turnCtx := observer.Begin(t.Context(), usage.InteractionDimensions{
+		TraceID: originalTraceID, SpanID: originalSpanID, RouteID: "builtin:gated:turn", RouteKind: "builtin", AgentID: "gated",
+	})
+	sessionID, payload := suspendOneTurnContext(t, turnCtx, host, "gated")
+	turnSpan.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
+
+	resumeSpan, resumeCtx := observer.Begin(t.Context(), usage.InteractionDimensions{
+		TraceID: "33333333333333333333333333333333", SpanID: "4444444444444444",
+		RouteID: "builtin:gated:turn", RouteKind: "builtin", AgentID: "gated",
+	})
+	resumeEvents := &collectedEvents{}
+	if err := host.ServeTurn(resumeCtx, "gated", TurnRequest{
+		SessionID: sessionID, Permission: &TurnPermission{RequestID: payload.RequestID, Outcome: "cancel"},
+	}, resumeEvents.sink); err != nil {
+		t.Fatalf("cancel resume error = %v", err)
+	}
+	resumeSpan.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
+
+	var resumed usage.BuiltinUsageEvent
+	for _, event := range events.Events {
+		if candidate, ok := event.(usage.BuiltinUsageEvent); ok && candidate.Operation == "resume" {
+			resumed = candidate
+		}
+	}
+	if resumed.RunID != payload.RunID || resumed.PermissionRequestID != payload.RequestID {
+		t.Fatalf("resume usage correlation = %+v, want run/request %q/%q", resumed, payload.RunID, payload.RequestID)
+	}
+	if resumed.LinkTraceID != originalTraceID || resumed.LinkSpanID != originalSpanID {
+		t.Fatalf("resume link = %q/%q, want %q/%q", resumed.LinkTraceID, resumed.LinkSpanID, originalTraceID, originalSpanID)
+	}
 }
 
 func TestServeTurnInteractiveInterruptAndResumeAllow(t *testing.T) {
@@ -131,6 +202,9 @@ func TestServeTurnInteractiveInterruptAndResumeAllow(t *testing.T) {
 	if len(view.PendingPermissions) != 1 || view.PendingPermissions[0].RequestID != payload.RequestID {
 		t.Fatalf("runtime pending = %+v, want the suspended request", view.PendingPermissions)
 	}
+	if view.PendingPermissions[0].RunID != payload.RunID {
+		t.Fatalf("runtime pending run_id = %q, want %q", view.PendingPermissions[0].RunID, payload.RunID)
+	}
 	if state := view.Agents["gated"]; state.InflightTurns != 0 {
 		t.Fatalf("inflight turns while suspended = %d, want 0", state.InflightTurns)
 	}
@@ -151,6 +225,11 @@ func TestServeTurnInteractiveInterruptAndResumeAllow(t *testing.T) {
 	}, resume.sink)
 	if err != nil {
 		t.Fatalf("resume error = %v", err)
+	}
+	for _, event := range resume.snapshot() {
+		if event.RunID != payload.RunID || event.SessionID != sessionID || event.RequestID != payload.RequestID {
+			t.Fatalf("resume event correlation = %+v, want run/session/request %q/%q/%q", event, payload.RunID, sessionID, payload.RequestID)
+		}
 	}
 	if tools.calls != 1 {
 		t.Fatalf("tool calls after allow = %d, want 1", tools.calls)
@@ -290,12 +369,21 @@ func TestServeTurnPermissionCancelDiscardsTheTurn(t *testing.T) {
 }
 
 func TestServeTurnPermissionExpiryFailsClosed(t *testing.T) {
+	events := &usage.InMemorySink{}
+	observer := usage.NewObserver(events)
 	host := NewHost(Config{
-		Agents: &fakeAgentSource{agents: map[string]agent.Agent{"gated": interactiveAgent("gated")}},
-		Models: &fakeModelResolver{model: gatedToolModel()},
-		Tools:  fetchDocCaller("x"),
+		Agents:   &fakeAgentSource{agents: map[string]agent.Agent{"gated": interactiveAgent("gated")}},
+		Models:   &fakeModelResolver{model: gatedToolModel()},
+		Tools:    fetchDocCaller("x"),
+		Observer: observer,
 	})
-	sessionID, payload := suspendOneTurn(t, host, "gated")
+	turnSpan, turnCtx := observer.Begin(t.Context(), usage.InteractionDimensions{
+		TraceID: "55555555555555555555555555555555", SpanID: "6666666666666666",
+		RouteID: "builtin:gated:turn", RouteKind: "builtin", RouteProtocol: "builtin",
+		VirtualKeyID: "vk-expiry", AgentDepth: 3, AgentID: "gated",
+	})
+	sessionID, payload := suspendOneTurnContext(t, turnCtx, host, "gated")
+	turnSpan.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
 
 	base := time.Now()
 	nowFunc = func() time.Time { return base.Add(defaultPermissionTimeout + time.Minute) }
@@ -310,6 +398,18 @@ func TestServeTurnPermissionExpiryFailsClosed(t *testing.T) {
 	}
 	if _, ok, _ := host.checkpoints.Get(t.Context(), payload.RequestID); ok {
 		t.Fatal("checkpoint survived expiry")
+	}
+	var expired usage.BuiltinUsageEvent
+	for _, event := range events.Events {
+		if candidate, ok := event.(usage.BuiltinUsageEvent); ok && candidate.Operation == "permission_expire" {
+			expired = candidate
+		}
+	}
+	if expired.RunID != payload.RunID || expired.PermissionRequestID != payload.RequestID || expired.SessionID != sessionID || expired.ResultStatus != "expired" {
+		t.Fatalf("expiry usage event = %+v, want correlated expired lifecycle event", expired)
+	}
+	if expired.VirtualKeyID != "vk-expiry" || expired.AgentDepth != 3 {
+		t.Fatalf("expiry dimensions = virtual_key %q / depth %d, want vk-expiry / 3", expired.VirtualKeyID, expired.AgentDepth)
 	}
 	// The session is no longer suspended: new input proceeds.
 	sink := &collectedEvents{}

@@ -302,6 +302,10 @@ func builtinEvent(base InteractionEvent, ext BuiltinExtension) BuiltinUsageEvent
 	ev := BuiltinUsageEvent{InteractionEvent: base}
 	ev.Operation = ext.Operation
 	ev.SessionID = ext.SessionID
+	ev.RunID = ext.RunID
+	ev.PermissionRequestID = ext.PermissionRequestID
+	ev.LinkTraceID = ext.LinkTraceID
+	ev.LinkSpanID = ext.LinkSpanID
 	ev.TopologyKind = ext.TopologyKind
 	if ext.ModelSteps != nil {
 		ev.ModelSteps = *ext.ModelSteps

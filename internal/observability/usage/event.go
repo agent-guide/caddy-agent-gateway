@@ -87,12 +87,19 @@ type ACPUsageEvent struct {
 
 // BuiltinUsageEvent captures one builtin-agent turn served by the in-process
 // ADK host. It deliberately does not reuse the ACP family: builtin turns have
-// no backing service and no permission flow, and carry topology step counts
-// instead.
+// no backing service, use checkpoint-based permission continuation rather
+// than ACP's side channel, and carry topology step counts instead.
 type BuiltinUsageEvent struct {
 	InteractionEvent
-	Operation    string
-	SessionID    string
+	Operation           string
+	SessionID           string
+	RunID               string
+	PermissionRequestID string
+	// LinkTraceID/LinkSpanID identify the earlier asynchronous segment of the
+	// same run. The OTLP adapter reconstructs them as an OpenTelemetry Span
+	// Link instead of pretending a resumed HITL turn is a synchronous child.
+	LinkTraceID  string
+	LinkSpanID   string
 	TopologyKind string
 	// ModelSteps counts assistant model outputs and ToolSteps counts tool
 	// executions observed during the turn.
@@ -157,13 +164,17 @@ type ACPExtension struct {
 }
 
 type BuiltinExtension struct {
-	Operation    string
-	SessionID    string
-	TopologyKind string
-	ModelSteps   *int
-	ToolSteps    *int
-	EventCounts  map[string]int
-	ResultStatus string
+	Operation           string
+	SessionID           string
+	RunID               string
+	PermissionRequestID string
+	LinkTraceID         string
+	LinkSpanID          string
+	TopologyKind        string
+	ModelSteps          *int
+	ToolSteps           *int
+	EventCounts         map[string]int
+	ResultStatus        string
 }
 
 type InteractionDimensions struct {

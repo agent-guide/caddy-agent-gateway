@@ -33,7 +33,8 @@ var mcpUsageInsertColumns = []string{
 var builtinUsageInsertColumns = []string{
 	"event_id", "trace_id", "span_id", "parent_span_id", "agent_depth", "started_at", "finished_at",
 	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
-	"operation", "session_id", "topology_kind", "model_steps", "tool_steps",
+	"operation", "session_id", "run_id", "permission_request_id", "link_trace_id", "link_span_id",
+	"topology_kind", "model_steps", "tool_steps",
 	"event_counts_json", "result_status", "agent_id",
 }
 
@@ -86,7 +87,8 @@ func InsertBuiltinUsageEvent(db *gorm.DB, ev usage.BuiltinUsageEvent) error {
 	return db.Exec(usageInsertSQL("builtin_usage_events", builtinUsageInsertColumns),
 		ev.EventID, ev.TraceID, ev.SpanID, ev.ParentSpanID, ev.AgentDepth, unixMillis(ev.StartedAt), unixMillis(ev.FinishedAt),
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
-		ev.Operation, ev.SessionID, ev.TopologyKind, ev.ModelSteps, ev.ToolSteps,
+		ev.Operation, ev.SessionID, ev.RunID, ev.PermissionRequestID, ev.LinkTraceID, ev.LinkSpanID,
+		ev.TopologyKind, ev.ModelSteps, ev.ToolSteps,
 		string(counts), ev.ResultStatus, nullString(ev.AgentID),
 	).Error
 }

@@ -169,6 +169,42 @@ func TestSpanStubFailureStatusAndFallbackEndTime(t *testing.T) {
 	}
 }
 
+func TestBuiltinSpanStubCarriesRunCorrelationAndResumeLink(t *testing.T) {
+	ev := testInteraction()
+	linkedTraceID := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	linkedSpanID := "bbbbbbbbbbbbbbbb"
+	stub, err := spanStub(usage.BuiltinUsageEvent{
+		InteractionEvent:    ev,
+		Operation:           "resume",
+		RunID:               "run-123",
+		PermissionRequestID: "perm-123",
+		LinkTraceID:         linkedTraceID,
+		LinkSpanID:          linkedSpanID,
+	})
+	if err != nil {
+		t.Fatalf("spanStub() error = %v", err)
+	}
+	if len(stub.Links) != 1 {
+		t.Fatalf("links = %+v, want one resume link", stub.Links)
+	}
+	if got := stub.Links[0].SpanContext.TraceID().String(); got != linkedTraceID {
+		t.Fatalf("link trace id = %q, want %q", got, linkedTraceID)
+	}
+	if got := stub.Links[0].SpanContext.SpanID().String(); got != linkedSpanID {
+		t.Fatalf("link span id = %q, want %q", got, linkedSpanID)
+	}
+	attrs := map[attribute.Key]attribute.Value{}
+	for _, attr := range stub.Attributes {
+		attrs[attr.Key] = attr.Value
+	}
+	if got := attrs["agw.builtin.run_id"].AsString(); got != "run-123" {
+		t.Fatalf("run_id attribute = %q", got)
+	}
+	if got := attrs["agw.builtin.permission_request_id"].AsString(); got != "perm-123" {
+		t.Fatalf("permission_request_id attribute = %q", got)
+	}
+}
+
 func TestSpanStubRejectsInvalidIDsAndUnknownTypes(t *testing.T) {
 	ev := testInteraction()
 	ev.TraceID = "not-hex"

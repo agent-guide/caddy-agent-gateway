@@ -478,7 +478,9 @@ every builtin agent:
 - observability: the dispatcher stamps the route's target agent id on the turn
   span; the host opens child spans for inner model calls (kind `llm`) and tool
   executions (kind `mcp`), parented under the turn span and carrying the agent
-  id, so inner traffic produces `llm_usage_events`/`mcp_usage_events` as usual
+  id, so inner traffic produces `llm_usage_events`/`mcp_usage_events` as usual;
+  every builtin logical turn has a stable `run_id`, and an HITL resume starts a
+  fresh trace with an OpenTelemetry Span Link to the checkpoint-producing span
 - turn events use the shared vocabulary subset `session`, `delta`, `content`,
   `tool_call`, `usage`, `permission`, `done`, `error`
 - interactive tool permissions (§5.7.7): with `permissions.mode =
@@ -494,8 +496,13 @@ every builtin agent:
   completion. Everything fails closed: decision TTL expiry, definition
   updates (a checkpoint only resumes on the graph that produced it),
   `max_pending` capacity, and new input on a suspended session (rejected
-  with the pending request id). Pending permissions are one-shot and listed
-  in `GET /admin/builtin/runtime`; middleware tools (skill, plantask,
+  with the pending request id). SSE events, builtin usage events, and the
+  Admin runtime view expose the stable run/session/request correlation ids;
+  TTL cleanup emits a linked `permission_expire` lifecycle event. Pending
+  permissions are one-shot and listed in `GET /admin/builtin/runtime`;
+  lifecycle expiry events remain queryable but are excluded from request
+  summaries so they do not skew counts or latency;
+  middleware tools (skill, plantask,
   tool_search) are never gated
 - middlewares attach to the root definition's chat-model nodes (single,
   supervisor head, deep head) in the fixed order patchtoolcalls → reduction →

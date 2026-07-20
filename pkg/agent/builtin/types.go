@@ -66,6 +66,8 @@ type TurnPermissionDecision struct {
 type TurnEvent struct {
 	Event      string          `json:"-"`
 	SessionID  string          `json:"session_id,omitempty"`
+	RunID      string          `json:"run_id,omitempty"`
+	RequestID  string          `json:"request_id,omitempty"`
 	Text       string          `json:"text,omitempty"`
 	StopReason string          `json:"stop_reason,omitempty"`
 	Message    string          `json:"message,omitempty"`
@@ -92,6 +94,23 @@ const (
 
 // EventSink receives turn events in emission order.
 type EventSink func(TurnEvent) error
+
+// correlatedSink stamps every event in one streamed run segment with the
+// stable logical run id and the segment's session/permission identifiers.
+func correlatedSink(next EventSink, runID, sessionID, requestID string) EventSink {
+	return func(event TurnEvent) error {
+		if event.RunID == "" {
+			event.RunID = runID
+		}
+		if event.SessionID == "" {
+			event.SessionID = sessionID
+		}
+		if event.RequestID == "" {
+			event.RequestID = requestID
+		}
+		return next(event)
+	}
+}
 
 // AgentSource resolves agent definitions; *agent.Manager satisfies it.
 type AgentSource interface {

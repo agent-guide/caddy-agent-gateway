@@ -201,6 +201,69 @@ func TestUsageAgentIDRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBuiltinRunCorrelationRoundTrip(t *testing.T) {
+	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	db := backend.UsageDB()
+	if err := MigrateUsageTables(db); err != nil {
+		t.Fatalf("MigrateUsageTables() error = %v", err)
+	}
+	now := time.Now().UTC()
+	ev := usage.BuiltinUsageEvent{
+		InteractionEvent: usage.InteractionEvent{
+			EventID: "builtin-resume", TraceID: "0123456789abcdef0123456789abcdef", SpanID: "0123456789abcdef",
+			StartedAt: now, FinishedAt: now.Add(100 * time.Millisecond), RouteID: "builtin:gated:turn", RouteKind: "builtin",
+			Success: true, StatusCode: 200, LatencyMS: 100,
+		},
+		Operation: "resume", SessionID: "session-1", RunID: "run-1", PermissionRequestID: "perm-1",
+		LinkTraceID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", LinkSpanID: "bbbbbbbbbbbbbbbb", ResultStatus: "success",
+	}
+	if err := InsertBuiltinUsageEvent(db, ev); err != nil {
+		t.Fatalf("InsertBuiltinUsageEvent() error = %v", err)
+	}
+	expired := ev
+	expired.EventID = "builtin-expire"
+	expired.TraceID = "cccccccccccccccccccccccccccccccc"
+	expired.SpanID = "dddddddddddddddd"
+	expired.Operation = "permission_expire"
+	expired.ResultStatus = "expired"
+	expired.LatencyMS = 0
+	if err := InsertBuiltinUsageEvent(db, expired); err != nil {
+		t.Fatalf("InsertBuiltinUsageEvent(expired) error = %v", err)
+	}
+	q := NewUsageQueries(db)
+	events, err := q.ListEvents("builtin", usage.EventListOptions{Limit: 10, Filters: map[string]string{"run_id": "run-1"}})
+	if err != nil {
+		t.Fatalf("ListEvents() error = %v", err)
+	}
+	if len(events.Items) != 2 || events.Items[0]["permission_request_id"] != "perm-1" || events.Items[0]["link_trace_id"] != ev.LinkTraceID {
+		t.Fatalf("builtin event correlation = %#v", events.Items)
+	}
+	summary, err := q.Summary()
+	if err != nil {
+		t.Fatalf("Summary() error = %v", err)
+	}
+	if summary.Builtin.RequestCount != 1 || summary.Builtin.SuccessCount != 1 || summary.Builtin.AvgLatencyMS != 100 {
+		t.Fatalf("builtin summary = %+v, want only the real resume request", summary.Builtin)
+	}
+	interactionSummary, err := q.InteractionsSummary(usage.BreakdownOptions{GroupBy: "route_kind", Limit: 10})
+	if err != nil {
+		t.Fatalf("InteractionsSummary() error = %v", err)
+	}
+	if len(interactionSummary.Items) != 1 || interactionSummary.Items[0]["request_count"] != int64(1) {
+		t.Fatalf("interaction summary = %#v, want expire excluded", interactionSummary.Items)
+	}
+	interactions, err := q.ListInteractions(usage.EventListOptions{Limit: 10, Filters: map[string]string{"run_id": "run-1"}})
+	if err != nil {
+		t.Fatalf("ListInteractions() error = %v", err)
+	}
+	if len(interactions.Items) != 2 || interactions.Items[0]["run_id"] != "run-1" || interactions.Items[0]["permission_request_id"] != "perm-1" || interactions.Items[0]["link_span_id"] != ev.LinkSpanID {
+		t.Fatalf("interaction correlation = %#v", interactions.Items)
+	}
+}
+
 func TestAttributionFilterFallback(t *testing.T) {
 	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)
 	if err != nil {

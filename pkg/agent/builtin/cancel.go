@@ -63,6 +63,8 @@ func (m CancelMode) options() []adk.AgentCancelOption {
 type inflightTurn struct {
 	agentID      string
 	sessionID    string
+	runID        string
+	requestID    string
 	operation    string // "turn" or "resume"
 	topologyKind string
 	startedAt    time.Time
@@ -73,6 +75,8 @@ type inflightTurn struct {
 type InFlightTurnView struct {
 	AgentID      string    `json:"agent_id"`
 	SessionID    string    `json:"session_id"`
+	RunID        string    `json:"run_id"`
+	RequestID    string    `json:"request_id,omitempty"`
 	Operation    string    `json:"operation"`
 	TopologyKind string    `json:"topology_kind,omitempty"`
 	StartedAt    time.Time `json:"started_at"`
@@ -117,6 +121,8 @@ func (r *activityRegistry) list() []InFlightTurnView {
 		out = append(out, InFlightTurnView{
 			AgentID:      t.agentID,
 			SessionID:    t.sessionID,
+			RunID:        t.runID,
+			RequestID:    t.requestID,
 			Operation:    t.operation,
 			TopologyKind: t.topologyKind,
 			StartedAt:    t.startedAt,

@@ -754,10 +754,9 @@ lower protocol layers still never import `pkg/agent`.
 
 #### 5.7.6 Observability and attribution
 
-- The host begins the interaction span itself and sets `AgentID` explicitly
-  on the span dimensions — the host knows which agent it is running, so
-  builtin attribution never needs the route → agent index and is always
-  exact.
+- The dispatcher begins the turn interaction span and stamps the builtin
+  route's target `AgentID` explicitly, so builtin attribution never depends
+  on the route → agent index and is always exact.
 - Inner LLM calls flow through the `RoutedProvider` and produce
   `llm_usage_events` as usual; inner MCP tool calls flow through
   `pkg/mcp/service` and produce `mcp_usage_events`; both inherit `agent_id`
@@ -841,11 +840,13 @@ it is why this feature adopts the Runner primitive.
 **Turn protocol.** The event vocabulary gains `permission` (still a marked
 subset of the ACP vocabulary). When a gated call interrupts:
 
-1. the turn stream emits one `permission` event carrying `request_id` (the
-   checkpoint id, generated per turn), `expires_at`, and the pending tool
-   calls — each with `call_id` (the model's tool-call id), `mcp_service_id`,
-   `name`, and `arguments`; parallel tool calls in one assistant step
-   interrupt together and appear as one list;
+1. every event in the streamed segment carries the stable logical `run_id`
+   and `session_id`; the turn stream emits one `permission` event additionally
+   carrying the top-level `request_id` (the checkpoint id, generated per turn),
+   while its `data` contains `expires_at` and the pending tool calls — each
+   with `call_id` (the model's tool-call id), `mcp_service_id`, `name`, and
+   `arguments`; parallel tool calls in one assistant step interrupt together
+   and appear as one list;
 2. the stream then ends with `done`, `stop_reason: "permission_required"`
    (the turn is suspended, not failed);
 3. the client resumes with `POST /<builtin-route>/turn` carrying
@@ -906,12 +907,22 @@ mutually exclusive in one request.
 `success` with `result_status: "interrupted"` and a `permission` entry in the
 event counts; the resumed segment is a new span with `operation: "resume"` on
 the same session. Inner LLM/MCP child spans attach to whichever segment
-executed them. Correlation across segments is by `session_id` plus
-`request_id` (recorded as a span annotation on both segments).
+executed them. One stable `run_id` identifies every segment of the logical
+turn, while `session_id` and `request_id` remain explicit on SSE events,
+SQLite usage events, the Admin runtime view, and OTLP attributes. Because a
+resume is a new asynchronous HTTP request and therefore starts a new trace,
+its usage event persists the checkpoint-producing trace/span ids and the OTLP
+exporter reconstructs them as an OpenTelemetry Span Link. Cancellation keeps
+the same correlation ids; lazy TTL cleanup emits a linked
+`permission_expire` builtin lifecycle event with `result_status: "expired"`.
+The expiry event remains available in builtin event and interaction listings,
+but request-oriented summaries exclude it so it cannot inflate request/success
+counts or skew average request latency. The interaction listing projects the
+link trace/span ids for direct operator inspection.
 
 **Admin surface.** `GET /admin/builtin/runtime` (new, mirroring
 `/admin/acp/runtime`) lists host entries and pending permissions (agent id,
-session id, request id, tool calls, expiry). An operator decision escape
+session id, run id, request id, tool calls, expiry). An operator decision escape
 hatch (`POST /admin/builtin/runtime/permissions/{request_id}`, which would
 need headless continuation semantics — the resumed events go nowhere but the
 session transcript and metrics) is deferred until a concrete operator need

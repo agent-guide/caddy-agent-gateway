@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -145,6 +146,15 @@ type pendingPermission struct {
 	requestID string
 	agentID   string
 	sessionID string
+	runID     string
+	// link* is the interaction span that produced this checkpoint. A resume
+	// starts a new trace and links back to this asynchronous predecessor.
+	linkTraceID   string
+	linkSpanID    string
+	routeID       string
+	routeProtocol string
+	virtualKeyID  string
+	agentDepth    int
 	// updatedAt guards materialization identity: a checkpoint must resume on
 	// the graph that produced it, so a definition update invalidates the
 	// pending permission.
@@ -173,11 +183,19 @@ func newPermissionRegistry() *permissionRegistry {
 }
 
 func newPermissionRequestID() (string, error) {
+	return newOpaqueID("perm-")
+}
+
+func newRunID() (string, error) {
+	return newOpaqueID("run-")
+}
+
+func newOpaqueID(prefix string) (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("generate permission request id: %w", err)
+		return "", fmt.Errorf("generate %s id: %w", strings.TrimSuffix(prefix, "-"), err)
 	}
-	return "perm-" + hex.EncodeToString(raw), nil
+	return prefix + hex.EncodeToString(raw), nil
 }
 
 // sweepLocked removes expired entries and returns them so callers can delete
@@ -246,6 +264,7 @@ type PendingPermissionView struct {
 	RequestID string                  `json:"request_id"`
 	AgentID   string                  `json:"agent_id"`
 	SessionID string                  `json:"session_id"`
+	RunID     string                  `json:"run_id"`
 	CreatedAt time.Time               `json:"created_at"`
 	ExpiresAt time.Time               `json:"expires_at"`
 	Calls     []PendingPermissionCall `json:"calls"`
@@ -275,6 +294,7 @@ func pendingView(p *pendingPermission) PendingPermissionView {
 		RequestID: p.requestID,
 		AgentID:   p.agentID,
 		SessionID: p.sessionID,
+		RunID:     p.runID,
 		CreatedAt: p.createdAt,
 		ExpiresAt: p.expiresAt,
 		Calls:     make([]PendingPermissionCall, 0, len(p.calls)),

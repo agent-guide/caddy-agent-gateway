@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,8 +99,9 @@ func TestServeTurnForceCancel(t *testing.T) {
 		script:  func(_ []*schema.Message) *schema.Message { return schema.AssistantMessage("late", nil) },
 	}
 	host := NewHost(Config{
-		Agents: &fakeAgentSource{agents: map[string]agent.Agent{"triage": testAgent("triage")}},
+		Agents: &fakeAgentSource{agents: map[string]agent.Agent{"triage": interactiveAgent("triage")}},
 		Models: &fakeModelResolver{model: model},
+		Tools:  fetchDocCaller("x"),
 	})
 
 	sink := &collectedEvents{}
@@ -121,6 +123,9 @@ func TestServeTurnForceCancel(t *testing.T) {
 			sessionID = inflight[0].SessionID
 			if inflight[0].Operation != "turn" {
 				t.Fatalf("in-flight operation = %q, want %q", inflight[0].Operation, "turn")
+			}
+			if !strings.HasPrefix(inflight[0].RunID, "run-") || !strings.HasPrefix(inflight[0].RequestID, "perm-") {
+				t.Fatalf("in-flight correlation = %+v, want allocated run and permission request ids", inflight[0])
 			}
 			break
 		}

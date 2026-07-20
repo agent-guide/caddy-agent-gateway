@@ -234,6 +234,8 @@ There is no vendor lock-in to these platforms; the OTel route is open:
   each usage event becomes one OTel span reusing the event's own W3C ids
   (the events are correlation-complete, so no live tracer is needed),
   batched by a `BatchSpanProcessor` and shipped over OTLP gRPC or HTTP.
+  Asynchronous builtin HITL resumes additionally carry the stable logical
+  `run_id` and reconstruct a Span Link to the checkpoint-producing span.
 
 Default recommendation when export is requested: prefer the OTel route
 (custom handler or `libs/acl/opentelemetry`) → collector → backend of

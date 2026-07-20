@@ -164,6 +164,11 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 		return err
 	}
 	sessionID := handle.sessionID()
+	runID, err := newRunID()
+	if err != nil {
+		handle.release()
+		return err
+	}
 	// A session suspended on a pending permission only moves forward through
 	// an explicit resume or cancel; new input is rejected rather than
 	// silently discarding the suspended work (§5.7.7).
@@ -195,15 +200,13 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 		entry.mu.Unlock()
 		<-entry.turnSem
 	}()
-	usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{
+	span := usage.SpanFromContext(ctx)
+	span.SetExtension(usage.BuiltinExtension{
 		Operation:    "turn",
 		SessionID:    sessionID,
+		RunID:        runID,
 		TopologyKind: entry.topologyKind,
 	})
-	if err := emit(TurnEvent{Event: EventSession, SessionID: sessionID}); err != nil {
-		handle.release()
-		return err
-	}
 
 	userMsg := schema.UserMessage(req.Input)
 	input := make([]*schema.Message, 0, len(history)+1)
@@ -224,6 +227,11 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 		}
 		runOpts = append(runOpts, adk.WithCheckPointID(requestID))
 	}
+	runEmit := correlatedSink(emit, runID, sessionID, "")
+	if err := runEmit(TurnEvent{Event: EventSession}); err != nil {
+		handle.release()
+		return err
+	}
 
 	// WithCancel exposes an operator cancel handle for this run; register it so
 	// force/graceful cancel can reach a running (or stuck) turn, and deregister
@@ -233,6 +241,8 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 	activity := &inflightTurn{
 		agentID:      agentID,
 		sessionID:    sessionID,
+		runID:        runID,
+		requestID:    requestID,
 		operation:    "turn",
 		topologyKind: entry.topologyKind,
 		startedAt:    time.Now().UTC(),
@@ -241,7 +251,7 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 	h.activity.register(activity)
 	defer h.activity.deregister(activity)
 
-	result, runErr := h.runTurn(turnCtx, entry, input, emit, runOpts...)
+	result, runErr := h.runTurn(turnCtx, entry, input, runEmit, runOpts...)
 	usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{
 		ModelSteps:  usage.Int(result.modelSteps),
 		ToolSteps:   usage.Int(result.toolSteps),
@@ -260,25 +270,25 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 			// discarded (released above, not committed) and the client gets a
 			// clean cancelled terminal instead of an error.
 			usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "cancelled"})
-			return emit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
+			return runEmit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
 		}
 		usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
-		_ = emit(TurnEvent{Event: EventError, Message: runErr.Error()})
+		_ = runEmit(TurnEvent{Event: EventError, Message: runErr.Error()})
 		return runErr
 	}
 	if result.interrupt != nil {
-		return h.suspendTurn(ctx, a, handle, requestID, userMsg, nil, result, emit)
+		return h.suspendTurn(ctx, a, handle, runID, requestID, userMsg, nil, result, runEmit)
 	}
 	handle.commit(append([]*schema.Message{userMsg}, result.transcript...))
 	usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "success"})
-	return emit(TurnEvent{Event: EventDone, StopReason: "end_turn"})
+	return runEmit(TurnEvent{Event: EventDone, StopReason: "end_turn"})
 }
 
 // suspendTurn parks an interrupted interactive turn: it registers the pending
 // permission (fail-closed on capacity), releases the session, and tells the
 // client what needs deciding. priorTranscript carries messages accumulated by
 // earlier segments of the same suspended turn.
-func (h *Host) suspendTurn(ctx context.Context, a agent.Agent, handle *sessionHandle, requestID string, userMsg *schema.Message, priorTranscript []*schema.Message, result turnResult, emit EventSink) error {
+func (h *Host) suspendTurn(ctx context.Context, a agent.Agent, handle *sessionHandle, runID, requestID string, userMsg *schema.Message, priorTranscript []*schema.Message, result turnResult, emit EventSink) error {
 	calls := pendingCallsFromInterrupt(result.interrupt)
 	if requestID == "" || len(calls) == 0 {
 		// Only the approval gate interrupts in a builtin graph; anything else
@@ -294,16 +304,24 @@ func (h *Host) suspendTurn(ctx context.Context, a agent.Agent, handle *sessionHa
 	}
 	perms := a.Runtime.Builtin.Permissions
 	now := nowFunc()
+	dims, _ := usage.DimensionsFromContext(ctx)
 	pending := &pendingPermission{
-		requestID:  requestID,
-		agentID:    a.ID,
-		sessionID:  handle.sessionID(),
-		updatedAt:  a.UpdatedAt,
-		createdAt:  now,
-		expiresAt:  now.Add(permissionTimeout(perms)),
-		calls:      calls,
-		userMsg:    userMsg,
-		transcript: append(priorTranscript, result.transcript...),
+		requestID:     requestID,
+		agentID:       a.ID,
+		sessionID:     handle.sessionID(),
+		runID:         runID,
+		linkTraceID:   dims.TraceID,
+		linkSpanID:    dims.SpanID,
+		routeID:       dims.RouteID,
+		routeProtocol: dims.RouteProtocol,
+		virtualKeyID:  dims.VirtualKeyID,
+		agentDepth:    dims.AgentDepth,
+		updatedAt:     a.UpdatedAt,
+		createdAt:     now,
+		expiresAt:     now.Add(permissionTimeout(perms)),
+		calls:         calls,
+		userMsg:       userMsg,
+		transcript:    append(priorTranscript, result.transcript...),
 	}
 	expired, capReached := h.permissions.register(pending, permissionMaxPending(perms))
 	h.deleteExpiredPermissions(expired)
@@ -320,13 +338,15 @@ func (h *Host) suspendTurn(ctx context.Context, a agent.Agent, handle *sessionHa
 	span.AddAnnotation("permission_request_id", requestID)
 	result.eventCounts[EventPermission]++
 	span.SetExtension(usage.BuiltinExtension{
-		ResultStatus: "interrupted",
-		EventCounts:  result.eventCounts,
+		RunID:               runID,
+		PermissionRequestID: requestID,
+		ResultStatus:        "interrupted",
+		EventCounts:         result.eventCounts,
 	})
-	if err := emit(TurnEvent{Event: EventPermission, Data: permissionEventData(pending)}); err != nil {
+	if err := emit(TurnEvent{Event: EventPermission, RequestID: requestID, Data: permissionEventData(pending)}); err != nil {
 		return err
 	}
-	return emit(TurnEvent{Event: EventDone, StopReason: StopReasonPermissionRequired})
+	return emit(TurnEvent{Event: EventDone, RequestID: requestID, StopReason: StopReasonPermissionRequired})
 }
 
 // servePermissionTurn resolves a suspended turn: cancel discards it, and
@@ -364,6 +384,17 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 		_ = h.checkpoints.Delete(context.Background(), requestID)
 		h.sessions.setPendingPermission(pending.agentID, pending.sessionID, false)
 	}
+	span := usage.SpanFromContext(ctx)
+	span.AddAnnotation("permission_request_id", requestID)
+	span.SetExtension(usage.BuiltinExtension{
+		Operation:           "resume",
+		SessionID:           pending.sessionID,
+		RunID:               pending.runID,
+		PermissionRequestID: requestID,
+		LinkTraceID:         pending.linkTraceID,
+		LinkSpanID:          pending.linkSpanID,
+	})
+	resumeEmit := correlatedSink(emit, pending.runID, pending.sessionID, requestID)
 	if pending.agentID != a.ID {
 		dropPending()
 		return fmt.Errorf("%w: permission request %q does not belong to agent %q", ErrInvalidRequest, requestID, a.ID)
@@ -384,15 +415,13 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 		}
 	}
 
-	span := usage.SpanFromContext(ctx)
-	span.AddAnnotation("permission_request_id", requestID)
 	if perm.Outcome == "cancel" {
 		dropPending()
-		span.SetExtension(usage.BuiltinExtension{Operation: "resume", SessionID: pending.sessionID, ResultStatus: "cancelled"})
-		if err := emit(TurnEvent{Event: EventSession, SessionID: pending.sessionID}); err != nil {
+		span.SetExtension(usage.BuiltinExtension{ResultStatus: "cancelled"})
+		if err := resumeEmit(TurnEvent{Event: EventSession}); err != nil {
 			return err
 		}
-		return emit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
+		return resumeEmit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
 	}
 
 	entry, err := h.entry(ctx, a)
@@ -429,9 +458,10 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 	span.SetExtension(usage.BuiltinExtension{
 		Operation:    "resume",
 		SessionID:    pending.sessionID,
+		RunID:        pending.runID,
 		TopologyKind: entry.topologyKind,
 	})
-	if err := emit(TurnEvent{Event: EventSession, SessionID: pending.sessionID}); err != nil {
+	if err := resumeEmit(TurnEvent{Event: EventSession}); err != nil {
 		dropPending()
 		handle.release()
 		return err
@@ -442,6 +472,8 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 	activity := &inflightTurn{
 		agentID:      a.ID,
 		sessionID:    pending.sessionID,
+		runID:        pending.runID,
+		requestID:    requestID,
 		operation:    "resume",
 		topologyKind: entry.topologyKind,
 		startedAt:    time.Now().UTC(),
@@ -456,7 +488,7 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 	for _, c := range pending.calls {
 		targets[c.targetID] = &permissionDecision{Allow: decisions[c.CallID]}
 	}
-	result, runErr := h.resumeTurn(turnCtx, entry, requestID, targets, emit, cancelOpt)
+	result, runErr := h.resumeTurn(turnCtx, entry, requestID, targets, resumeEmit, cancelOpt)
 	span.SetExtension(usage.BuiltinExtension{
 		ModelSteps:  usage.Int(result.modelSteps),
 		ToolSteps:   usage.Int(result.toolSteps),
@@ -468,16 +500,16 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 		var cancelErr *adk.CancelError
 		if errors.As(runErr, &cancelErr) {
 			span.SetExtension(usage.BuiltinExtension{ResultStatus: "cancelled"})
-			return emit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
+			return resumeEmit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
 		}
 		span.SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
-		_ = emit(TurnEvent{Event: EventError, Message: runErr.Error()})
+		_ = resumeEmit(TurnEvent{Event: EventError, Message: runErr.Error()})
 		return runErr
 	}
 	if result.interrupt != nil {
 		// The continued run hit another gated call: re-suspend under the same
 		// request id (the runner rewrote the checkpoint in place).
-		return h.suspendTurn(ctx, a, handle, requestID, pending.userMsg, pending.transcript, result, emit)
+		return h.suspendTurn(ctx, a, handle, pending.runID, requestID, pending.userMsg, pending.transcript, result, resumeEmit)
 	}
 	_ = h.checkpoints.Delete(context.Background(), requestID)
 	transcript := make([]*schema.Message, 0, 1+len(pending.transcript)+len(result.transcript))
@@ -487,7 +519,7 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 	handle.commit(transcript)
 	h.sessions.setPendingPermission(pending.agentID, pending.sessionID, false)
 	span.SetExtension(usage.BuiltinExtension{ResultStatus: "success"})
-	return emit(TurnEvent{Event: EventDone, StopReason: "end_turn"})
+	return resumeEmit(TurnEvent{Event: EventDone, StopReason: "end_turn"})
 }
 
 // deleteExpiredPermissions drops the checkpoints and session pins of lazily
@@ -496,6 +528,26 @@ func (h *Host) deleteExpiredPermissions(expired []*pendingPermission) {
 	for _, p := range expired {
 		_ = h.checkpoints.Delete(context.Background(), p.requestID)
 		h.sessions.setPendingPermission(p.agentID, p.sessionID, false)
+		if h.observer != nil {
+			span, _ := h.observer.Begin(context.Background(), usage.InteractionDimensions{
+				RouteID:       p.routeID,
+				RouteKind:     "builtin",
+				RouteProtocol: p.routeProtocol,
+				VirtualKeyID:  p.virtualKeyID,
+				AgentDepth:    p.agentDepth,
+				AgentID:       p.agentID,
+			})
+			span.SetExtension(usage.BuiltinExtension{
+				Operation:           "permission_expire",
+				SessionID:           p.sessionID,
+				RunID:               p.runID,
+				PermissionRequestID: p.requestID,
+				LinkTraceID:         p.linkTraceID,
+				LinkSpanID:          p.linkSpanID,
+				ResultStatus:        "expired",
+			})
+			span.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
+		}
 	}
 }
 
@@ -526,7 +578,6 @@ func pendingCallsFromInterrupt(info *adk.InterruptInfo) []pendingCall {
 func permissionEventData(p *pendingPermission) json.RawMessage {
 	view := pendingView(p)
 	raw, err := json.Marshal(map[string]any{
-		"request_id": view.RequestID,
 		"expires_at": view.ExpiresAt,
 		"calls":      view.Calls,
 	})

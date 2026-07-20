@@ -179,6 +179,12 @@ func (c *collectedEvents) byName(name string) []TurnEvent {
 	return out
 }
 
+func (c *collectedEvents) snapshot() []TurnEvent {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]TurnEvent(nil), c.events...)
+}
+
 func replyModel(text string) *fakeChatModel {
 	return &fakeChatModel{script: func(_ []*schema.Message) *schema.Message {
 		msg := schema.AssistantMessage(text, nil)

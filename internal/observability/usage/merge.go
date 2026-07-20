@@ -121,6 +121,18 @@ func mergeBuiltin(dst *BuiltinExtension, src BuiltinExtension) {
 	if src.SessionID != "" {
 		dst.SessionID = src.SessionID
 	}
+	if src.RunID != "" {
+		dst.RunID = src.RunID
+	}
+	if src.PermissionRequestID != "" {
+		dst.PermissionRequestID = src.PermissionRequestID
+	}
+	if src.LinkTraceID != "" {
+		dst.LinkTraceID = src.LinkTraceID
+	}
+	if src.LinkSpanID != "" {
+		dst.LinkSpanID = src.LinkSpanID
+	}
 	if src.TopologyKind != "" {
 		dst.TopologyKind = src.TopologyKind
 	}

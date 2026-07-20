@@ -104,11 +104,24 @@ func builtinSpanStub(ev usage.BuiltinUsageEvent) (tracetest.SpanStub, error) {
 	attrs := commonAttributes(ev.InteractionEvent)
 	attrs = appendString(attrs, "agw.builtin.operation", ev.Operation)
 	attrs = appendString(attrs, "agw.builtin.session_id", ev.SessionID)
+	attrs = appendString(attrs, "agw.builtin.run_id", ev.RunID)
+	attrs = appendString(attrs, "agw.builtin.permission_request_id", ev.PermissionRequestID)
 	attrs = appendString(attrs, "agw.builtin.topology_kind", ev.TopologyKind)
 	attrs = appendPositiveInt(attrs, "agw.builtin.model_steps", ev.ModelSteps)
 	attrs = appendPositiveInt(attrs, "agw.builtin.tool_steps", ev.ToolSteps)
 	attrs = appendString(attrs, "agw.builtin.result_status", ev.ResultStatus)
-	return baseSpanStub(name, trace.SpanKindServer, ev.InteractionEvent, attrs)
+	stub, err := baseSpanStub(name, trace.SpanKindServer, ev.InteractionEvent, attrs)
+	if err != nil {
+		return tracetest.SpanStub{}, err
+	}
+	if linkTraceID, traceErr := trace.TraceIDFromHex(ev.LinkTraceID); traceErr == nil {
+		if linkSpanID, spanErr := trace.SpanIDFromHex(ev.LinkSpanID); spanErr == nil {
+			stub.Links = append(stub.Links, sdktrace.Link{SpanContext: trace.NewSpanContext(trace.SpanContextConfig{
+				TraceID: linkTraceID, SpanID: linkSpanID, TraceFlags: trace.FlagsSampled,
+			})})
+		}
+	}
+	return stub, nil
 }
 
 func baseSpanStub(name string, kind trace.SpanKind, ev usage.InteractionEvent, attrs []attribute.KeyValue) (tracetest.SpanStub, error) {
