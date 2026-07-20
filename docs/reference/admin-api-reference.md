@@ -236,6 +236,30 @@ route's VirtualKey policy.
 
 See [acp-api.md](acp-api.md) for request and response shapes.
 
+## Builtin Admin Families
+
+- `GET /admin/builtin/routes`
+- `POST /admin/builtin/routes`
+- `GET /admin/builtin/routes/{id}`
+- `PUT /admin/builtin/routes/{id}`
+- `DELETE /admin/builtin/routes/{id}`
+- `GET /admin/builtin/runtime`
+- `GET /admin/builtin/runtime/inflight`
+- `DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}`
+
+`GET /admin/builtin/runtime` reports the ADK host state: per-agent
+materializations, pending interactive tool permissions, and in-flight turns.
+`GET /admin/builtin/runtime/inflight` lists the running turns (agent id,
+session id, operation, topology kind, started at).
+`DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}` cancels the
+running turn for that session; the optional `mode` query parameter is `force`
+(default — abort immediately, for stuck turns) or `graceful` (stop after the
+current model/tool step, escalating to force after a grace period). The
+cancelled turn's own SSE stream emits a `done` event with
+`stop_reason: "cancelled"`; the operator call returns `404` when no matching
+turn is in flight. Pending interactive permission decisions flow through the
+data-plane resume on `POST /<builtin-route>/turn`, not the Admin API.
+
 ## Metrics
 
 - `GET /admin/metrics`

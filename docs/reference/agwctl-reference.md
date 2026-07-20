@@ -111,6 +111,31 @@ Runtime commands:
 
 Use `--outcome cancelled` to deny an interactive permission request.
 
+## Builtin Commands
+
+Builtin routes are gateway bundle objects (`builtinRoutes`) and can also be
+inspected through dedicated commands; the builtin ADK host runtime is operated
+through `builtin-runtime`.
+
+Route commands:
+
+```bash
+./agwctl gateway builtin-route list
+./agwctl gateway builtin-route get <builtin-route-id>
+```
+
+Runtime commands:
+
+```bash
+./agwctl gateway builtin-runtime get
+./agwctl gateway builtin-runtime inflight
+./agwctl gateway builtin-runtime cancel-turn <agent-id> <session-id> [--mode force|graceful]
+```
+
+`cancel-turn` stops a running turn: `--mode force` (default) aborts
+immediately — the answer for a stuck turn — and `--mode graceful` stops after
+the current model/tool step, escalating to force after a grace period.
+
 ## Important Notes
 
 - `agwctl gateway credential ...` manages remote gateway credentials through the Admin API

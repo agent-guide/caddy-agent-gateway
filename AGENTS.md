@@ -458,6 +458,13 @@ every builtin agent:
 - every turn runs under panic recovery; `max_concurrent_turns` and
   `turn_timeout_seconds` are fail-closed (reject, not queue); a disabled agent
   rejects turns as a client-correctable error
+- operator turn cancellation (§5.7.8): every turn (fresh or resumed) runs
+  under an `adk.WithCancel` handle registered in an in-flight registry keyed by
+  `(agent_id, session_id)`; `force` (`CancelImmediate`, the answer for stuck
+  turns) or `graceful` (safe-point stop propagated through nested agents and
+  escalating to immediate) cancel maps
+  the resulting `adk.CancelError` to a `done` event with
+  `stop_reason: "cancelled"` and discards the uncommitted partial exchange
 - sessions are in-memory conversation histories (idle TTL, per-agent cap,
   message cap) with documented restart-loss semantics; durable checkpoints wait
   for eino v0.10 and must not be hand-rolled before that. Turns on one session
@@ -640,8 +647,12 @@ Implemented ACP families:
 Implemented builtin families:
 
 - `/admin/builtin/routes/...`
-- `/admin/builtin/runtime` (host materializations and pending interactive
-  tool permissions; read-only — decisions flow through the data-plane resume)
+- `/admin/builtin/runtime` (host materializations, pending interactive
+  tool permissions, and in-flight turns; permission decisions flow through the
+  data-plane resume)
+- `/admin/builtin/runtime/inflight` (in-flight builtin turns) and
+  `DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}?mode=force|graceful`
+  (operator force/graceful cancel of a running or stuck turn, §5.7.8)
 
 Implemented agent families:
 

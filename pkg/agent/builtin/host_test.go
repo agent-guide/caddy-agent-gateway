@@ -32,12 +32,23 @@ type fakeChatModel struct {
 	toolAwareScript func(input []*schema.Message, visible []*schema.ToolInfo) *schema.Message
 	// scriptErr, when set, wins over both and may fail the call (retry tests).
 	scriptErr func(input []*schema.Message) (*schema.Message, error)
-	block     chan struct{} // when non-nil, Generate blocks until closed
+	block     chan struct{} // when non-nil, Generate blocks until closed or ctx done
+	started   chan struct{} // when non-nil, receives a signal as Generate is entered
 }
 
-func (m *fakeChatModel) Generate(_ context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+func (m *fakeChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...einomodel.Option) (*schema.Message, error) {
+	if m.started != nil {
+		select {
+		case m.started <- struct{}{}:
+		default:
+		}
+	}
 	if m.block != nil {
-		<-m.block
+		select {
+		case <-m.block:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	m.mu.Lock()
 	m.requests = append(m.requests, input)
@@ -67,7 +78,7 @@ func (m *fakeChatModel) Stream(ctx context.Context, input []*schema.Message, opt
 }
 
 func (m *fakeChatModel) WithTools(tools []*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
-	bound := &fakeChatModel{script: m.script, toolAwareScript: m.toolAwareScript, scriptErr: m.scriptErr, block: m.block}
+	bound := &fakeChatModel{script: m.script, toolAwareScript: m.toolAwareScript, scriptErr: m.scriptErr, block: m.block, started: m.started}
 	bound.tools = tools
 	// Share request recording with the root model so tests can inspect it.
 	bound.mu = sync.Mutex{}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
+	builtinhost "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 )
@@ -41,6 +42,43 @@ func (h *Handler) handleGetBuiltinRuntime(w http.ResponseWriter, _ *http.Request
 		return
 	}
 	_ = httpjson.Write(w, http.StatusOK, h.builtinHost.Runtime())
+}
+
+// handleListBuiltinInFlight reports the running builtin turns an operator can
+// cancel, mirroring the ACP in-flight surface.
+func (h *Handler) handleListBuiltinInFlight(w http.ResponseWriter, _ *http.Request) {
+	if h.builtinHost == nil {
+		_ = httpjson.Error(w, http.StatusServiceUnavailable, "builtin host is not configured")
+		return
+	}
+	_ = httpjson.Write(w, http.StatusOK, map[string]any{"items": h.builtinHost.ListInFlight()})
+}
+
+// handleCancelBuiltinTurn force-cancels or gracefully stops the running turn
+// for one (agent_id, session_id). The turn's own SSE stream emits the
+// cancelled terminal; this operator call reports whether a turn was in flight.
+func (h *Handler) handleCancelBuiltinTurn(w http.ResponseWriter, r *http.Request) {
+	if h.builtinHost == nil {
+		_ = httpjson.Error(w, http.StatusServiceUnavailable, "builtin host is not configured")
+		return
+	}
+	agentID := r.PathValue("agent_id")
+	sessionID := r.PathValue("session_id")
+	mode, err := builtinhost.ParseCancelMode(r.URL.Query().Get("mode"))
+	if err != nil {
+		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	cancelled, err := h.builtinHost.CancelTurn(agentID, sessionID, mode)
+	if err != nil {
+		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !cancelled {
+		_ = httpjson.Error(w, http.StatusNotFound, "no in-flight turn for the given agent and session")
+		return
+	}
+	_ = httpjson.Write(w, http.StatusOK, map[string]any{"cancelled": true, "mode": string(mode)})
 }
 
 func (h *Handler) handleListBuiltinRoutes(w http.ResponseWriter, r *http.Request) {

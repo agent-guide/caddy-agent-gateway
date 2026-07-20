@@ -44,9 +44,16 @@ var gatewayBuiltinRouteGetCmd = &cobra.Command{
 
 // ── gateway builtin runtime ──────────────────────────────────────────────────
 
+var gatewayBuiltinCancelMode string
+
 var gatewayBuiltinRuntimeCmd = &cobra.Command{
 	Use:   "builtin-runtime",
-	Short: "Inspect the builtin ADK host runtime (materializations, pending permissions)",
+	Short: "Inspect and operate the builtin ADK host runtime",
+}
+
+var gatewayBuiltinRuntimeGetCmd = &cobra.Command{
+	Use:   "get",
+	Short: "Get the builtin runtime view (materializations, pending permissions, in-flight turns)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		view, err := newGatewayClient().GetBuiltinRuntime(context.Background())
 		if err != nil {
@@ -56,10 +63,41 @@ var gatewayBuiltinRuntimeCmd = &cobra.Command{
 	},
 }
 
+var gatewayBuiltinRuntimeInFlightCmd = &cobra.Command{
+	Use:   "inflight",
+	Short: "List in-flight builtin turns",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		items, err := newGatewayClient().ListBuiltinInFlight(context.Background())
+		if err != nil {
+			return err
+		}
+		return printJSON(items)
+	},
+}
+
+var gatewayBuiltinRuntimeCancelTurnCmd = &cobra.Command{
+	Use:   "cancel-turn <agent-id> <session-id>",
+	Short: "Cancel a running builtin turn (--mode force|graceful)",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resp, err := newGatewayClient().CancelBuiltinTurn(context.Background(), args[0], args[1], gatewayBuiltinCancelMode)
+		if err != nil {
+			return err
+		}
+		return printJSON(resp)
+	},
+}
+
 func init() {
 	gatewayBuiltinRouteCmd.AddCommand(
 		gatewayBuiltinRouteListCmd,
 		gatewayBuiltinRouteGetCmd,
+	)
+	gatewayBuiltinRuntimeCancelTurnCmd.Flags().StringVar(&gatewayBuiltinCancelMode, "mode", "", "cancel mode: force (default) or graceful")
+	gatewayBuiltinRuntimeCmd.AddCommand(
+		gatewayBuiltinRuntimeGetCmd,
+		gatewayBuiltinRuntimeInFlightCmd,
+		gatewayBuiltinRuntimeCancelTurnCmd,
 	)
 	gatewayCmd.AddCommand(gatewayBuiltinRouteCmd)
 	gatewayCmd.AddCommand(gatewayBuiltinRuntimeCmd)

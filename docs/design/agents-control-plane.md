@@ -922,6 +922,54 @@ permission modes; approval of anything other than MCP tool executions (model
 calls and topology transfers stay ungated); model-native deferred/approval
 tool protocols.
 
+#### 5.7.8 Operator turn cancellation (force / graceful)
+
+Status: implemented. This answers the §10 open question on stuck turns: PB1
+only drained in-flight turns on the old graph after a definition update and
+bounded each turn with `turn_timeout_seconds`, with no way to stop a specific
+running (or stuck) turn sooner. The builtin host now adopts the eino ADK
+Runner cancel primitive (`adk.WithCancel` → `AgentCancelFunc`, `CancelMode`;
+`eino-reuse.md` §5) for operator-initiated cancellation.
+
+**Mechanism.** Every turn — fresh (`ServeTurn`) or resumed
+(`servePermissionTurn`) — passes `adk.WithCancel()` to the Runner and
+registers the returned cancel func in an in-memory activity registry keyed by
+`(agent_id, session_id)`. Because turns on one session are serialized, that
+key uniquely identifies the running turn. The entry is removed when the run
+returns. Two modes:
+
+- **force** (`CancelImmediate`, default): abort now — the in-flight model or
+  tool step is abandoned and the turn ends immediately. This is the answer for
+  stuck turns; the operator does not wait for `turn_timeout_seconds`.
+- **graceful** (`CancelAfterChatModel | CancelAfterToolCalls` with a grace
+  timeout and recursive propagation): stop after the current model/tool step
+  completes, including inside a nested agent, escalating to immediate if no
+  safe point is reached within the grace period, so a graceful cancel of a
+  genuinely stuck turn still terminates.
+
+The Runner surfaces the cancel as an `adk.CancelError` on the event stream;
+the host maps it to a `done` event with `stop_reason: "cancelled"` on the
+turn's own SSE stream and discards the partial exchange (the session is
+released, never committed, so history is untouched). A checkpoint saved on
+cancel of an interactive turn is deleted along the existing cleanup path. The
+turn span records `result_status: "cancelled"`.
+
+**Admin surface.** `GET /admin/builtin/runtime` now also carries an
+`in_flight` slice (agent id, session id, operation, topology kind, started
+at); `GET /admin/builtin/runtime/inflight` is the dedicated list (mirroring
+`/admin/acp/runtime/inflight`), and `DELETE
+/admin/builtin/runtime/turns/{agent_id}/{session_id}?mode=force|graceful`
+requests the cancel, reporting whether a turn was in flight (`404` when none
+matches). The turn's streaming client sees the cancelled terminal; the
+operator call is a fire-and-report request that does not block on teardown.
+agwctl exposes `builtin-runtime inflight` and `builtin-runtime cancel-turn`.
+
+**Non-goals.** Resumable pause (a paused-then-resumed turn) is not in scope:
+graceful stop ends the turn, it does not suspend it for later continuation.
+Cancelling a queued turn that has not yet acquired its run (still waiting on
+the session serial or the concurrency slot) is not exposed — such a turn is
+the caller's to abandon by disconnecting.
+
 ## 6. Admin API Direction
 
 The existing `/admin/agents` endpoints are stubs. They should become the
@@ -1404,9 +1452,12 @@ repeated here.
   cheapest there (the gateway is the caller), but the budget model itself
   (token/cost/turn) is still the open question above; do not let builtin ship
   a divergent ad-hoc budget shape.
-- Definition update mid-turn: PB1 drains in-flight turns on the old graph;
-  is a forced-cancel variant needed for stuck turns beyond
-  `turn_timeout_seconds`?
+- Definition update mid-turn: PB1 drains in-flight turns on the old graph.
+  **Decided (§5.7.8, implemented):** yes — operator force/graceful cancel of
+  in-flight turns is adopted through the ADK Runner cancel primitive, so a
+  stuck turn can be stopped without waiting for `turn_timeout_seconds`. A
+  definition update still drains rather than auto-cancelling old-graph turns;
+  the operator cancels explicitly when needed.
 - Builtin HITL admin escape hatch (see 5.7.7): resolving a pending permission
   from the Admin API requires headless continuation (the resumed turn's
   events are visible only in the session transcript and metrics). Is that

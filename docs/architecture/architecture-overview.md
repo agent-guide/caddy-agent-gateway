@@ -243,6 +243,7 @@ Current status:
   - verified end to end against the real `opencode acp` and `codex-acp` binaries (deterministic full-lifecycle and interactive-permission integration tests plus gated real-agent handshake, session-lifecycle, and prompt-level real-model smokes); crash retry and the codex app-server bridge (v2) are deferred, and codex stable-session id resolution is a verified non-gap for v1 (the driver seams for v2 are wired)
 - `pkg/agent/`
   - the external agent control plane (P0 + P1 implemented): the `Agent` model, the `agents` config store, a manager with CRUD, the one-runtime-one-agent and route-consistency rules, and the in-memory route/service → agent attribution index
+  - `pkg/agent/builtin/` is the in-process eino ADK host for `runtime.type = "builtin"` agents (PB1): it materializes a definition into an ADK object graph, serves `POST /<builtin-route>/turn` with SSE, gates MCP tools behind interactive permissions via ADK checkpoint interrupt/resume, and supports operator force/graceful cancel of in-flight (or stuck) turns via the ADK Runner cancel primitive (`/admin/builtin/runtime` in-flight list + turn cancel)
   - composes the protocol subsystems and observes them; the protocol packages do not depend on it
   - the legacy `pkg/llm/agent` LLM-native orchestrator has been removed, per the external-control-plane direction; see [../design/agents-control-plane.md](../design/agents-control-plane.md)
 - `pkg/llm/memory/`

@@ -259,6 +259,18 @@ approval gate interrupts via `compose.Interrupt`, checkpoints to an
 in-memory store, and resumes with `ResumeWithParams` — no turn slot, no
 open stream, and no goroutine is held while a human decides.
 
+Runner cancel (`adk.WithCancel`/`AgentCancelFunc`, `CancelMode`) is adopted
+for operator-initiated turn cancellation (`agents-control-plane.md` §5.7.8,
+implemented): every builtin turn (fresh or resumed) runs under a cancel
+handle registered in the host's in-flight registry keyed by
+`(agent_id, session_id)`. An operator force-cancels (`CancelImmediate`, abort
+now — the answer for stuck turns beyond `turn_timeout_seconds`) or gracefully
+stops (`CancelAfterChatModel|CancelAfterToolCalls` propagated recursively,
+with a grace timeout that escalates to immediate) a running turn through the
+Admin API; the resulting
+`adk.CancelError` is mapped to a `done` event with `stop_reason: "cancelled"`
+and the partial exchange is discarded (never committed).
+
 Nearly all eino development between v0.8.4 and v0.9.12 landed in ADK. For
 gateway-native agents, ADK is the building material and none of it should
 be re-implemented in-repo:
@@ -414,6 +426,9 @@ infrastructure surfaces.
    usage-event grain.
 6. ~~ADK model retry for builtin nodes (§4.3).~~ Done: the definition's
    `model.retry` block; failover stays unadopted by design.
+7. ~~ADK Runner cancel for operator turn cancellation (§5).~~ Done:
+   `adk.WithCancel`/`CancelMode` behind the Admin API force/graceful cancel of
+   in-flight builtin turns (`agents-control-plane.md` §5.7.8).
 
 ## 9. Known Integration Gotchas
 

@@ -152,6 +152,8 @@ func (h *Handler) Routes() []Route {
 
 		// Builtin agent routes
 		{Method: http.MethodGet, Path: "/admin/builtin/runtime", Handler: h.handleGetBuiltinRuntime},
+		{Method: http.MethodGet, Path: "/admin/builtin/runtime/inflight", Handler: h.handleListBuiltinInFlight},
+		{Method: http.MethodDelete, Path: "/admin/builtin/runtime/turns/{agent_id}/{session_id}", Handler: h.handleCancelBuiltinTurn},
 		{Method: http.MethodGet, Path: "/admin/builtin/routes", Handler: h.handleListBuiltinRoutes},
 		{Method: http.MethodPost, Path: "/admin/builtin/routes", Handler: h.handleCreateBuiltinRoute},
 		{Method: http.MethodGet, Path: "/admin/builtin/routes/{id}", Handler: h.handleGetBuiltinRoute},

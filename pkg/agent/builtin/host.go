@@ -49,6 +49,9 @@ type Host struct {
 	// Both are in-memory with the same restart-loss semantics as sessions.
 	checkpoints *memCheckPointStore
 	permissions *permissionRegistry
+	// activity tracks in-flight ADK turns so an operator can force-cancel or
+	// gracefully stop a running (or stuck) turn (agents-control-plane.md §10).
+	activity *activityRegistry
 }
 
 type hostEntry struct {
@@ -73,6 +76,7 @@ func NewHost(cfg Config) *Host {
 		sessions:    newSessionStore(),
 		checkpoints: newMemCheckPointStore(),
 		permissions: newPermissionRegistry(),
+		activity:    newActivityRegistry(),
 	}
 }
 
@@ -221,6 +225,22 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 		runOpts = append(runOpts, adk.WithCheckPointID(requestID))
 	}
 
+	// WithCancel exposes an operator cancel handle for this run; register it so
+	// force/graceful cancel can reach a running (or stuck) turn, and deregister
+	// once the run returns.
+	cancelOpt, cancelFn := adk.WithCancel()
+	runOpts = append(runOpts, cancelOpt)
+	activity := &inflightTurn{
+		agentID:      agentID,
+		sessionID:    sessionID,
+		operation:    "turn",
+		topologyKind: entry.topologyKind,
+		startedAt:    time.Now().UTC(),
+		cancel:       cancelFn,
+	}
+	h.activity.register(activity)
+	defer h.activity.deregister(activity)
+
 	result, runErr := h.runTurn(turnCtx, entry, input, emit, runOpts...)
 	usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{
 		ModelSteps:  usage.Int(result.modelSteps),
@@ -229,10 +249,19 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 	})
 	if runErr != nil {
 		if requestID != "" {
-			// An error after a saved interrupt would orphan the checkpoint.
+			// An error (or cancel) after a saved interrupt would orphan the
+			// checkpoint.
 			_ = h.checkpoints.Delete(context.Background(), requestID)
 		}
 		handle.release()
+		var cancelErr *adk.CancelError
+		if errors.As(runErr, &cancelErr) {
+			// Operator cancel: the turn was aborted, so the partial exchange is
+			// discarded (released above, not committed) and the client gets a
+			// clean cancelled terminal instead of an error.
+			usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "cancelled"})
+			return emit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
+		}
 		usage.SpanFromContext(ctx).SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
 		_ = emit(TurnEvent{Event: EventError, Message: runErr.Error()})
 		return runErr
@@ -408,13 +437,26 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 		return err
 	}
 
+	// A resumed turn is cancellable just like a fresh one.
+	cancelOpt, cancelFn := adk.WithCancel()
+	activity := &inflightTurn{
+		agentID:      a.ID,
+		sessionID:    pending.sessionID,
+		operation:    "resume",
+		topologyKind: entry.topologyKind,
+		startedAt:    time.Now().UTC(),
+		cancel:       cancelFn,
+	}
+	h.activity.register(activity)
+	defer h.activity.deregister(activity)
+
 	// Unanswered calls are denied (fail-closed); every pending interrupt
 	// point gets targeted so no gate is left to re-interrupt on its own.
 	targets := make(map[string]any, len(pending.calls))
 	for _, c := range pending.calls {
 		targets[c.targetID] = &permissionDecision{Allow: decisions[c.CallID]}
 	}
-	result, runErr := h.resumeTurn(turnCtx, entry, requestID, targets, emit)
+	result, runErr := h.resumeTurn(turnCtx, entry, requestID, targets, emit, cancelOpt)
 	span.SetExtension(usage.BuiltinExtension{
 		ModelSteps:  usage.Int(result.modelSteps),
 		ToolSteps:   usage.Int(result.toolSteps),
@@ -423,6 +465,11 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 	if runErr != nil {
 		dropPending()
 		handle.release()
+		var cancelErr *adk.CancelError
+		if errors.As(runErr, &cancelErr) {
+			span.SetExtension(usage.BuiltinExtension{ResultStatus: "cancelled"})
+			return emit(TurnEvent{Event: EventDone, StopReason: StopReasonCancelled})
+		}
 		span.SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
 		_ = emit(TurnEvent{Event: EventError, Message: runErr.Error()})
 		return runErr
@@ -495,14 +542,16 @@ func permissionEventData(p *pendingPermission) json.RawMessage {
 type RuntimeView struct {
 	Agents             map[string]EntryState   `json:"agents"`
 	PendingPermissions []PendingPermissionView `json:"pending_permissions"`
+	InFlight           []InFlightTurnView      `json:"in_flight"`
 }
 
 // Runtime reports the host-wide runtime view for the Admin API.
 func (h *Host) Runtime() RuntimeView {
-	view := RuntimeView{Agents: map[string]EntryState{}, PendingPermissions: []PendingPermissionView{}}
+	view := RuntimeView{Agents: map[string]EntryState{}, PendingPermissions: []PendingPermissionView{}, InFlight: []InFlightTurnView{}}
 	if h == nil {
 		return view
 	}
+	view.InFlight = h.activity.list()
 	h.mu.Lock()
 	ids := make([]string, 0, len(h.entries))
 	for id := range h.entries {
@@ -519,6 +568,27 @@ func (h *Host) Runtime() RuntimeView {
 	})
 	view.PendingPermissions = pending
 	return view
+}
+
+// ListInFlight reports the running turns for the Admin API.
+func (h *Host) ListInFlight() []InFlightTurnView {
+	if h == nil {
+		return []InFlightTurnView{}
+	}
+	return h.activity.list()
+}
+
+// CancelTurn requests cancellation of the running turn for (agentID,
+// sessionID) and reports whether one was in flight. force aborts immediately;
+// graceful stops after the current model/tool step, escalating to force after
+// a grace period. The cancelled turn's own SSE stream emits a done event with
+// stop_reason "cancelled"; a discarded (uncommitted) partial exchange leaves
+// the session history untouched.
+func (h *Host) CancelTurn(agentID, sessionID string, mode CancelMode) (bool, error) {
+	if h == nil {
+		return false, fmt.Errorf("builtin host is not configured")
+	}
+	return h.activity.cancel(agentID, sessionID, mode), nil
 }
 
 // entry returns the cached materialization for the agent, rebuilding when the
@@ -596,14 +666,14 @@ func (h *Host) runTurn(ctx context.Context, entry *hostEntry, input []*schema.Me
 
 // resumeTurn continues a checkpointed run with per-interrupt-point resume
 // targets.
-func (h *Host) resumeTurn(ctx context.Context, entry *hostEntry, requestID string, targets map[string]any, emit EventSink) (result turnResult, err error) {
+func (h *Host) resumeTurn(ctx context.Context, entry *hostEntry, requestID string, targets map[string]any, emit EventSink, opts ...adk.AgentRunOption) (result turnResult, err error) {
 	result.eventCounts = map[string]int{}
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("builtin agent panicked: %v", r)
 		}
 	}()
-	iter, err := entry.runner.ResumeWithParams(ctx, requestID, &adk.ResumeParams{Targets: targets})
+	iter, err := entry.runner.ResumeWithParams(ctx, requestID, &adk.ResumeParams{Targets: targets}, opts...)
 	if err != nil {
 		return result, fmt.Errorf("resume builtin turn: %w", err)
 	}
