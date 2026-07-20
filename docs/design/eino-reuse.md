@@ -8,7 +8,7 @@ This document records which capabilities of the eino framework
 capabilities are planned for adoption, and which are deliberately not
 adopted. The goal is to keep provider/protocol plumbing delegated to eino
 wherever a maintained component exists, so this repository stays focused on
-agent observation, management, scheduling, and (future) multi-agent
+agent observation, management, scheduling, and builtin multi-agent
 coordination.
 
 Baseline facts in this document were verified against eino v0.9.12 and the
@@ -16,8 +16,11 @@ eino-ext component versions listed below.
 
 ## 2. Current Baseline
 
-The gateway couples to eino at three core packages plus the eino-ext model
-components. There is no dependency on `compose`, `flow`, or `adk` today.
+The gateway couples to eino through its core component interfaces, callbacks,
+and the ADK orchestration stack, plus the eino-ext model components. The
+builtin runtime uses `compose` only for ADK tool wiring and
+interrupt/resume primitives; it does not depend on the legacy `flow/agent`
+packages.
 
 | Layer | What is used |
 |---|---|
@@ -25,6 +28,10 @@ components. There is no dependency on `compose`, `flow`, or `adk` today.
 | `eino/components/model` | `ToolCallingChatModel`, `Option`, common options, `WrapImplSpecificOptFn`/`GetImplSpecificOptions` (carries gateway-specific request context inside option lists) |
 | `eino/callbacks` | the observability tap (§4.1): a global handler in `internal/observability/einotap`, plus the aspect functions fired by the self-implemented providers |
 | `eino/components/tool` | `InvokableTool`, implemented by the MCP bridge `pkg/mcp/einotool` (§5.3) |
+| `eino/adk` | `Runner`, `ChatModelAgent`, sequential/parallel/loop workflows, checkpoint resume, and operator cancellation for the builtin runtime (§5) |
+| `eino/adk/prebuilt` | supervisor, planexecute, and deep builtin topologies |
+| `eino/adk/middlewares` | agentsmd, summarization, skill, plantask, dynamic tool search, reduction, and patchtoolcalls |
+| `eino/compose` | ADK tool-node configuration plus interrupt/resume context for interactive tool permissions |
 
 Provider delegation status:
 

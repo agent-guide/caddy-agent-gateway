@@ -311,4 +311,3 @@ The capability is complete for a runtime only when:
   attribution model
 - [`../architecture/acp-architecture.md`](../architecture/acp-architecture.md):
   ACP runtime, sessions, and process lifecycle
-
