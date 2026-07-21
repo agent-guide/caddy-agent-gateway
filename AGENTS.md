@@ -317,7 +317,7 @@ Built-in provider runtime packages:
 - `qwen`: DashScope OpenAI-compatible mode via the eino-ext `qwen` component; optional `enable_thinking` provider option, per-request reasoning fields override it
 
 eino bridge packages (standalone libraries, the PB0 prerequisites of the
-builtin agent runtime — see `docs/design/agents-control-plane.md` §5.7):
+builtin agent runtime — see `docs/design/builtin-agent-runtime.md` §11):
 
 - `pkg/llm/provider/einomodel`: presents a `provider.Provider` (preferably a
   `*gateway.RoutedProvider`, so credential scheduling, candidate fallback,
@@ -427,7 +427,8 @@ Important files:
   task tools over a session-scoped in-memory board; `skill` over inline
   virtual skills, inline execution only — no fork/model frontmatter;
   defensive `patchtoolcalls` completing dangling tool exchanges),
-  root-level `permissions` (HITL tool gating, §5.7.7: mode
+  root-level `permissions` (HITL tool gating,
+  `docs/design/builtin-agent-runtime.md` §9: mode
   `auto_approve`/`interactive`, `timeout_seconds`, `max_pending`, and
   fully-qualified `auto_approve_tools` validated against tools declared
   anywhere in the topology), and fail-closed `limits`
@@ -445,13 +446,15 @@ Important files:
 
 Agents are a first-class gateway-bundle object (apply/export/validate) and have
 an `agwctl gateway agent` read surface; create/update flow through the bundle.
-See `docs/design/agents-control-plane.md` (including the §11 implementation
-status) for the full direction.
+See `docs/design/agents-control-plane.md` for the cross-runtime direction and
+`docs/design/builtin-agent-runtime.md` for the builtin runtime design and
+implementation status.
 
 ### `pkg/agent/builtin/`
 
-The generic eino ADK host for builtin-runtime agents (§5.7 of
-`agents-control-plane.md`). One host instance (owned by `AgentGateway`) serves
+The generic eino ADK host for builtin-runtime agents
+(`docs/design/builtin-agent-runtime.md`). One host instance (owned by
+`AgentGateway`) serves
 every builtin agent:
 
 - materialization cache keyed by agent id + `updated_at`; a definition update
@@ -470,7 +473,8 @@ every builtin agent:
 - every turn runs under panic recovery; `max_concurrent_turns` and
   `turn_timeout_seconds` are fail-closed (reject, not queue); a disabled agent
   rejects turns as a client-correctable error
-- operator turn cancellation (§5.7.8): every turn (fresh or resumed) runs
+- operator turn cancellation (`builtin-agent-runtime.md` §10): every turn
+  (fresh or resumed) runs
   under an `adk.WithCancel` handle registered in an in-flight registry keyed by
   `(agent_id, session_id)`; `force` (`CancelImmediate`, the answer for stuck
   turns) or `graceful` (safe-point stop propagated through nested agents and
@@ -495,8 +499,9 @@ every builtin agent:
   fresh trace with an OpenTelemetry Span Link to the checkpoint-producing span
 - turn events use the shared vocabulary subset `session`, `delta`, `content`,
   `tool_call`, `usage`, `permission`, `done`, `error`
-- interactive tool permissions (§5.7.7): with `permissions.mode =
-  "interactive"` every non-allowlisted MCP tool call interrupts the turn
+- interactive tool permissions (`builtin-agent-runtime.md` §9): with
+  `permissions.mode = "interactive"` every non-allowlisted MCP tool call
+  interrupts the turn
   through the ADK Runner checkpoint cycle — the approval gate wraps the
   einotool bridge outermost (denied/interrupted calls never open an MCP child
   span), the run state checkpoints into an in-memory store, and the turn ends
@@ -671,7 +676,8 @@ Implemented builtin families:
   data-plane resume)
 - `/admin/builtin/runtime/inflight` (in-flight builtin turns) and
   `DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}?mode=force|graceful`
-  (operator force/graceful cancel of a running or stuck turn, §5.7.8)
+  (operator force/graceful cancel of a running or stuck turn;
+  `docs/design/builtin-agent-runtime.md` §10)
 
 Implemented agent families:
 

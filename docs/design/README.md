@@ -7,6 +7,7 @@ execution plans live in [`../plans/`](../plans/README.md) instead.
 Current design pages:
 
 - [agents-control-plane.md](agents-control-plane.md)
+- [builtin-agent-runtime.md](builtin-agent-runtime.md)
 - [model-first-routing.md](model-first-routing.md)
 - [route-target-policy.md](route-target-policy.md)
 - [gateway-bundle-yaml.md](gateway-bundle-yaml.md)

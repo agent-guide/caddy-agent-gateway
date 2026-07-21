@@ -309,5 +309,7 @@ The capability is complete for a runtime only when:
   storage, and metrics APIs
 - [`agents-control-plane.md`](agents-control-plane.md): agent runtime and
   attribution model
+- [`builtin-agent-runtime.md`](builtin-agent-runtime.md): builtin host,
+  session lifecycle, inner spans, and turn correlation
 - [`../architecture/acp-architecture.md`](../architecture/acp-architecture.md):
   ACP runtime, sessions, and process lifecycle

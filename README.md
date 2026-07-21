@@ -375,6 +375,8 @@ See [docs/README.md](docs/README.md) for runtime-specific guides and references.
 - [docs/architecture/mcp-architecture.md](docs/architecture/mcp-architecture.md): MCP gateway architecture
 - [docs/architecture/acp-architecture.md](docs/architecture/acp-architecture.md): ACP gateway architecture
 - [docs/architecture/configstore-architecture.md](docs/architecture/configstore-architecture.md): config store architecture
+- [docs/design/agents-control-plane.md](docs/design/agents-control-plane.md): cross-runtime agent control-plane design
+- [docs/design/builtin-agent-runtime.md](docs/design/builtin-agent-runtime.md): builtin ADK runtime design and implementation status
 - [docs/design/gateway-bundle-yaml.md](docs/design/gateway-bundle-yaml.md): bundle YAML design
 
 ## Current Limits

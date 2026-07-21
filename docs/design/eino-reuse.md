@@ -65,9 +65,9 @@ forwarding around that component.
    protocol serving.
 3. Respect the agents-control-plane positioning: the gateway is an external
    control plane first. Hosting in-process agents through eino ADK (the
-   `builtin` runtime, §5) is an approved positioning extension; its
-   detailed design lives in `docs/design/agents-control-plane.md` and must
-   land there before implementation.
+   `builtin` runtime, §5) is an implemented positioning extension; its
+   authoritative runtime design lives in
+   `docs/design/builtin-agent-runtime.md`.
 4. Do not build on Beta eino surfaces for shipping paths. Track them and
    migrate when they graduate (see §6).
 
@@ -243,141 +243,48 @@ choice. This converges with the trace positioning in §4.1: flat gateway
 events for metering, OTel for fine-grained tracing, standard protocols at
 every exit.
 
-## 5. Multi-Agent Orchestration Track (`eino/adk`)
+## 5. ADK Reuse for the Builtin Runtime
 
-Status: implemented (PB1). The gateway supports the `builtin` agent runtime
-built on ADK as a third runtime type alongside `acp` and `http`: the generic
-ADK host lives in `pkg/agent/builtin`, turn ingress in
-`pkg/gateway/builtinroute` plus the dispatcher `builtin` enablement, and the
-authoritative design (definition schema, lifecycle, observability, landed
-scope) is `docs/design/agents-control-plane.md` §5.7 and §7 PB. Middleware
-adoption covers `summarization`, `agentsmd` (over inline virtual documents —
-builtin agents have no workspace to read real files from), `reduction`
-(clear-only; truncation/offload needs a file backend plus a `read_file`
-tool, deferred with the workspace question), `dynamictool/toolsearch`
-(client-side search over the node's MCP tools; the model-native variant
-needs deferred-tool support the gateway's providers do not expose),
-`plantask` (task tools over a session-scoped in-memory board), `skill`
-(inline virtual skills, inline execution only — the schema exposes no
-fork/model frontmatter), and `patchtoolcalls` (defensive completion of
-dangling tool exchanges). Of the ADK middlewares only `filesystem` remains
-unadopted, deferred with the same workspace question as reduction offload.
-Runner interrupt/checkpoint/resume is adopted for human-in-the-loop tool
-permissions (`agents-control-plane.md` §5.7.7, PB1b, implemented): the
-approval gate interrupts via `compose.Interrupt`, checkpoints to an
-in-memory store, and resumes with `ResumeWithParams` — no turn slot, no
-open stream, and no goroutine is held while a human decides.
+Status: implemented through PB1 and PB1b.
 
-Runner cancel (`adk.WithCancel`/`AgentCancelFunc`, `CancelMode`) is adopted
-for operator-initiated turn cancellation (`agents-control-plane.md` §5.7.8,
-implemented): every builtin turn (fresh or resumed) runs under a cancel
-handle registered in the host's in-flight registry keyed by
-`(agent_id, session_id)`. An operator force-cancels (`CancelImmediate`, abort
-now — the answer for stuck turns beyond `turn_timeout_seconds`) or gracefully
-stops (`CancelAfterChatModel|CancelAfterToolCalls` propagated recursively,
-with a grace timeout that escalates to immediate) a running turn through the
-Admin API; the resulting
-`adk.CancelError` is mapped to a `done` event with `stop_reason: "cancelled"`
-and the partial exchange is discarded (never committed).
+This document owns only the framework-adoption decision: the builtin runtime
+uses eino ADK as its orchestration engine and does not reimplement ADK
+behavior inside the gateway. The authoritative builtin schema, lifecycle,
+protocol, permissions, cancellation, implementation track, and deferred work
+live in [Builtin Agent Runtime](builtin-agent-runtime.md).
 
-Nearly all eino development between v0.8.4 and v0.9.12 landed in ADK. For
-gateway-native agents, ADK is the building material and none of it should
-be re-implemented in-repo:
+Adopted ADK capabilities:
 
-- `adk.Runner`: event-stream driven execution, interrupt/checkpoint,
-  human-in-the-loop resume
-- `adk.ChatModelAgent`, agent-as-tool, deterministic transfer
-- Orchestration primitives: Sequential / Parallel / Loop workflows
-- `adk/prebuilt`: `supervisor`, `planexecute`, `deep` multi-agent
-  topologies
-- `adk/middlewares`: `agentsmd` (auto-injects AGENTS.md), `summarization`
-  (context compaction), `skill`, `plantask`, `dynamictool`, `filesystem`,
-  `patchtoolcalls`, `reduction`
+- `adk.Runner` for event-stream execution;
+- `adk.ChatModelAgent`, sequential/parallel/loop workflows, and
+  `adk/prebuilt` supervisor, planexecute, and deep topologies;
+- Runner checkpoint interrupt/resume for interactive MCP tool permissions;
+- `adk.WithCancel` and `CancelMode` for operator force/graceful turn
+  cancellation;
+- `adk/middlewares` agentsmd, summarization, skill, plantask, dynamic tool
+  search, reduction, and patchtoolcalls;
+- `compose` only where ADK exposes tool-node configuration and
+  interrupt/resume context through it.
 
-Prefer ADK over the lower-level `compose` graphs and over the legacy
-`flow/agent` packages.
+The builtin runtime deliberately prefers ADK over lower-level compose graphs
+and the legacy `flow/agent` packages. The gateway supplies one generic host:
+a builtin agent is persisted data interpreted by compiled-in capability, not a
+new executable or a per-agent Go program. Custom Go behavior uses the
+compiled-in builtin factory SPI described in the runtime design.
 
-### 5.1 Runtime model: the agent is data, not a program
+Two neutral bridge libraries connect gateway resources to ADK:
 
-ADK is a library, not a runnable agent binary, so the `builtin` runtime
-cannot "start" an agent the way the `acp` runtime spawns `codex-acp` or
-`opencode`. The resolution: the gateway writes the ADK program exactly
-once — a generic ADK host compiled into `agw` — and a builtin agent
-degenerates into a persisted definition in the `agents` config store:
+- `pkg/llm/provider/einomodel` presents a gateway
+  `provider.Provider`—preferably a `RoutedProvider`—as an eino
+  `model.ToolCallingChatModel`, preserving credential scheduling, route
+  candidate fallback, and usage attribution.
+- `pkg/mcp/einotool` presents gateway-managed MCP service tools as eino
+  `InvokableTool` values. Name selection is fail-closed: a missing selected
+  tool is a materialization error.
 
-- `model`: resolved through a gateway LLM route/provider, entering ADK via
-  the provider → `ToolCallingChatModel` adapter (§5.3), so credential
-  scheduling, candidate fallback, and usage attribution apply unchanged
-- `system_prompt` and generation parameters
-- `tools`: references to gateway-managed MCP services, entering ADK via
-  the MCP → `InvokableTool` adapter (§5.3)
-- `topology`: single agent, Sequential / Parallel / Loop workflow, or a
-  prebuilt multi-agent shape (`supervisor`, `planexecute`, `deep`) with
-  `sub_agents` references
+Externally built eino/ADK agents are outside this track. They consume gateway
+LLM and MCP routes as clients and fit the control plane's `http` runtime.
 
-"Starting" a builtin agent means the in-process host materializes the ADK
-object graph from that definition — `adk.ChatModelAgent` plus tool
-adapters plus topology, driven by an `adk.Runner` — with no new process
-and no new binary. Updating the definition re-instantiates the graph.
-
-This is the pattern the gateway already lives by: `openai` is not a
-program either, it is a `provider_type` string interpreted by a
-compiled-in factory. The builtin runtime lifts the same
-"compile-time capability, runtime configuration" model to the agent
-layer.
-
-Declarative definitions cover what ADK exposes as parameterizable
-structure (the topologies above plus middleware toggles such as
-`summarization` or `agentsmd`). Agents that need custom Go logic use the
-repository's established extension pattern instead: implement an agent
-factory SPI, register it (mirroring `provider.RegisterProviderFactory`),
-and blank-import the package in `cmd/agw/main.go` — `agw` is a custom
-Caddy build, so "extension = compiled into the binary" is already its
-philosophy.
-
-### 5.2 Boundary versus the `acp` runtime
-
-| | `acp` | `builtin` |
-|---|---|---|
-| Agent artifact | an executable someone ships | a config object (plus optional compiled-in factory) |
-| "Start" means | spawn process, stdio handshake | instantiate ADK object graph, run `adk.Runner` |
-| Implementation language | any (protocol-isolated) | Go only; bounded by what is compiled in |
-| Fault isolation | process-level | none — a panicking agent is a gateway incident; the host must recover/contain |
-| Upgrade | replace the binary | config change takes effect immediately; new capability requires recompiling `agw` |
-
-The right-hand column's costs — in-process fault containment, a new
-agent-definition config surface that needs versioning, Runner
-interrupt/checkpoint state ownership — are the core of the detailed
-design work in `agents-control-plane.md`.
-
-### 5.3 The two bridges (prerequisites)
-
-Status: both landed as standalone libraries (agents-control-plane §7 PB0).
-
-First bridge: `pkg/mcp/einotool` — a `components/tool` (`InvokableTool`)
-adapter over gateway-managed MCP services (`pkg/mcp/service`), so
-gateway-governed MCP tools are directly consumable in-process without an
-HTTP loopback — resource governance stays in the gateway, execution stays
-in eino. Tool selection by name is fail-closed: a referenced tool that the
-service no longer lists is a materialization error, not a silent skip. (An
-external eino agent does not need this bridge: eino-ext's MCP tool
-component can already consume the gateway's MCP routes over HTTP.)
-
-Second bridge: `pkg/llm/provider/einomodel` — the single generic adapter
-presenting a gateway `provider.Provider` (or better, a `RoutedProvider`,
-carrying credential scheduling and candidate fallback with it) as an eino
-`model.ToolCallingChatModel`. That one adapter — not a per-provider
-rewrite — is what lets ADK agents, compose graphs, and
-`FailoverChatModel`/`RetryChatModel` consume gateway providers directly.
-
-### 5.4 What builtin is not
-
-Externally-built eino/ADK agents connecting to the gateway as clients do
-not involve this track at all: that is the existing `http` runtime plus
-LLM/MCP route resources, available today (point the agent's ChatModel at a
-gateway LLM route with a VirtualKey; trace propagation and `agent_id`
-attribution already work). §5 is the inverse direction: the gateway itself
-growing agents in-process.
 
 ## 6. Deferred: Track Until Stable
 
@@ -424,7 +331,7 @@ infrastructure surfaces.
    The builtin host's turn loop already does.
 3. ~~Build the `builtin` agent runtime on ADK (§5).~~ Done (PB1): bridges,
    generic ADK host, definition schema, turn ingress, and management parity
-   all landed; see `agents-control-plane.md` §7 PB for the scope notes and
+   all landed; see `builtin-agent-runtime.md` §11 for the scope notes and
    the PB2 remainder (task backend, durable sessions after eino v0.10).
 4. Migrate openai/codex Responses paths to agentic* components after they
    graduate from Beta (§6.1).
@@ -437,7 +344,7 @@ infrastructure surfaces.
    `model.retry` block; failover stays unadopted by design.
 7. ~~ADK Runner cancel for operator turn cancellation (§5).~~ Done:
    `adk.WithCancel`/`CancelMode` behind the Admin API force/graceful cancel of
-   in-flight builtin turns (`agents-control-plane.md` §5.7.8).
+   in-flight builtin turns (`builtin-agent-runtime.md` §10).
 
 ## 9. Known Integration Gotchas
 
