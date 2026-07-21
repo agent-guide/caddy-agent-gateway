@@ -21,7 +21,7 @@ Related extension design notes live in `docs/` when a topic needs more detail th
 
 ## 3. Top-Level Architecture
 
-The runtime is split into three active layers and several partially integrated subsystems:
+The request path runs through four layers; memory remains a reserved subsystem:
 
 ```text
 Client
@@ -36,26 +36,36 @@ Dispatcher / protocol modules
   - agent_route_dispatcher.llm_apis.cc
   - agent_route_dispatcher with MCP enabled
   - agent_route_dispatcher with ACP enabled
+  - agent_route_dispatcher with builtin enabled
   |
   v
 Shared gateway runtime
   - provider loading and resolution
   - authenticator loading
   - config store loading
-  - llmroute, mcproute, and acproute registries
+  - llmroute, mcproute, acproute, and builtinroute registries
   - virtual key lookup
   - credential and auth managers
   - MCP runtime registry
   - ACP service and runtime managers
+  - agent manager (agent CRUD + route/service → agent attribution index)
+  - builtin ADK host (in-process materialization of builtin-runtime agents)
+  - usage event pipeline (typed llm/mcp/acp/builtin events, spans, optional OTLP export)
   |
   v
 External systems
-  - OpenAI / Anthropic / Gemini / Ollama / OpenRouter
+  - upstream LLM providers (OpenAI / Anthropic / Gemini / DeepSeek / Qwen / Zhipu / OpenRouter / Ollama / Codex / Claude Code)
   - upstream MCP services
-  - local ACP agent or adapter processes
-  - SQLite config database
+  - local ACP agent or adapter processes (codex, opencode)
+  - SQLite config database and usage event tables
+  - optional OpenTelemetry collector (metrics.otlp span export)
   - future memory backends
 ```
+
+Builtin-runtime agents live inside the shared runtime layer (the builtin ADK
+host), not in the external systems row: their inner model and tool calls
+resolve through the same route and service registries as any other traffic, so
+no external agent process is involved.
 
 ## 4. Main Components
 

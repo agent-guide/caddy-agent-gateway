@@ -27,12 +27,12 @@ This repository builds three binaries:
 - **Agent Control API (ACP / HTTP)** — how consumers reach agents. Users and business apps call the gateway to launch and drive an agent.
 - **Resource Access API (LLM / MCP)** — how agents reach the outside world. An agent calls back through the gateway to use LLM providers and MCP tools.
 
-A typical request flows in four hops: ① a consumer calls the gateway over HTTP / ACP → ② the gateway launches and drives an agent → ③ the agent calls back through the gateway for LLM / MCP → ④ the gateway proxies that call to upstream resources (LLM providers, MCP servers, RAG). Because both directions pass through the gateway, it adds VirtualKey auth, routing, and config across the board, and observability is first-class: every hop is captured as audit logs, token usage, and call-chain traces for multi-agent governance.
+A typical request flows in four hops: ① a consumer calls the gateway over HTTP / ACP → ② the gateway launches and drives an agent → ③ the agent calls back through the gateway for LLM / MCP → ④ the gateway proxies that call to upstream resources (LLM providers, MCP servers). For builtin agents, hops ② and ③ happen in-process inside the gateway host — still routed, still observed. Because both directions pass through the gateway, it adds VirtualKey auth, routing, and config across the board, and observability is first-class: every hop is captured as audit logs, token usage, and call-chain traces for multi-agent governance.
 
 The gateway supports three integration paths for the agents themselves:
 
 - **No-code (builtin)**: define an agent as pure configuration — model through a gateway LLM route, tools through gateway-managed MCP services, topology (single, sequential, parallel, loop, supervisor, planexecute, deep) — and the gateway's in-process eino ADK host materializes and runs it. No process to ship, no code to write.
-- **Low-code**: drive off-the-shelf CLI coding agents (Codex, Claude Code, OpenCode) directly over ACP — no custom code required.
+- **Low-code**: drive off-the-shelf CLI coding agents (Codex, OpenCode) directly over ACP — no custom code required. (Claude Code plugs in as a gateway consumer through the Claude Code-compatible `cc` API profile, not over ACP.)
 - **Full control**: bring your own agent in any stack and let the gateway manage and observe it.
 
 ## Quick Start

@@ -6,6 +6,9 @@
     <marker id="arrowG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
       <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
     </marker>
+    <marker id="arrowS" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#0369a1"/>
+    </marker>
     <linearGradient id="gwGrad" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#4338ca"/>
       <stop offset="1" stop-color="#6366f1"/>
@@ -22,95 +25,111 @@
   <text x="600" y="46" text-anchor="middle" font-size="30" font-weight="800" fill="#0f172a">agent-gateway — Connect, Manage &amp; Observe Your Agents</text>
   <text x="600" y="76" text-anchor="middle" font-size="15" fill="#475569">Consumers reach agents over HTTP / ACP; agents reach external resources over LLM / MCP — every hop proxied and observed by one gateway</text>
 
-  <!-- Agents (top) -->
-  <rect x="430" y="110" width="620" height="212" rx="16" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5"/>
-  <text x="450" y="138" font-size="14" font-weight="700" fill="#334155">Agents — managed &amp; observed by the gateway</text>
-  <rect x="450" y="150" width="288" height="152" rx="12" fill="#ecfeff" stroke="#06b6d4" stroke-width="2"/>
-  <text x="594" y="194" text-anchor="middle" font-size="18" font-weight="800" fill="#0e7490">CLI Coding Agents</text>
-  <text x="594" y="220" text-anchor="middle" font-size="13" fill="#334155">Codex · Claude Code · OpenCode</text>
-  <rect x="494" y="248" width="200" height="36" rx="18" fill="#06b6d4"/>
-  <text x="594" y="271" text-anchor="middle" font-size="13" font-weight="700" fill="#ffffff">Low-code · plug in via ACP</text>
-  <rect x="742" y="150" width="288" height="152" rx="12" fill="#faf5ff" stroke="#8b5cf6" stroke-width="2"/>
-  <text x="886" y="194" text-anchor="middle" font-size="18" font-weight="800" fill="#6d28d9">Custom Agents</text>
-  <text x="886" y="220" text-anchor="middle" font-size="13" fill="#334155">your own agent · any stack</text>
-  <rect x="786" y="248" width="200" height="36" rx="18" fill="#8b5cf6"/>
-  <text x="886" y="271" text-anchor="middle" font-size="13" font-weight="700" fill="#ffffff">Full control · observed</text>
+  <!-- Agents (top): external runtimes; builtin runs inside the gateway -->
+  <rect x="430" y="105" width="620" height="192" rx="16" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5"/>
+  <text x="450" y="132" font-size="14" font-weight="700" fill="#334155">Agents — one identity, three runtimes</text>
+  <text x="1030" y="132" text-anchor="end" font-size="11" font-style="italic" fill="#64748b">builtin agents run inside the gateway ↓</text>
+  <rect x="450" y="148" width="288" height="132" rx="12" fill="#ecfeff" stroke="#06b6d4" stroke-width="2"/>
+  <text x="594" y="188" text-anchor="middle" font-size="17" font-weight="800" fill="#0e7490">CLI Coding Agents</text>
+  <text x="594" y="212" text-anchor="middle" font-size="13" fill="#334155">Codex · OpenCode</text>
+  <rect x="509" y="230" width="170" height="30" rx="15" fill="#06b6d4"/>
+  <text x="594" y="250" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">Low-code · via ACP</text>
+  <rect x="742" y="148" width="288" height="132" rx="12" fill="#f8fafc" stroke="#64748b" stroke-width="2"/>
+  <text x="886" y="188" text-anchor="middle" font-size="17" font-weight="800" fill="#334155">Custom Agents</text>
+  <text x="886" y="212" text-anchor="middle" font-size="13" fill="#475569">your own agent · any stack</text>
+  <rect x="801" y="230" width="170" height="30" rx="15" fill="#64748b"/>
+  <text x="886" y="250" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">Full control · observed</text>
 
   <!-- Consumers (left) -->
-  <rect x="70" y="470" width="230" height="190" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
-  <text x="90" y="498" font-size="14" font-weight="700" fill="#4338ca">Consumers</text>
-  <rect x="90" y="510" width="190" height="62" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3"/>
-  <text x="185" y="548" text-anchor="middle" font-size="16" fill="#1e293b">User</text>
-  <rect x="90" y="582" width="190" height="62" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3"/>
-  <text x="185" y="619" text-anchor="middle" font-size="15" fill="#1e293b">SaaS / Business App</text>
+  <rect x="70" y="440" width="230" height="260" rx="14" fill="#eef2ff" stroke="#a5b4fc" stroke-width="1.5"/>
+  <text x="90" y="468" font-size="14" font-weight="700" fill="#4338ca">Consumers</text>
+  <rect x="90" y="480" width="190" height="58" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3"/>
+  <text x="185" y="515" text-anchor="middle" font-size="15" fill="#1e293b">User</text>
+  <rect x="90" y="548" width="190" height="58" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3"/>
+  <text x="185" y="583" text-anchor="middle" font-size="14" fill="#1e293b">SaaS / Business App</text>
+  <rect x="90" y="616" width="190" height="58" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.3"/>
+  <text x="185" y="640" text-anchor="middle" font-size="15" fill="#1e293b">Coding CLIs</text>
+  <text x="185" y="657" text-anchor="middle" font-size="9.5" fill="#64748b">Claude Code · Codex CLI</text>
 
   <!-- Gateway (center) -->
-  <rect x="420" y="420" width="640" height="300" rx="18" fill="#eef2ff" stroke="#4f46e5" stroke-width="2.5"/>
-  <path d="M420,438 Q420,420 438,420 L1042,420 Q1060,420 1060,438 L1060,468 L420,468 Z" fill="url(#gwGrad)"/>
-  <text x="442" y="452" font-size="20" font-weight="800" fill="#ffffff">agent-gateway</text>
-  <text x="1042" y="451" text-anchor="end" font-size="13" fill="#e0e7ff">Connect · Manage · Observe</text>
+  <rect x="420" y="400" width="640" height="380" rx="18" fill="#eef2ff" stroke="#4f46e5" stroke-width="2.5"/>
+  <path d="M420,418 Q420,400 438,400 L1042,400 Q1060,400 1060,418 L1060,448 L420,448 Z" fill="url(#gwGrad)"/>
+  <text x="442" y="433" font-size="20" font-weight="800" fill="#ffffff">agent-gateway</text>
+  <text x="1042" y="432" text-anchor="end" font-size="13" fill="#e0e7ff">Connect · Manage · Observe</text>
+
+  <!-- Builtin agent host (in-process runtime) -->
+  <rect x="436" y="460" width="608" height="76" rx="12" fill="#faf5ff" stroke="#8b5cf6" stroke-width="2"/>
+  <text x="456" y="487" font-size="15" font-weight="800" fill="#6d28d9">Builtin Agent Host (eino ADK)</text>
+  <text x="456" y="509" font-size="11" fill="#475569">agents as pure config · 8 topologies · middlewares · HITL permissions</text>
+  <rect x="874" y="474" width="150" height="28" rx="14" fill="#8b5cf6"/>
+  <text x="949" y="492" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">No-code · in-process</text>
 
   <!-- Agent control API row (flows 1,2) -->
-  <text x="444" y="508" font-size="14" font-weight="700" fill="#3730a3">Agent Control API</text>
-  <text x="444" y="526" font-size="11" fill="#64748b">consumers drive agents · ①②</text>
-  <rect x="660" y="488" width="80" height="34" rx="10" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.5"/>
-  <text x="700" y="511" text-anchor="middle" font-size="15" font-weight="700" fill="#3730a3">ACP</text>
-  <rect x="750" y="488" width="92" height="34" rx="10" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.5"/>
-  <text x="796" y="511" text-anchor="middle" font-size="15" font-weight="700" fill="#3730a3">HTTP</text>
+  <text x="444" y="582" font-size="14" font-weight="700" fill="#3730a3">Agent Control API</text>
+  <text x="444" y="599" font-size="10.5" fill="#64748b">consumers drive agents · ①②</text>
+  <rect x="660" y="564" width="64" height="32" rx="10" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="692" y="585" text-anchor="middle" font-size="14" font-weight="700" fill="#3730a3">ACP</text>
+  <rect x="732" y="564" width="76" height="32" rx="10" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="770" y="585" text-anchor="middle" font-size="14" font-weight="700" fill="#3730a3">HTTP</text>
+  <rect x="816" y="564" width="124" height="32" rx="10" fill="#e0e7ff" stroke="#6366f1" stroke-width="1.5"/>
+  <text x="878" y="585" text-anchor="middle" font-size="13" font-weight="700" fill="#3730a3">builtin turn</text>
 
   <!-- Resource access API row (flows 3,4) -->
-  <text x="444" y="558" font-size="14" font-weight="700" fill="#0369a1">Resource Access API</text>
-  <text x="444" y="576" font-size="11" fill="#64748b">agents reach resources · ③④</text>
-  <rect x="660" y="538" width="80" height="34" rx="10" fill="#e0f2fe" stroke="#0ea5e9" stroke-width="1.5"/>
-  <text x="700" y="561" text-anchor="middle" font-size="15" font-weight="700" fill="#0369a1">LLM</text>
-  <rect x="750" y="538" width="92" height="34" rx="10" fill="#e0f2fe" stroke="#0ea5e9" stroke-width="1.5"/>
-  <text x="796" y="561" text-anchor="middle" font-size="15" font-weight="700" fill="#0369a1">MCP</text>
+  <text x="444" y="640" font-size="14" font-weight="700" fill="#0369a1">Resource Access API</text>
+  <text x="444" y="657" font-size="10.5" fill="#64748b">agents reach resources · ③④</text>
+  <rect x="660" y="622" width="64" height="32" rx="10" fill="#e0f2fe" stroke="#0ea5e9" stroke-width="1.5"/>
+  <text x="692" y="643" text-anchor="middle" font-size="14" font-weight="700" fill="#0369a1">LLM</text>
+  <rect x="732" y="622" width="76" height="32" rx="10" fill="#e0f2fe" stroke="#0ea5e9" stroke-width="1.5"/>
+  <text x="770" y="643" text-anchor="middle" font-size="14" font-weight="700" fill="#0369a1">MCP</text>
+
+  <!-- (3') builtin inner calls: in-process, traced as child spans -->
+  <path d="M1000,536 L1000,614" stroke="#0369a1" stroke-width="2.4" fill="none" marker-end="url(#arrowS)"/>
+  <text x="990" y="608" text-anchor="end" font-size="10" fill="#0369a1">③′ in-process routed calls · child spans</text>
+
+  <!-- Control plane line -->
+  <text x="444" y="682" font-size="11.5" fill="#334155">control plane — agent registry · virtual keys · credential pool · permission gates · limits</text>
 
   <!-- Observability hero strip -->
-  <rect x="436" y="590" width="608" height="118" rx="12" fill="url(#obsGrad)"/>
-  <rect x="460" y="626" width="8" height="14" fill="#ffffff"/>
-  <rect x="471" y="618" width="8" height="22" fill="#ffffff"/>
-  <rect x="482" y="610" width="8" height="30" fill="#ffffff"/>
-  <rect x="493" y="602" width="8" height="38" fill="#ffffff"/>
-  <text x="516" y="632" font-size="21" font-weight="800" fill="#ffffff">Observability</text>
-  <text x="722" y="632" font-size="12" font-style="italic" fill="#d1fae5">the core of the gateway — every run captured</text>
-  <rect x="460" y="652" width="118" height="34" rx="17" fill="#ffffff"/>
-  <text x="519" y="675" text-anchor="middle" font-size="13" font-weight="700" fill="#047857">Audit Logs</text>
-  <rect x="590" y="652" width="132" height="34" rx="17" fill="#ffffff"/>
-  <text x="656" y="675" text-anchor="middle" font-size="13" font-weight="700" fill="#047857">Token Usage</text>
-  <rect x="734" y="652" width="168" height="34" rx="17" fill="#ffffff"/>
-  <text x="818" y="675" text-anchor="middle" font-size="13" font-weight="700" fill="#047857">Call-Chain Tracing</text>
-  <rect x="914" y="652" width="108" height="34" rx="17" fill="#ffffff"/>
-  <text x="968" y="675" text-anchor="middle" font-size="13" font-weight="700" fill="#047857">Governance</text>
+  <rect x="436" y="696" width="608" height="64" rx="12" fill="url(#obsGrad)"/>
+  <rect x="456" y="732" width="7" height="12" fill="#ffffff"/>
+  <rect x="466" y="726" width="7" height="18" fill="#ffffff"/>
+  <rect x="476" y="720" width="7" height="24" fill="#ffffff"/>
+  <rect x="486" y="714" width="7" height="30" fill="#ffffff"/>
+  <text x="508" y="731" font-size="17" font-weight="800" fill="#ffffff">Observability</text>
+  <text x="508" y="747" font-size="9.5" font-style="italic" fill="#d1fae5">llm · mcp · acp · builtin · agent attribution</text>
+  <rect x="636" y="710" width="128" height="28" rx="14" fill="#ffffff"/>
+  <text x="700" y="728" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">typed usage events</text>
+  <rect x="772" y="710" width="118" height="28" rx="14" fill="#ffffff"/>
+  <text x="831" y="728" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">call-chain tracing</text>
+  <rect x="898" y="710" width="138" height="28" rx="14" fill="#ffffff"/>
+  <text x="967" y="728" text-anchor="middle" font-size="10.5" font-weight="700" fill="#047857">Prometheus · OTLP</text>
 
   <!-- Resources (bottom) -->
-  <rect x="400" y="798" width="680" height="152" rx="16" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
-  <text x="420" y="826" font-size="14" font-weight="700" fill="#334155">External Resources</text>
-  <rect x="420" y="840" width="200" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.3"/>
-  <text x="520" y="880" text-anchor="middle" font-size="15" font-weight="700" fill="#1e293b">LLM Providers</text>
-  <text x="520" y="902" text-anchor="middle" font-size="11" fill="#64748b">OpenAI · Anthropic · Gemini</text>
-  <rect x="636" y="840" width="180" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.3"/>
-  <text x="726" y="891" text-anchor="middle" font-size="15" font-weight="700" fill="#1e293b">MCP Servers</text>
-  <rect x="832" y="840" width="208" height="92" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.3"/>
-  <text x="936" y="882" text-anchor="middle" font-size="14" font-weight="700" fill="#1e293b">RAG /</text>
-  <text x="936" y="902" text-anchor="middle" font-size="14" font-weight="700" fill="#1e293b">Knowledge Base</text>
+  <rect x="400" y="830" width="680" height="120" rx="16" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="420" y="856" font-size="14" font-weight="700" fill="#334155">External Resources</text>
+  <rect x="420" y="868" width="310" height="64" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.3"/>
+  <text x="575" y="894" text-anchor="middle" font-size="14" font-weight="700" fill="#1e293b">LLM Providers</text>
+  <text x="575" y="913" text-anchor="middle" font-size="10.5" fill="#64748b">OpenAI · Anthropic · Gemini · …</text>
+  <rect x="750" y="868" width="310" height="64" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.3"/>
+  <text x="905" y="894" text-anchor="middle" font-size="14" font-weight="700" fill="#1e293b">MCP Servers</text>
+  <text x="905" y="913" text-anchor="middle" font-size="10.5" fill="#64748b">governed tools</text>
 
   <!-- (1) Consumers -> Gateway -->
-  <path d="M300,560 L416,560" stroke="#4f46e5" stroke-width="2.4" fill="none" marker-end="url(#arrowI)"/>
-  <text x="358" y="544" text-anchor="middle" font-size="13" font-weight="700" fill="#4338ca">① HTTP / ACP API</text>
+  <path d="M300,570 L416,570" stroke="#4f46e5" stroke-width="2.4" fill="none" marker-end="url(#arrowI)"/>
+  <text x="358" y="554" text-anchor="middle" font-size="12.5" font-weight="700" fill="#4338ca">① HTTP / ACP / cc</text>
 
   <!-- (2) Gateway -> Agents -->
-  <path d="M680,416 L680,326" stroke="#4f46e5" stroke-width="2.4" fill="none" marker-end="url(#arrowI)"/>
-  <text x="668" y="378" text-anchor="end" font-size="13" font-weight="700" fill="#4338ca">② launch &amp; drive</text>
+  <path d="M680,396 L680,301" stroke="#4f46e5" stroke-width="2.4" fill="none" marker-end="url(#arrowI)"/>
+  <text x="668" y="352" text-anchor="end" font-size="12.5" font-weight="700" fill="#4338ca">② launch &amp; drive</text>
 
   <!-- (3) Agents -> Gateway -->
-  <path d="M820,326 L820,416" stroke="#059669" stroke-width="2.4" fill="none" marker-end="url(#arrowG)"/>
-  <text x="832" y="378" text-anchor="start" font-size="13" font-weight="700" fill="#047857">③ LLM / MCP API</text>
+  <path d="M820,301 L820,396" stroke="#059669" stroke-width="2.4" fill="none" marker-end="url(#arrowG)"/>
+  <text x="832" y="352" text-anchor="start" font-size="12.5" font-weight="700" fill="#047857">③ LLM / MCP call-back</text>
 
   <!-- (4) Gateway -> Resources -->
-  <path d="M740,722 L740,794" stroke="#059669" stroke-width="2.6" fill="none" marker-end="url(#arrowG)"/>
-  <text x="754" y="762" font-size="13" font-weight="700" fill="#047857">④ proxied &amp; observed</text>
+  <path d="M740,784 L740,824" stroke="#059669" stroke-width="2.6" fill="none" marker-end="url(#arrowG)"/>
+  <text x="754" y="810" font-size="12.5" font-weight="700" fill="#047857">④ proxied &amp; observed</text>
 
   <!-- Caption -->
-  <text x="600" y="982" text-anchor="middle" font-size="14" fill="#475569">① consumer calls the gateway → ② gateway drives an agent → ③ the agent calls back through the gateway for LLM / MCP → ④ the gateway proxies it to upstream resources</text>
+  <text x="600" y="982" text-anchor="middle" font-size="13" fill="#475569">① consumer calls the gateway → ② gateway drives an agent → ③ the agent calls back for LLM / MCP → ④ the gateway proxies it to upstream resources; builtin agents run ②③ in-process</text>
 </svg>
