@@ -117,7 +117,15 @@ virtualKeys:
   - id: test-key
     allowed_route_ids:
       - openai-chat
+    rate_limits:
+      llm:
+        requests_per_minute: 60
+        burst: 10
 ```
+
+`rate_limits` is optional. It independently limits LLM, MCP, and agent ingress
+for a VirtualKey with in-memory token buckets; `agent` configures separate ACP
+and builtin buckets. Exceeded requests return `429` with `Retry-After`.
 
 Set the admin Basic Auth credentials for agwctl as an environment variable, then apply the bundle:
 

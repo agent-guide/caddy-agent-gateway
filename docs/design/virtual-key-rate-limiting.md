@@ -2,8 +2,8 @@
 
 ## 1. Status
 
-This document defines the proposed first version of request-frequency rate
-limiting by VirtualKey. The feature described here is not implemented yet.
+This document defines the implemented first version of request-frequency rate
+limiting by VirtualKey.
 
 This first version is deliberately scoped for a fast landing: admission is a
 single central check keyed by VirtualKey ID and route kind, performed right

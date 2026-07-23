@@ -9,6 +9,7 @@ import (
 	_ "github.com/agent-guide/agent-gateway/pkg/cliauth/authenticator"
 	_ "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/openai"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
+	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/deepseek"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/openai"
@@ -47,6 +48,10 @@ virtualKeys:
     tag: local-test
     allowed_route_ids:
       - chat-prod
+    rate_limits:
+      llm:
+        requests_per_minute: 60
+        burst: 10
 cliAuthAuthenticators:
   - name: claudecode
     enabled: true
@@ -88,8 +93,143 @@ cliAuthAuthenticators:
 	if len(bundle.VirtualKeys) != 1 || bundle.VirtualKeys[0].ID != "vk-local-test" || len(bundle.VirtualKeys[0].AllowedRouteIDs) != 1 || bundle.VirtualKeys[0].AllowedRouteIDs[0] != "chat-prod" {
 		t.Fatalf("VirtualKeys = %#v", bundle.VirtualKeys)
 	}
+	if bundle.VirtualKeys[0].RateLimits == nil || bundle.VirtualKeys[0].RateLimits.LLM == nil ||
+		bundle.VirtualKeys[0].RateLimits.LLM.RequestsPerMinute != 60 || bundle.VirtualKeys[0].RateLimits.LLM.Burst != 10 {
+		t.Fatalf("VirtualKeys[0].RateLimits = %#v", bundle.VirtualKeys[0].RateLimits)
+	}
 	if len(bundle.CLIAuthAuthenticators) != 1 || bundle.CLIAuthAuthenticators[0].Name != "claudecode" || !bundle.CLIAuthAuthenticators[0].Enabled || bundle.CLIAuthAuthenticators[0].Config.CallbackPort != 9002 || bundle.CLIAuthAuthenticators[0].Config.TransportProfile != "browser_like_tls" {
 		t.Fatalf("CLIAuthAuthenticators = %#v", bundle.CLIAuthAuthenticators)
+	}
+}
+
+func TestVirtualKeyRateLimitsStrictDecodeAndValidation(t *testing.T) {
+	for _, input := range []string{
+		`apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+virtualKeys:
+  - id: demo
+    rate_limits:
+      lmm:
+        requests_per_minute: 60
+        burst: 1
+`,
+		`apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+virtualKeys:
+  - id: demo
+    rate_limits:
+      llm:
+        requests_per_minute: 60
+        brust: 1
+`,
+	} {
+		if _, err := DecodeYAML([]byte(input)); err == nil {
+			t.Fatalf("DecodeYAML(%q) returned nil error", input)
+		}
+	}
+
+	bundle, err := DecodeYAML([]byte(`apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+virtualKeys:
+  - id: demo
+    rate_limits:
+      agent:
+        requests_per_minute: 0
+        burst: 1
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bundle.ValidateForConfigStore(); err == nil || !strings.Contains(err.Error(), "requests_per_minute must be greater than zero") {
+		t.Fatalf("ValidateForConfigStore() error = %v", err)
+	}
+}
+
+func TestGatewayBundleOmitsEmptyVirtualKeyRateLimits(t *testing.T) {
+	bundle := &GatewayBundle{
+		APIVersion:  APIVersionV1Alpha1,
+		Kind:        KindGatewayBundle,
+		VirtualKeys: []BundleVirtualKey{{ID: "demo"}},
+	}
+	encoded, err := EncodeYAML(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "rate_limits") {
+		t.Fatalf("encoded bundle unexpectedly contains rate_limits:\n%s", encoded)
+	}
+}
+
+// TestVirtualKeyRateLimitsRoundTripPreservesCompletePolicy covers the §14
+// requirement that the bundle <-> runtime conversion and YAML round trip
+// preserve the complete rate_limits policy across all dimensions, and that the
+// converted policy is isolated (mutating the runtime copy does not touch the
+// bundle copy or vice versa).
+func TestVirtualKeyRateLimitsRoundTripPreservesCompletePolicy(t *testing.T) {
+	bundleKey := BundleVirtualKey{
+		ID: "demo",
+		RateLimits: &virtualkeypkg.VirtualKeyRateLimits{
+			LLM:   &virtualkeypkg.RateLimit{RequestsPerMinute: 60, Burst: 10},
+			MCP:   &virtualkeypkg.RateLimit{RequestsPerMinute: 120, Burst: 20},
+			Agent: &virtualkeypkg.RateLimit{RequestsPerMinute: 20, Burst: 5},
+		},
+	}
+
+	// Bundle -> runtime, then mutate the runtime copy: the bundle's policy
+	// pointers must not move.
+	runtimeKey := bundleKey.ToRuntimeVirtualKey("generated-secret")
+	runtimeKey.RateLimits.LLM.RequestsPerMinute = 999
+	if bundleKey.RateLimits.LLM.RequestsPerMinute != 60 {
+		t.Fatalf("bundle policy aliased runtime mutation: llm = %d", bundleKey.RateLimits.LLM.RequestsPerMinute)
+	}
+
+	// Runtime -> bundle, mutate the bundle copy: the runtime policy must not move.
+	back := BundleVirtualKeyFromRuntime(runtimeKey)
+	if back.RateLimits == nil {
+		t.Fatal("BundleVirtualKeyFromRuntime dropped rate_limits")
+	}
+	back.RateLimits.MCP.Burst = 888
+	if runtimeKey.RateLimits.MCP.Burst != 20 {
+		t.Fatalf("runtime policy aliased bundle mutation: mcp burst = %d", runtimeKey.RateLimits.MCP.Burst)
+	}
+
+	// Full YAML round trip preserves every dimension and value.
+	full := &GatewayBundle{
+		APIVersion: APIVersionV1Alpha1,
+		Kind:       KindGatewayBundle,
+		VirtualKeys: []BundleVirtualKey{{
+			ID: "demo",
+			RateLimits: &virtualkeypkg.VirtualKeyRateLimits{
+				LLM:   &virtualkeypkg.RateLimit{RequestsPerMinute: 60, Burst: 10},
+				MCP:   &virtualkeypkg.RateLimit{RequestsPerMinute: 120, Burst: 20},
+				Agent: &virtualkeypkg.RateLimit{RequestsPerMinute: 20, Burst: 5},
+			},
+		}},
+	}
+	encoded, err := EncodeYAML(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeYAML(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decodedRT := decoded.VirtualKeys[0].ToRuntimeVirtualKey("")
+	checkRateLimit := func(name string, got *virtualkeypkg.RateLimit, wantRPM, wantBurst int) {
+		if got == nil {
+			t.Fatalf("%s rate limit missing after round trip", name)
+		}
+		if got.RequestsPerMinute != wantRPM || got.Burst != wantBurst {
+			t.Fatalf("%s rate limit = {rpm:%d burst:%d}, want {rpm:%d burst:%d}", name, got.RequestsPerMinute, got.Burst, wantRPM, wantBurst)
+		}
+	}
+	checkRateLimit("llm", decodedRT.RateLimits.LLM, 60, 10)
+	checkRateLimit("mcp", decodedRT.RateLimits.MCP, 120, 20)
+	checkRateLimit("agent", decodedRT.RateLimits.Agent, 20, 5)
+
+	// A bundle carrying a complete policy must validate cleanly.
+	if err := decoded.ValidateForConfigStore(); err != nil {
+		t.Fatalf("round-tripped bundle failed validation: %v", err)
 	}
 }
 

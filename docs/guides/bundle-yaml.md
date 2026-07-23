@@ -132,6 +132,27 @@ Current dynamic workflow behavior:
 - `agwctl gateway apply` supports logical-model routes
 - `agwctl gateway apply` supports managed models
 - VirtualKeys are valid in config-store-backed bundle workflows
+- VirtualKeys may include optional request-frequency limits:
+
+```yaml
+virtualKeys:
+  - id: team-a
+    allowed_route_ids: [chat-prod]
+    rate_limits:
+      llm:
+        requests_per_minute: 60
+        burst: 10
+      mcp:
+        requests_per_minute: 120
+        burst: 20
+      agent:
+        requests_per_minute: 20
+        burst: 5
+```
+
+Each configured rate and burst must be greater than zero. Omitted dimensions
+are unlimited. `agent` supplies the policy for two independent runtime buckets,
+ACP and builtin.
 
 ## Schema Notes
 

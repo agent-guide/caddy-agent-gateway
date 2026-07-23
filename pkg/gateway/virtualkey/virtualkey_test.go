@@ -1,10 +1,41 @@
 package virtualkey
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func TestRateLimitsRejectUnknownFields(t *testing.T) {
+	for _, input := range []string{
+		`{"id":"vk","key":"secret","rate_limits":{"lmm":{"requests_per_minute":1,"burst":1}}}`,
+		`{"id":"vk","key":"secret","rate_limits":{"llm":{"requests_per_minute":1,"brust":1}}}`,
+	} {
+		var key VirtualKey
+		if err := json.Unmarshal([]byte(input), &key); err == nil {
+			t.Fatalf("json.Unmarshal(%s) returned nil error", input)
+		}
+	}
+}
+
+func TestValidateConfigurationRateLimits(t *testing.T) {
+	valid := VirtualKey{RateLimits: &VirtualKeyRateLimits{
+		LLM: &RateLimit{RequestsPerMinute: 60, Burst: 10},
+	}}
+	if err := valid.ValidateConfiguration(); err != nil {
+		t.Fatalf("valid policy returned error: %v", err)
+	}
+	for _, limit := range []RateLimit{
+		{RequestsPerMinute: 0, Burst: 1},
+		{RequestsPerMinute: 1, Burst: 0},
+	} {
+		key := VirtualKey{RateLimits: &VirtualKeyRateLimits{MCP: &limit}}
+		if err := key.ValidateConfiguration(); err == nil {
+			t.Fatalf("ValidateConfiguration(%+v) returned nil error", limit)
+		}
+	}
+}
 
 func TestExtractAPIKeysFromBearerToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)

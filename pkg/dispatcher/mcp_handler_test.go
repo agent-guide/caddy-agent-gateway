@@ -58,9 +58,10 @@ func (emptyConfigStore) GetByIndex(context.Context, string, any) (any, error) {
 
 type singleVirtualKeyStore struct {
 	emptyConfigStore
-	keyID string
-	key   string
-	route string
+	keyID      string
+	key        string
+	route      string
+	rateLimits *virtualkeypkg.VirtualKeyRateLimits
 }
 
 func (s singleVirtualKeyStore) GetByIndex(_ context.Context, _ string, value any) (any, error) {
@@ -72,6 +73,7 @@ func (s singleVirtualKeyStore) GetByIndex(_ context.Context, _ string, value any
 		ID:              s.keyID,
 		Key:             s.key,
 		AllowedRouteIDs: []string{s.route},
+		RateLimits:      s.rateLimits,
 	}, nil
 }
 

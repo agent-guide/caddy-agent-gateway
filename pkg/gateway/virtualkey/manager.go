@@ -27,9 +27,14 @@ type VirtualKeyManager struct {
 	mu sync.RWMutex
 
 	dynamicKeyIndex map[string]string
+	limiters        *limiterRegistry
 }
 
 func NewVirtualKeyManager(store configstore.ConfigStore) *VirtualKeyManager {
+	return NewVirtualKeyManagerWithClock(store, nil)
+}
+
+func NewVirtualKeyManagerWithClock(store configstore.ConfigStore, clock Clock) *VirtualKeyManager {
 	return &VirtualKeyManager{
 		base: configmgr.NewBaseConfigManager(store, configmgr.Definition[VirtualKey]{
 			GetID:  virtualKeyID,
@@ -42,10 +47,16 @@ func NewVirtualKeyManager(store configstore.ConfigStore) *VirtualKeyManager {
 				if key.Key == "" {
 					return nil, VirtualKey{}, fmt.Errorf("key is required")
 				}
+				if err := key.ValidateConfiguration(); err != nil {
+					return nil, VirtualKey{}, err
+				}
 				key.NormalizeTimestamps(time.Now().UTC())
 				return storedVirtualKey{key: &key, tag: key.Tag}, key, nil
 			},
 			PrepareUpdate: func(id string, current VirtualKey, key VirtualKey) (any, VirtualKey, error) {
+				if err := key.ValidateConfiguration(); err != nil {
+					return nil, VirtualKey{}, err
+				}
 				key.ID = id
 				key.Key = current.Key
 				key.CreatedAt = current.CreatedAt
@@ -64,6 +75,7 @@ func NewVirtualKeyManager(store configstore.ConfigStore) *VirtualKeyManager {
 		}),
 		store:           store,
 		dynamicKeyIndex: map[string]string{},
+		limiters:        newLimiterRegistry(clock),
 	}
 }
 
@@ -73,6 +85,7 @@ func (m *VirtualKeyManager) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.dynamicKeyIndex = map[string]string{}
+	m.limiters.reset()
 }
 
 func (m *VirtualKeyManager) GetByKey(ctx context.Context, key string) (VirtualKey, error) {
@@ -88,7 +101,7 @@ func (m *VirtualKeyManager) GetByKey(ctx context.Context, key string) (VirtualKe
 	if ok {
 		virtualKey, err := m.base.Get(ctx, dynamicID)
 		if err == nil {
-			return virtualKey, nil
+			return cloneVirtualKey(virtualKey), nil
 		}
 	}
 
@@ -109,8 +122,8 @@ func (m *VirtualKeyManager) GetByKey(ctx context.Context, key string) (VirtualKe
 		return VirtualKey{}, err
 	}
 	m.base.Cache(virtualKey)
-	m.cacheDynamicKey(virtualKey)
-	return virtualKey, nil
+	m.cacheDynamicKey(virtualKey.ID, virtualKey.Key)
+	return cloneVirtualKey(virtualKey), nil
 }
 
 func (m *VirtualKeyManager) GetByID(ctx context.Context, id string) (VirtualKey, error) {
@@ -128,8 +141,8 @@ func (m *VirtualKeyManager) GetByID(ctx context.Context, id string) (VirtualKey,
 		}
 		return VirtualKey{}, fmt.Errorf("load virtual key %q: %w", id, err)
 	}
-	m.cacheDynamicKey(virtualKey)
-	return virtualKey, nil
+	m.cacheDynamicKey(virtualKey.ID, virtualKey.Key)
+	return cloneVirtualKey(virtualKey), nil
 }
 
 func (m *VirtualKeyManager) List(ctx context.Context, opts VirtualKeyListOptions) ([]VirtualKey, error) {
@@ -143,6 +156,9 @@ func (m *VirtualKeyManager) List(ctx context.Context, opts VirtualKeyListOptions
 		cached[key.ID] = key
 	}
 	m.cacheDynamicKeys(cached)
+	for i := range keys {
+		keys[i] = cloneVirtualKey(keys[i])
+	}
 	return keys, nil
 }
 
@@ -150,7 +166,7 @@ func (m *VirtualKeyManager) Create(ctx context.Context, key VirtualKey) error {
 	if err := m.base.Create(ctx, key); err != nil {
 		return err
 	}
-	m.cacheDynamicKey(key)
+	m.cacheDynamicKey(key.ID, key.Key)
 	return nil
 }
 
@@ -171,8 +187,18 @@ func (m *VirtualKeyManager) Update(ctx context.Context, id string, key VirtualKe
 	key.Key = current.Key
 	key.CreatedAt = current.CreatedAt
 	key.UpdatedAt = time.Now().UTC()
-	m.cacheDynamicKey(key)
+	m.cacheDynamicKey(key.ID, key.Key)
+	if !rateLimitsEqual(current.RateLimits, key.RateLimits) {
+		m.limiters.remove(id)
+	}
 	return nil
+}
+
+func (m *VirtualKeyManager) Admit(key VirtualKey, dimension RateLimitDimension) (Admission, error) {
+	if m == nil || m.limiters == nil {
+		return Admission{}, fmt.Errorf("virtual key limiter is not configured")
+	}
+	return m.limiters.admit(key, dimension)
 }
 
 type storedVirtualKey struct {
@@ -204,11 +230,16 @@ func (m *VirtualKeyManager) Delete(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.dynamicKeyIndex, current.Key)
+	m.limiters.remove(id)
 	return nil
 }
 
-func (m *VirtualKeyManager) cacheDynamicKey(key VirtualKey) {
-	if key.ID == "" || key.Key == "" {
+// cacheDynamicKey indexes a virtual key's bearer value -> id. It takes only the
+// immutable scalar identity fields, never the full VirtualKey, so it cannot
+// alias the cached object's mutable slices or policy pointers even if the
+// caller passes an un-cloned cached value.
+func (m *VirtualKeyManager) cacheDynamicKey(id, bearerKey string) {
+	if id == "" || bearerKey == "" {
 		return
 	}
 
@@ -217,7 +248,7 @@ func (m *VirtualKeyManager) cacheDynamicKey(key VirtualKey) {
 	if m.dynamicKeyIndex == nil {
 		m.dynamicKeyIndex = map[string]string{}
 	}
-	m.dynamicKeyIndex[key.Key] = key.ID
+	m.dynamicKeyIndex[bearerKey] = id
 }
 
 func (m *VirtualKeyManager) cacheDynamicKeys(keys map[string]VirtualKey) {
@@ -251,6 +282,7 @@ func decodeVirtualKeyItem(keyID string, item any) (VirtualKey, error) {
 	if len(cloned.AllowedRouteIDs) > 0 {
 		cloned.AllowedRouteIDs = append([]string(nil), cloned.AllowedRouteIDs...)
 	}
+	cloned.RateLimits = cloneRateLimits(cloned.RateLimits)
 	return cloned, nil
 }
 
@@ -258,7 +290,44 @@ func cloneVirtualKey(key VirtualKey) VirtualKey {
 	if len(key.AllowedRouteIDs) > 0 {
 		key.AllowedRouteIDs = append([]string(nil), key.AllowedRouteIDs...)
 	}
+	key.RateLimits = cloneRateLimits(key.RateLimits)
 	return key
+}
+
+func cloneRateLimits(limits *VirtualKeyRateLimits) *VirtualKeyRateLimits {
+	if limits == nil {
+		return nil
+	}
+	cloned := *limits
+	if limits.LLM != nil {
+		value := *limits.LLM
+		cloned.LLM = &value
+	}
+	if limits.MCP != nil {
+		value := *limits.MCP
+		cloned.MCP = &value
+	}
+	if limits.Agent != nil {
+		value := *limits.Agent
+		cloned.Agent = &value
+	}
+	return &cloned
+}
+
+func rateLimitsEqual(a, b *VirtualKeyRateLimits) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return rateLimitEqual(a.LLM, b.LLM) &&
+		rateLimitEqual(a.MCP, b.MCP) &&
+		rateLimitEqual(a.Agent, b.Agent)
+}
+
+func rateLimitEqual(a, b *RateLimit) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func virtualKeyID(key VirtualKey) string {

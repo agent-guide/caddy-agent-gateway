@@ -1393,6 +1393,9 @@ func TestVirtualKeyCRUD(t *testing.T) {
 		ID:              "vk-test",
 		Tag:             "admin",
 		AllowedRouteIDs: []string{"chat-prod"},
+		RateLimits: &virtualkeypkg.VirtualKeyRateLimits{
+			LLM: &virtualkeypkg.RateLimit{RequestsPerMinute: 60, Burst: 10},
+		},
 	})
 	if err != nil {
 		t.Fatalf("marshal virtual key: %v", err)
@@ -1447,6 +1450,10 @@ func TestVirtualKeyCRUD(t *testing.T) {
 	if len(got.AllowedRouteIDs) != 1 || got.AllowedRouteIDs[0] != "chat-prod" {
 		t.Fatalf("unexpected allowed routes: %#v", got.AllowedRouteIDs)
 	}
+	if got.RateLimits == nil || got.RateLimits.LLM == nil ||
+		got.RateLimits.LLM.RequestsPerMinute != 60 || got.RateLimits.LLM.Burst != 10 {
+		t.Fatalf("unexpected rate limits: %#v", got.RateLimits)
+	}
 	if got.Source != "store" || got.ReadOnly {
 		t.Fatalf("unexpected virtual key metadata: %#v", got)
 	}
@@ -1482,6 +1489,43 @@ func TestVirtualKeyCreateRejectsClientManagedTimestamps(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected create status: got %d want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestVirtualKeyCreateRejectsInvalidOrUnknownRateLimits(t *testing.T) {
+	handler := NewHandler(newTestAgentGateway(&testConfigStore{
+		virtualKeyStore: &testVirtualKeyStore{items: map[string]*virtualkeypkg.VirtualKey{}},
+	}, nil, nil, nil, nil), nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+
+	for _, body := range []string{
+		`{"id":"vk-invalid","rate_limits":{"llm":{"requests_per_minute":0,"burst":1}}}`,
+		`{"id":"vk-unknown","rate_limits":{"lmm":{"requests_per_minute":1,"burst":1}}}`,
+		`{"id":"vk-setting","rate_limits":{"llm":{"requests_per_minute":1,"brust":1}}}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/admin/virtual_keys", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: status = %d, want %d; response=%s", body, rec.Code, http.StatusBadRequest, rec.Body.String())
+		}
+	}
+
+	store := &testVirtualKeyStore{items: map[string]*virtualkeypkg.VirtualKey{
+		"vk-existing": {ID: "vk-existing", Key: "secret"},
+	}}
+	updateHandler := NewHandler(newTestAgentGateway(&testConfigStore{
+		virtualKeyStore: store,
+	}, nil, nil, nil, nil), nil)
+	updateToken := loginForTest(t, updateHandler, "admin", "secret-pass")
+	req := httptest.NewRequest(http.MethodPut, "/admin/virtual_keys/vk-existing",
+		strings.NewReader(`{"id":"vk-existing","rate_limits":{"agent":{"requests_per_minute":1,"burst":0}}}`))
+	req.Header.Set("Authorization", "Bearer "+updateToken)
+	rec := httptest.NewRecorder()
+	updateHandler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("update status = %d, want %d; response=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 

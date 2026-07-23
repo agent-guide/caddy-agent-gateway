@@ -103,7 +103,10 @@ curl -X POST http://localhost:8019/admin/virtual_keys \
   -d '{
     "id": "demo-key",
     "tag": "demo-user",
-    "allowed_route_ids": ["chat-prod"]
+    "allowed_route_ids": ["chat-prod"],
+    "rate_limits": {
+      "llm": {"requests_per_minute": 60, "burst": 10}
+    }
   }'
 ```
 
@@ -127,6 +130,11 @@ VirtualKey notes:
 - `id` is the stable management identifier
 - `key` is the bearer credential value clients must send on requests
 - `created_at` and `updated_at` are server-managed fields
+- optional `rate_limits.llm`, `rate_limits.mcp`, and `rate_limits.agent` entries
+  enforce in-memory request token buckets; both values must be greater than zero
+- `agent` applies to independent ACP and builtin buckets; omitted entries are
+  unlimited
+- exceeded requests return `429 Too Many Requests` and `Retry-After`
 
 ## Upstream Credentials
 

@@ -533,6 +533,10 @@ func (h *Handler) handleCreateVirtualKey(w http.ResponseWriter, r *http.Request)
 		_ = httpjson.Error(w, http.StatusBadRequest, "created_at and updated_at are managed by the server and must be omitted")
 		return
 	}
+	if err := key.ValidateConfiguration(); err != nil {
+		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	if err := manager.Create(r.Context(), key); err != nil {
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
@@ -591,6 +595,10 @@ func (h *Handler) handleUpdateVirtualKey(w http.ResponseWriter, r *http.Request)
 	}
 	if key.Key != "" {
 		_ = httpjson.Error(w, http.StatusBadRequest, "virtual key key is generated and must be omitted")
+		return
+	}
+	if err := key.ValidateConfiguration(); err != nil {
+		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

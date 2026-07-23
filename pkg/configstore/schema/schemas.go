@@ -281,9 +281,14 @@ func validateRouteObject(obj any) error {
 }
 
 func validateVirtualKeyObject(obj any) error {
-	switch unwrapConfigObject(obj).(type) {
-	case virtualkeypkg.VirtualKey, *virtualkeypkg.VirtualKey:
-		return nil
+	switch value := unwrapConfigObject(obj).(type) {
+	case virtualkeypkg.VirtualKey:
+		return value.ValidateConfiguration()
+	case *virtualkeypkg.VirtualKey:
+		if value == nil {
+			return fmt.Errorf("virtual key object is nil")
+		}
+		return value.ValidateConfiguration()
 	default:
 		return fmt.Errorf("virtual key object has unexpected type %T", obj)
 	}

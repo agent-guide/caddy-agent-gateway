@@ -402,6 +402,7 @@ func bundleVirtualKeyConfig(key gatewaybundle.BundleVirtualKey) adminclient.Virt
 		Description:     key.Description,
 		Disabled:        key.Disabled,
 		AllowedRouteIDs: append([]string(nil), key.AllowedRouteIDs...),
+		RateLimits:      key.RateLimits,
 		StatusMessage:   key.StatusMessage,
 		ExpiresAt:       key.ExpiresAt,
 	}

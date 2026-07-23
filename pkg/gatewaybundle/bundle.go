@@ -48,13 +48,14 @@ type GatewayBundle struct {
 }
 
 type BundleVirtualKey struct {
-	ID              string    `json:"id,omitempty"`
-	Tag             string    `json:"tag,omitempty"`
-	Description     string    `json:"description,omitempty"`
-	Disabled        bool      `json:"disabled"`
-	AllowedRouteIDs []string  `json:"allowed_route_ids,omitempty"`
-	StatusMessage   string    `json:"status_message,omitempty"`
-	ExpiresAt       time.Time `json:"expires_at,omitempty"`
+	ID              string                              `json:"id,omitempty"`
+	Tag             string                              `json:"tag,omitempty"`
+	Description     string                              `json:"description,omitempty"`
+	Disabled        bool                                `json:"disabled"`
+	AllowedRouteIDs []string                            `json:"allowed_route_ids,omitempty"`
+	RateLimits      *virtualkeypkg.VirtualKeyRateLimits `json:"rate_limits,omitempty"`
+	StatusMessage   string                              `json:"status_message,omitempty"`
+	ExpiresAt       time.Time                           `json:"expires_at,omitempty"`
 }
 
 type CLIAuthAuthenticator struct {
@@ -243,6 +244,9 @@ func (b *GatewayBundle) validate(_ bool) error {
 			errs.Append(fmt.Errorf("virtualKeys[%q]: duplicate id", id))
 		} else {
 			virtualKeys[id] = struct{}{}
+		}
+		if err := b.VirtualKeys[i].ToRuntimeVirtualKey("").ValidateConfiguration(); err != nil {
+			errs.Append(fmt.Errorf("virtualKeys[%q]: %w", id, err))
 		}
 		// allowed_route_ids are validated after every route family has been
 		// collected — virtual keys may restrict to routes of any kind.
@@ -571,6 +575,7 @@ func (key BundleVirtualKey) ToRuntimeVirtualKey(generatedKey string) virtualkeyp
 		Description:     key.Description,
 		Disabled:        key.Disabled,
 		AllowedRouteIDs: append([]string(nil), key.AllowedRouteIDs...),
+		RateLimits:      cloneVirtualKeyRateLimits(key.RateLimits),
 		StatusMessage:   key.StatusMessage,
 		ExpiresAt:       key.ExpiresAt,
 	}
@@ -583,9 +588,30 @@ func BundleVirtualKeyFromRuntime(key virtualkeypkg.VirtualKey) BundleVirtualKey 
 		Description:     key.Description,
 		Disabled:        key.Disabled,
 		AllowedRouteIDs: append([]string(nil), key.AllowedRouteIDs...),
+		RateLimits:      cloneVirtualKeyRateLimits(key.RateLimits),
 		StatusMessage:   key.StatusMessage,
 		ExpiresAt:       key.ExpiresAt,
 	}
+}
+
+func cloneVirtualKeyRateLimits(limits *virtualkeypkg.VirtualKeyRateLimits) *virtualkeypkg.VirtualKeyRateLimits {
+	if limits == nil {
+		return nil
+	}
+	cloned := *limits
+	if limits.LLM != nil {
+		value := *limits.LLM
+		cloned.LLM = &value
+	}
+	if limits.MCP != nil {
+		value := *limits.MCP
+		cloned.MCP = &value
+	}
+	if limits.Agent != nil {
+		value := *limits.Agent
+		cloned.Agent = &value
+	}
+	return &cloned
 }
 
 func (e *ValidationErrors) Append(err error) {

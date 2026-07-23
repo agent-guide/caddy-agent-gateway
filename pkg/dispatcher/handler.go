@@ -3,6 +3,7 @@ package dispatcher
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/httpcapture"
@@ -12,6 +13,7 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	builtinroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
+	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
 	"go.uber.org/zap"
 )
@@ -163,6 +165,31 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 		span.Finish(usage.InteractionOutcome{Success: success, StatusCode: status})
 	}()
 
+	if virtualKey != nil {
+		dimension, err := rateLimitDimension(cfg.Kind)
+		if err != nil {
+			return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusServiceUnavailable, rec, r, "rate limit admission", "route kind is not configured", err)
+		}
+		admission, err := h.gateway.VirtualKeyManager().Admit(*virtualKey, dimension)
+		if err != nil {
+			return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusInternalServerError, rec, r, "rate limit admission", "failed to apply virtual key rate limit", err)
+		}
+		if !admission.Allowed {
+			span.AddAnnotation("error_type", "rate_limited")
+			rec.Header().Set("Retry-After", strconv.Itoa(admission.RetryAfterSeconds))
+			h.logger.Warn("virtual key rate limit exceeded",
+				zap.String("virtual_key_id", virtualKey.ID),
+				zap.String("route_id", cfg.ID),
+				zap.String("route_kind", string(cfg.Kind)),
+				zap.String("rate_limit_dimension", string(dimension)),
+				zap.Int("requests_per_minute", admission.RequestsPerMinute),
+				zap.Int("burst", admission.Burst),
+				zap.Int("retry_after_seconds", admission.RetryAfterSeconds),
+			)
+			return httpjson.Error(rec, http.StatusTooManyRequests, "rate limit exceeded")
+		}
+	}
+
 	switch cfg.Kind {
 	case routecore.RouteKindLLM:
 		return h.dispatchLLM(rec, r, next, cfg)
@@ -174,6 +201,21 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 		return h.dispatchBuiltin(rec, r, next, cfg)
 	default:
 		return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusServiceUnavailable, rec, r, "dispatch route", "route kind is not configured", fmt.Errorf("route %q kind %q is not configured", cfg.ID, cfg.Kind))
+	}
+}
+
+func rateLimitDimension(kind routecore.RouteKind) (virtualkeypkg.RateLimitDimension, error) {
+	switch kind {
+	case routecore.RouteKindLLM:
+		return virtualkeypkg.RateLimitDimensionLLM, nil
+	case routecore.RouteKindMCP:
+		return virtualkeypkg.RateLimitDimensionMCP, nil
+	case routecore.RouteKindACP:
+		return virtualkeypkg.RateLimitDimensionACP, nil
+	case routecore.RouteKindBuiltin:
+		return virtualkeypkg.RateLimitDimensionBuiltin, nil
+	default:
+		return "", fmt.Errorf("unsupported route kind %q", kind)
 	}
 }
 

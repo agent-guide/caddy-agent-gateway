@@ -477,14 +477,26 @@ func printGatewayACPPendingPermissionsTable(items []adminclient.ACPPendingPermis
 }
 
 // printGatewayVirtualKeysTable renders a list of VirtualKeyView items.
-// Fields: id, key (truncated), tag, disabled, allowed_route_ids, source.
+// Fields: id, key (truncated), tag, disabled, allowed_route_ids, rate_limits, source.
 func printGatewayVirtualKeysTable(items []adminclient.VirtualKey) {
-	headers := []string{"ID", "KEY", "TAG", "DISABLED", "ALLOWED-ROUTES", "SOURCE"}
+	headers := []string{"ID", "KEY", "TAG", "DISABLED", "ALLOWED-ROUTES", "RATE-LIMITS", "SOURCE"}
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
 		key := item.Key
 		if len(key) > 16 {
 			key = key[:16] + "..."
+		}
+		var limits []string
+		if item.RateLimits != nil {
+			if limit := item.RateLimits.LLM; limit != nil {
+				limits = append(limits, fmt.Sprintf("llm=%d/%d", limit.RequestsPerMinute, limit.Burst))
+			}
+			if limit := item.RateLimits.MCP; limit != nil {
+				limits = append(limits, fmt.Sprintf("mcp=%d/%d", limit.RequestsPerMinute, limit.Burst))
+			}
+			if limit := item.RateLimits.Agent; limit != nil {
+				limits = append(limits, fmt.Sprintf("agent=%d/%d", limit.RequestsPerMinute, limit.Burst))
+			}
 		}
 		rows = append(rows, []string{
 			dash(item.ID),
@@ -492,6 +504,7 @@ func printGatewayVirtualKeysTable(items []adminclient.VirtualKey) {
 			dash(item.Tag),
 			boolStr(item.Disabled),
 			joinOrDash(item.AllowedRouteIDs, ","),
+			dash(strings.Join(limits, ",")),
 			dash(item.Source),
 		})
 	}

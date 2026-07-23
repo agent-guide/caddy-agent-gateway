@@ -19,6 +19,30 @@ func (key VirtualKey) Validate() error {
 	return nil
 }
 
+// ValidateConfiguration validates policy fields independently of whether the
+// key is currently enabled or expired.
+func (key VirtualKey) ValidateConfiguration() error {
+	if key.RateLimits == nil {
+		return nil
+	}
+	for name, limit := range map[string]*RateLimit{
+		"llm":   key.RateLimits.LLM,
+		"mcp":   key.RateLimits.MCP,
+		"agent": key.RateLimits.Agent,
+	} {
+		if limit == nil {
+			continue
+		}
+		if limit.RequestsPerMinute <= 0 {
+			return fmt.Errorf("rate_limits.%s.requests_per_minute must be greater than zero", name)
+		}
+		if limit.Burst <= 0 {
+			return fmt.Errorf("rate_limits.%s.burst must be greater than zero", name)
+		}
+	}
+	return nil
+}
+
 func (key VirtualKey) ValidateForRoute(routeID string) error {
 	err := key.Validate()
 	if err != nil {

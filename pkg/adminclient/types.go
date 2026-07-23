@@ -7,6 +7,7 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
+	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
 	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
@@ -25,13 +26,14 @@ type LLMRouteConfig = llmroutepkg.LLMRouteConfig
 type ManagedCredential = credentialmgr.ManagedCredential
 
 type VirtualKeyConfig struct {
-	ID              string    `json:"id,omitempty"`
-	Tag             string    `json:"tag,omitempty"`
-	Description     string    `json:"description,omitempty"`
-	Disabled        bool      `json:"disabled,omitempty"`
-	AllowedRouteIDs []string  `json:"allowed_route_ids,omitempty"`
-	StatusMessage   string    `json:"status_message,omitempty"`
-	ExpiresAt       time.Time `json:"expires_at,omitempty"`
+	ID              string                              `json:"id,omitempty"`
+	Tag             string                              `json:"tag,omitempty"`
+	Description     string                              `json:"description,omitempty"`
+	Disabled        bool                                `json:"disabled,omitempty"`
+	AllowedRouteIDs []string                            `json:"allowed_route_ids,omitempty"`
+	RateLimits      *virtualkeypkg.VirtualKeyRateLimits `json:"rate_limits,omitempty"`
+	StatusMessage   string                              `json:"status_message,omitempty"`
+	ExpiresAt       time.Time                           `json:"expires_at,omitempty"`
 }
 
 type ProviderListOptions struct {

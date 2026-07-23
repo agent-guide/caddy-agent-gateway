@@ -376,9 +376,10 @@ The standard request path is:
 HTTP request
   -> agent_route_dispatcher
   -> match AgentRoute by host/path prefix/method
+  -> validate virtual key if required
+  -> apply the VirtualKey's in-memory route-kind rate limit if configured
   -> strip matched path prefix
   -> select route protocol handler
-  -> validate virtual key if required
   -> resolve target provider
   -> convert request into provider.Chat/StreamChat input
   -> call upstream provider
@@ -396,6 +397,7 @@ HTTP request
   -> agent_route_dispatcher with mcp enabled
   -> match MCPRoute by host/path prefix/method
   -> validate virtual key if required
+  -> apply the VirtualKey's in-memory MCP rate limit if configured
   -> decode JSON-RPC request
   -> register in-flight request in pkg/mcp/runtime
   -> resolve target MCP service
