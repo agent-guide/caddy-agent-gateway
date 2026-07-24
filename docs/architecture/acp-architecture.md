@@ -6,6 +6,34 @@ is native to this repository: the gateway owns route resolution, service config,
 VirtualKey auth, the HTTP turn API, Admin CRUD, runtime pooling, event
 normalization, and permission handling. It does not import or vendor ngent code.
 
+The service/route model below is the **current pre-unification implementation**.
+The target breaking architecture is defined by
+[Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md):
+
+```text
+AgentRoute.agent_id
+  -> Agent.runtime.acp
+  -> runtimeapi ACP adapter
+  -> pkg/acp/runtime.Manager(owner=agent_id, config=acp.RuntimeConfig)
+  -> pooled ACP process/session
+```
+
+In that target:
+
+- ACP execution config is stored directly on `Agent.runtime.acp`;
+- `agent_id` keys pools, scopes, sessions, permissions, diagnostics, and usage;
+- `pkg/acp` receives an identity-free runtime config and does not import
+  `pkg/agent`;
+- `acp_services`, `service_id`, ACPRoute, `/admin/acp/services`,
+  `/admin/acp/routes`, and their CLI/bundle surfaces are removed;
+- AgentRoute and Agent capability APIs own ingress, sessions, transcripts,
+  permissions, and logical-run cancellation;
+- `/admin/acp/runtime` remains only for native process/pool diagnosis and
+  recovery, with owner fields expressed as `agent_id`.
+
+The remainder of this document stays in present tense so it remains an accurate
+reference for the code before M4-M7 land.
+
 ## Scope
 
 Implemented agent types:

@@ -10,10 +10,12 @@ internal reasoning loop. Instead, `agent-gateway` should provide the external
 control plane for agents:
 
 - manage agent identities and workspaces
-- bind agents to runtime backends such as ACP services
+- store each agent's runtime-specific configuration and dispatch it through a
+  runtime backend
 - govern the LLM and MCP resources an agent can use
 - observe sessions, transcripts, permissions, usage, and call chains
-- coordinate agent-level tasks, policies, scheduling, and future handoffs
+- coordinate agent-level workflow tasks, policies, scheduling, and future
+  handoffs through the shared workflow runtime
 
 This is the layer that turns the existing LLM, MCP, ACP, and metrics surfaces
 from separate protocol gateways into one agent gateway.
@@ -31,13 +33,21 @@ The repository already contains the protocol-level building blocks:
 
 - LLM routes and providers for model access
 - MCP services and routes for tool access
-- ACP services and routes for agent execution
+- ACP runtime/process management for agent execution
 - VirtualKeys, credentials, and CLI auth for access control
 - metrics and interactions for usage, latency, errors, and call-chain traces
 
 `pkg/agent` should be the product layer that composes these building blocks.
 It should not replace `pkg/llm`, `pkg/mcp`, or `pkg/acp`; it should organize
 them around agent management and orchestration.
+
+The implemented P0/P1 ACP model still binds an Agent to a separately persisted
+ACP service. The target breaking cutover in
+[Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md) removes
+that product concept: `Agent.runtime.acp` owns the ACP execution config,
+`agent_id` owns the runtime pool, and no `service_id` or `acp_services` family
+remains. Implementation-status sections retain the old names only to describe
+the current tree and migration source accurately.
 
 ## 3. Explicit Non-Goal
 
@@ -82,7 +92,7 @@ pkg/mcp
   - runtime request inspection
 
 pkg/acp
-  - ACP service config
+  - ACP runtime config
   - ACP route handling
   - codex/opencode runtime process management
   - sessions, transcript replay, permissions, pooled instances
@@ -98,6 +108,7 @@ internal/observability
 ```text
 pkg/agent
   - agent management model
+  - runtime-specific Agent config
   - agent config store manager
   - agent workspace aggregation
   - agent policies
@@ -111,8 +122,8 @@ lower-level protocol packages must not depend on `pkg/agent`.
 
 ```text
 pkg/agent
-  -> pkg/acp/service + pkg/acp/runtime
-  -> pkg/gateway/acproute + pkg/gateway/llmroute + pkg/gateway/mcproute
+  -> pkg/acp/runtime
+  -> pkg/gateway/agentroute + pkg/gateway/llmroute + pkg/gateway/mcproute
   -> pkg/llm/provider + pkg/llm/credentialmgr + pkg/gateway/modelcatalog
   -> pkg/mcp/service + pkg/mcp/runtime
   -> pkg/gateway/virtualkey
@@ -126,7 +137,7 @@ pkg/agent
 An `Agent` is a first-class management object. It represents an operator-facing
 agent identity, not a protocol-specific service.
 
-Initial shape:
+Target shape after the unified-runtime cutover:
 
 ```json
 {
@@ -136,11 +147,20 @@ Initial shape:
   "runtime": {
     "type": "acp",
     "acp": {
-      "service_id": "codex-main"
+      "agent_type": "codex",
+      "cwd": "/workspace",
+      "allowed_roots": ["/workspace"],
+      "default_model": "gpt-5",
+      "permission_mode": "interactive",
+      "idle_ttl": "30m",
+      "max_instances": 4,
+      "codex": {
+        "mode": "adapter",
+        "adapter_command": "codex-acp"
+      }
     }
   },
   "routes": {
-    "acp_route_ids": ["codex-turns"],
     "llm_route_ids": [],
     "mcp_route_ids": []
   },
@@ -162,7 +182,12 @@ Initial shape:
 }
 ```
 
-P0 implements `runtime.type = "acp"` only, but the model defines three
+The current P0/P1 stored shape instead contains
+`runtime.acp.service_id`, `routes.acp_route_ids`, and optionally
+`routes.builtin_route_ids`; those are migration-source fields, not the target
+schema.
+
+P0 initially implemented `runtime.type = "acp"`, but the model defines three
 built-in runtime types, split by a single axis — **who owns the agent's
 lifecycle, and whether there is a separate process at all**:
 
@@ -194,10 +219,8 @@ A `runtime.type = "http"` agent carries an `http` block instead of `acp`:
 A `runtime.type = "builtin"` agent carries a `builtin` block holding the agent
 definition itself (model binding, prompt, tools, topology — see
 [Builtin Agent Runtime](builtin-agent-runtime.md#4-definition-schema) for the
-full schema). There is no
-backing service object and no `service_id`: the definition is genuinely
-agent-level config, which is exactly the case the runtime-specific-config rule
-below reserves the `runtime.<type>` block for.
+full schema). Like ACP and HTTP, its runtime-specific definition is Agent-owned;
+none of the target runtime types introduces a second management identity.
 
 Crucially, **LLM and MCP are resources, not runtime types**. An agent's ability
 to use models and tools lives in `resources` (and is governed there), regardless
@@ -215,90 +238,88 @@ the runtime backend belong under `runtime.<type>`, not under `policy`:
 
 - `policy` holds runtime-agnostic governance: `max_agent_depth`, `budget`, and
   later schedule enablement, retention, and transcript visibility.
-- `runtime.acp` holds only the binding (`service_id`). It does **not** duplicate
-  the ACP service's operational config.
+- `runtime.acp` owns `agent_type`, cwd/allowed roots, default model, environment,
+  config overrides, pool limits, permission mode, and agent-specific adapter
+  config.
+- `runtime.http` owns endpoint/auth/timeouts.
+- `runtime.builtin` owns the in-process definition.
 
-ACP-specific operational config — `permission_mode`, `allowed_roots`,
-`default_cwd` — is **owned by the ACP service** under `/admin/acp/services`, not
-copied onto the `Agent`. The `Agent` references a service; duplicating the
-service's runtime config on the agent would create two sources of truth that
-drift on update. The workspace surfaces those values read-through from the
-service so the operator still sees them on the agent page. The single exception
-is the auto-created-and-owned service (see [6.1](#61-p0-endpoints)): there the
-service is a *derived object* of the agent, so an agent update may push those
-fields into the service it owns — but that is a generated-service write path, not
-a second stored copy on a referenced service.
+The Agent's top-level `id`, `name`, `description`, `disabled`, and timestamps
+remain generic identity/lifecycle metadata and are not repeated inside
+`runtime.acp`. Conversely, ACP execution fields do not move into `policy`.
+This leaves one source of truth without erasing the runtime-specific schema.
 
-This separation is still the main extensibility guarantee of the model. A future
-runtime whose config is genuinely *agent-level* (not a property of a shared
-backing service) would carry it under its own `runtime.<type>` block; today the
-`acp` backend's config is service-level, so it stays on the service. The second
-built-in `runtime.type`, `http`, introduces its own `runtime.http` block
-(endpoint + auth, which are agent-level) and does not reshape `policy` or the
-top-level object. Do not flatten ACP fields back onto `policy` or back onto the
-agent.
+The current `pkg/acp/service.ServiceConfig` is the migration source for the ACP
+fields above. At the breaking cutover, reusable normalization and validation
+move to a protocol-owned `acp.RuntimeConfig` without service management fields.
+The Agent adapter converts `Agent.runtime.acp` to that type; `pkg/acp` does not
+import `pkg/agent`.
 
 #### Source of truth: `runtime` vs `routes`
 
-`runtime` is authoritative for execution. For an ACP-backed agent,
-`runtime.acp.service_id` is the binding that turns and runtime operations
-resolve against. `routes.acp_route_ids` is a management/display reference used
-to surface the matching ingress routes in the workspace and to drive
-attribution; it does not select the execution backend. The two must stay
-consistent (the listed ACP routes should point at `runtime.acp.service_id`), and
-P0 validation should reject an agent whose `acp_route_ids` reference a service
-other than its runtime service.
+`runtime` is authoritative for execution. For an ACP-backed Agent,
+`runtime.acp` is the complete execution configuration and `agent_id` is the
+owner key passed separately to the ACP runtime manager. The target AgentRoute
+cutover in
+[Unified Agent Runtime and Routing §6.2](../plans/unified-agent-runtime.md#62-ownership-is-one-way)
+uses one ownership direction: `AgentRoute.agent_id` targets the Agent. There is
+no persisted reverse `agent_route_ids` list. Workspace views derive ingress
+routes from the in-memory AgentRoute snapshot. `routes.llm_route_ids` and
+`routes.mcp_route_ids` remain because they describe resources the Agent may use,
+not ingress ownership.
+
+AgentRoute management validation requires the target Agent to exist, but does
+not require it to be enabled or currently executable. Disabled Agents and HTTP
+Agents whose backend has not shipped may be configured in advance; capability
+and workspace views expose that state, while dispatch fails with
+`agent_disabled` or `runtime_not_executable` before backend invocation.
+
+In the current pre-unification tree, `runtime.acp.service_id` plus
+`routes.acp_route_ids`/`routes.builtin_route_ids` implement this indirectly.
+They are removed together with ACPRoute/BuiltinRoute and the ACP service store.
 
 #### Cardinality: one agent, one runtime
 
-An `Agent` binds to **exactly one** runtime backend instance — one ACP
-`service_id` for `acp`, one endpoint for `http`. It is not a fan-out container
-over several backends. The plural `routes.*_route_ids` are ingress references
-that must all resolve to that single runtime, not a way to aggregate multiple
-runtimes under one agent.
+An `Agent` selects **exactly one** runtime backend type and owns one runtime
+configuration block: `runtime.acp`, `runtime.http`, or `runtime.builtin`. It is
+not a fan-out container over several backends. AgentRoute ingress resolves this
+one Agent and its one runtime; it is not a way to aggregate multiple runtimes
+under one identity.
 
 This is deliberate, for three reasons:
 
-- **Attribution stays unique.** Write-time `agent_id` stamping (see [5.6](#56-agent-attribution))
-  depends on a route/service mapping to exactly one agent; aggregating several
-  services under one agent breaks that.
+- **Attribution stays unique.** AgentRoute supplies `agent_id` directly and the
+  runtime manager carries it through native events.
 - **The agent does not become an internal orchestrator.** Selecting among or
   dispatching across several real backends is internal-loop behavior, which is an
   explicit non-goal (see [3](#3-explicit-non-goal)).
-- **Lifecycle semantics stay clean.** An ACP session is pinned to a specific
-  service/instance and cannot be freely moved, so an agent spanning multiple ACP
-  services would have no coherent session model.
+- **Lifecycle semantics stay clean.** An ACP session is pinned to an instance in
+  the Agent-owned pool and cannot be freely moved across Agent identities.
 
 Therefore:
 
 - **Multiple real agents** are modeled as multiple `Agent` objects. Coordinating
-  them is a layer *above* agents — `AgentTask` handoff (P2) for the minimal A→B
-  primitive, and `Agent Workflow` (P3) for graph orchestration. The workflow is a
-  separate gateway-owned object that *references* several agents; it does not live
-  inside any one agent.
+  them is a layer *above* agents — an `agent` Workflow Task runs one agent and a
+  Workflow DAG coordinates A→B handoff or a larger graph. The workflow is a
+  separate gateway-owned object that *references* several agents; it does not
+  live inside any one agent. The authoritative execution model is
+  [Unified Workflow Runtime](workflow-runtime.md).
 - **One logical agent over interchangeable backends** (failover / load balance /
   A-B) is a different need and is out of scope here; see Open Questions.
 
-#### Cardinality: one runtime, one agent
+#### Cardinality: one Agent, one runtime owner
 
-The 1:1 binding is enforced in both directions in P0. Not only does an agent bind
-exactly one runtime (above); a given runtime backing instance — a specific ACP
-`runtime.acp.service_id` — is bound by **at most one** agent. P0 create/update
-validation rejects an agent whose `service_id` is already claimed by another
-agent.
+`agent_id` is the sole owner key for ACP pools, instances, sessions, pending
+permissions, transcripts, native recovery operations, and usage. There is no
+second shareable runtime object and therefore no service-to-Agent cardinality
+rule or ambiguous shared-service mode. Multiple Agents may carry identical ACP
+configuration values, but they still materialize isolated pools keyed by their
+different Agent IDs.
 
-This is what keeps the identity, session, permission, usage, and workspace
-semantics unambiguous: if two agents fronted one ACP service, then sessions,
-pending permissions, transcripts, and usage on that service could not be
-attributed to a single agent, and write-time `agent_id` stamping (see
-[5.6](#56-agent-attribution)) would have to give up on that service entirely.
-
-A future *shared service* mode (several agents intentionally sharing one backing
-service) is possible but must be opt-in and explicitly marked — e.g. a
-`shared: true` flag on the service binding — and in that mode the gateway does
-**not** do precise per-agent `agent_id` stamping for that service; its events
-fall back to the route/service mapping with the ambiguity surfaced. P0 does not
-ship shared mode; it is tracked in Open Questions.
+An ACP config update changes the runtime fingerprint: in-flight work drains,
+old instances accept no new turns, and subsequent turns use the new config.
+Deleting the Agent or changing away from `runtime.type = acp` retires its pool
+and fails pending work closed, so no runtime survives without an owning Agent.
 
 #### Identity and resource enforcement
 
@@ -317,6 +338,12 @@ agent object does not appear in the request path. Therefore:
   identity and enforces `resources` directly) is deferred until there is a
   concrete isolation requirement; see Open Questions.
 
+The target unified `AgentRoute` does resolve `agent_id` on the request path for
+runtime selection, attribution, common policy, and capabilities. That cutover
+does not by itself make all external ACP/HTTP `resources` references enforced
+entitlements; scoped callback identity and resource enforcement remain a
+separate milestone in the unified runtime plan.
+
 ### 5.2 Agent Workspace
 
 An `AgentWorkspace` is a read model for the UI. It aggregates the things an
@@ -325,92 +352,110 @@ operator needs on one agent detail page.
 It is not a stored object. It is assembled from:
 
 - the `Agent` object
-- the bound ACP service (including its read-through operational config:
-  `permission_mode`, `allowed_roots`, `default_cwd`)
-- ACP routes that point at the service
-- ACP runtime pooled instances and in-flight turns
+- the Agent-owned runtime config
+- AgentRoutes that target the Agent
+- runtime pooled instances and in-flight turns keyed by `agent_id`
 - pending ACP permissions
 - session and transcript **references** (counts + links), not full content
 - LLM/MCP resources linked by policy
-- metrics events and interaction traces filtered by route/service/session
+- metrics events and interaction traces filtered by
+  agent/route/run/session/trace
 
 The workspace is a **summary/index**, not a content aggregator. It returns
 summaries, counts, runtime state, and links/references that let the frontend call
-the dedicated ACP endpoints (`GET /<acp-route>/sessions`,
-`GET /<acp-route>/sessions/{id}/transcript`) when the operator drills in. It must
+the dedicated Agent capability endpoints (`GET /<agent-route>/sessions`,
+`GET /<agent-route>/sessions/{id}/transcript`) when the operator drills in. It must
 not eagerly pull session transcripts: doing so would make one workspace call
 unbounded in size and would entangle pagination, permissions, and performance
 into a single endpoint. Transcripts and full session lists stay behind their own
 paginated endpoints; the workspace only points at them.
 
-The list above is the `acp` runtime view, which is the only one P0 assembles. The
-workspace is keyed off `runtime.type`: an `http`-runtime agent has no pooled
-instances, sessions, transcripts, or ACP permissions, so its workspace degrades
-to the runtime-agnostic parts (the `Agent` object, linked resources, tasks, and
-metrics/interaction traces). Do not hard-code ACP fields as required in the
-workspace shape.
+The list above is the target `acp` runtime view. Current P0 assembles the
+analogous data by reading through the bound service and ACPRoute; the cutover
+removes that join. The workspace is keyed off `runtime.type`: an `http`-runtime
+agent has no gateway-owned pooled instances, sessions, transcripts, or ACP
+permissions, so its workspace degrades to the runtime-agnostic parts (the
+Agent object, linked resources, tasks, and metrics/interaction traces). Do not
+hard-code ACP fields as required in the workspace shape.
 
 ### 5.3 Agent Task
 
-An `AgentTask` is an external unit of work owned by the gateway. It is not the
-agent's internal plan.
+This section defines the **product semantics** of an Agent Task only. Its
+**execution model** — the Workflow Run/Task Run state machines, invocation
+policies, scheduling, retry, and task-type definitions — lives in
+[Unified Workflow Runtime](workflow-runtime.md). An Agent Task is not a
+separate object, state machine, or API family; it is a Workflow Task whose
+`type` is `agent`, so this document does not duplicate that machinery.
 
-Examples:
-
-- run this agent on a prompt now
-- resume this session with new input
-- schedule this maintenance task daily
-- hand off from agent A to agent B
-
-Task execution dispatches through a runtime backend (see [5.4](#54-runtime-backends)),
-not directly against a fixed protocol. The task model itself stays
-runtime-agnostic: it captures gateway-level state, scheduling, cancellation,
-retry, ownership, and audit metadata, and delegates "how to actually run this"
-to the agent's `runtime.type` backend.
+In product terms, an Agent Task is an external unit of work owned by the
+gateway: run this agent on a prompt now, resume a session with new input,
+schedule maintenance, or hand off from agent A to agent B. It is never the
+agent's internal plan. Execution dispatches through a runtime backend
+([5.4](#54-runtime-backends)), selected by the agent's `runtime.type`. A
+one-off "run this agent" operation is a one-task Workflow Run (defaulting to
+durable, per [workflow-runtime §1](workflow-runtime.md#1-status)); schedules
+target Workflow Definitions and create durable runs.
 
 ### 5.4 Runtime Backends
 
-A runtime backend is the seam that decouples `AgentTask` from any single
-protocol. It is an SPI in `pkg/agent`, selected by the agent's `runtime.type`:
+A runtime backend is the turn-first seam between a stable Agent identity and
+one native execution runtime. It is selected by `agent.runtime.type` and is
+shared by every caller: the current runtime-specific routes during migration,
+the target unified `AgentRoute`, and the Workflow Runtime's `agent` task. The
+authoritative implementation sequence is
+[Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md).
 
-```text
-RuntimeBackend:
-  Type() string
-  StartTask(binding, taskSpec) -> handle      // dispatch one task to the backend
-  // stream backend output into task events (delta / reasoning / usage / ...)
-  // report terminal status (succeeded / failed)
-  Cancel(handle)                              // gateway-visible, auditable
-  // optional: idempotency / retry hooks
+The required contract lives in `pkg/agent/runtimeapi`:
+
+```go
+type Backend interface {
+    RuntimeType() string
+    Capabilities(context.Context, Agent) (Capabilities, error)
+    ServeTurn(context.Context, Agent, TurnRequest, EventSink) error
+}
 ```
 
-Everything above the SPI — task state machine, scheduling, cancellation, retry,
-`agent_id` attribution, audit — is shared and reused across backends. Only "hand
-the work to the agent and collect the result" differs per backend.
+`TurnRequest.Options` is not a flat union of backend fields. It uses the
+versioned `v1` envelope defined by the unified-runtime plan: northbound input
+contains an optional strict `runtime` JSON object, while trusted gateway-only
+execution metadata is carried separately and is never decoded from AgentRoute
+JSON. The selected backend strictly decodes its runtime object and rejects
+unknown or foreign options with `unsupported_option`.
 
-#### Built-in backends
+Optional capabilities are narrow interfaces such as `SessionLister`,
+`TranscriptLoader`, `PermissionResolver`, `RunCanceller`, `RuntimeInspector`,
+and `HealthChecker`. Unsupported capabilities fail closed; a backend never
+silently emulates them or falls through to another runtime.
+
+There is deliberately no task-first `StartTask` SPI. The Workflow `agent` task
+handler adapts its typed input to `TurnRequest`, invokes `ServeTurn`, consumes
+the common event envelope, and maps the terminal result into its Task Run. The
+Workflow Runner remains the sole owner of durable state, scheduling, retry,
+idempotency, permission suspension, and handoff. The backend owns one Agent
+turn and its native capability behavior.
+
+#### Runtime categories and adapters
 
 The classification axis is **who owns the agent's lifecycle, and whether a
-separate process exists**, which yields three built-in backends:
+separate process exists**, which yields three Agent runtime categories. ACP and
+builtin execution are implemented today behind runtime-specific dispatch;
+their `runtimeapi.Backend` adapters land before the AgentRoute cutover. `http`
+remains a defined runtime shape whose executable adapter lands only after its
+wire/auth contract is implemented.
 
-- **`acp`** — the gateway owns the agent's process lifecycle. `StartTask` issues
-  an ACP turn against the agent's `runtime.acp.service_id`, reusing the existing
-  pool, sessions, scope rebind, permission flow, and transcript. A task ending
-  does not tear down the process; the pool governs it by `IdleTTL`. This backend
-  gives sessions/permission/transcript "for free." Bespoke local agents that want
-  this should be **wrapped to speak ACP** (the `codex-acp` precedent), not given
-  a new backend.
-- **`http`** — the agent owns its own lifecycle. `StartTask` dispatches the task
-  to `runtime.http.endpoint` over one conventional HTTP task contract (deliver
-  task → stream/poll events → terminal status) and the gateway only holds the
-  task record. There is no process pool and usually no process reuse: an HTTP
-  task is a network call that runs to terminal state. A remote stateful agent
-  still fits here — its "session" is just an id passed over HTTP; the gateway does
-  not manage its process.
-- **`builtin`** — there is no process; the agent is a definition hosted
-  in-process (see [5.7](#57-builtin-runtime-adk-hosted-agents)). `StartTask`
-  materializes the definition's ADK object graph (or reuses the cached one) and
-  runs the task as an ADK Runner execution, streaming Runner events into task
-  events. Lands together with the P2 task layer as its third backend.
+- **`acp`** — the gateway owns the agent's external process lifecycle. Its
+  adapter translates the Agent-owned `runtime.acp` block into
+  `acp.RuntimeConfig` and invokes the pool with `agent_id` as owner, reusing
+  sessions, scope rebind, permission flow, and transcript. A turn ending does
+  not tear down the process; the pool governs it by `IdleTTL`.
+- **`http`** — the agent service owns its lifecycle. Its future adapter
+  dispatches to `runtime.http.endpoint` over the versioned HTTP Agent contract.
+  A remote stateful agent still fits here; its session is an id passed over
+  HTTP, not a process owned by the gateway.
+- **`builtin`** — there is no separate process. The adapter invokes the
+  in-process ADK host (see [5.7](#57-builtin-runtime-adk-hosted-agents)),
+  materializing or reusing the definition graph and translating Runner events
+  into the common envelope.
 
 #### No bespoke external-process backend
 
@@ -425,20 +470,53 @@ answer is to wrap as ACP rather than reinvent it. Concretely:
 - is not an executable at all, but a declarative definition the gateway can
   host → `builtin`
 
-#### SPI escape hatch (kept, not shipped)
+#### SPI extension point
 
-`RuntimeBackend` remains a documented extension point, but only `acp` and `http`
-are built in. If a concrete future case fits neither, a new backend can be added
-behind the SPI — a YAGNI-style deferral, not an architectural exclusion. We do
-not pre-ship a third backend speculatively.
+The backend registry rejects duplicate runtime types at startup. An Agent whose
+runtime backend is not linked remains manageable but is not executable and
+fails with `runtime_not_executable`. A later runtime category can add another
+adapter behind this registry without adding another route family or changing
+the Workflow Runner.
 
 #### Executor contract
 
-Whatever the backend, it must provide at least: start work from a task payload,
-stream/collect output into task events with a terminal status, and cancellation
-that is gateway-visible and auditable. Idempotency/retry is recommended. `acp`
-satisfies all of these; an `http` agent must satisfy at least start + result +
-cancel for the task lifecycle (cancel/retry/audit) to hold.
+Every backend must accept the runtime-neutral turn identity, emit the ordered
+common event envelope, report exactly one terminal result, and expose
+capabilities honestly. Opting into Workflow retry or `requeue` recovery
+additionally requires the adapter to propagate or enforce the stable logical
+execution key from
+[workflow-runtime §11](workflow-runtime.md#11-cancellation-retry-and-idempotency).
+Cancellation, permission, session, transcript, health, and inspection behavior
+are exposed only when the corresponding optional capability is implemented.
+
+The common run registry owns exact-run control identity. Active entries hold
+backend cancellation bindings; completed entries become process-local,
+10-minute terminal tombstones capped at 1,024 per Agent. Repeated cancellation
+of a retained terminal run returns its terminal result without re-invoking the
+backend. Durable Workflow state replaces this process-local history only for
+Workflow-owned runs.
+
+The common permission broker owns pending identity, expiry, atomic claim, and
+audit. A broker record contains an unguessable opaque backend token; ACP waiter
+state and builtin checkpoint/calls/transcript/trace state stay in backend-owned
+stores and are resolved through the selected adapter. Decision, expiry,
+cancellation, Agent deletion/runtime switch, adapter failure, and process
+shutdown consume the common claim once and clean up fail-closed. A backend
+store is never an independently claimable permission registry.
+
+ACP advertises `resume_mode=active_stream` and delivers a claimed decision to
+its live waiter. Builtin advertises `resume_mode=new_stream`: an Admin decision
+stores a validated, decided continuation without running it, and a later
+AgentRoute `POST /turn` consumes it while owning the continuation SSE stream.
+A decision submitted on builtin `POST /turn` claims and consumes in that same
+request. The Admin endpoint never starts a builtin continuation in the
+background because there is no durable event sink before Workflow W2/M10.
+
+During M2-M4 only, a legacy ACPRoute whose service is not bound to exactly one
+Agent remains on the pre-unification native ACP path because it has no truthful
+Agent identity for `Backend.ServeTurn`. It receives no synthetic `agent_id` and
+no Agent-scoped controls. M5 rejects such migration input and removes this
+temporary exception.
 
 ### 5.5 Agent Policy
 
@@ -452,16 +530,15 @@ Runtime-agnostic policy areas (live under `policy`):
 - schedule enablement
 - retention and transcript visibility
 
-Runtime-specific config areas (for `acp`, owned by the ACP service under
-`/admin/acp/services`, not duplicated on the agent — see
+Runtime-specific config areas (for `acp`, owned by `runtime.acp`; see
 [5.1](#51-agent)):
 
 - permission mode and approval routing
 - cwd and allowed roots for ACP-backed agents
 
-These are surfaced read-through in the workspace but governed on the service. A
-future runtime whose config is genuinely agent-level would instead carry it under
-its own `runtime.<type>` block.
+These are surfaced directly in the workspace subject to secret redaction and
+updated only through Agent CRUD. The ACP runtime manager receives a validated
+protocol-owned copy and never becomes a second configuration authority.
 
 Resource-scoping references (live under `resources` and `routes`):
 
@@ -476,9 +553,9 @@ generic `policy` block.
 ### 5.6 Agent Attribution
 
 P1 observability ("usage for this agent", "activity for this agent") needs a
-reliable way to map durable usage/interaction events back to an agent. The
-metrics event tables today carry route/service/session/trace dimensions but no
-`agent_id`.
+reliable way to map durable usage/interaction events back to an Agent. The
+implemented metrics tables carry a nullable `agent_id` alongside the legacy
+route/service/session/trace dimensions; pre-P1 rows may leave it empty.
 
 **Decision: stamp `agent_id` at write time, starting in P1.** Usage events are
 append-only history and cannot be backfilled, so the durable attribution tag
@@ -525,6 +602,12 @@ leave P1-era events without reliable per-agent attribution. Concretely:
    reassigned, or the ambiguous case). The fallback's ambiguity caveat is
    surfaced in the response/UI, not hidden.
 
+Items 2-4 describe the implemented pre-unification fallback. After the
+AgentRoute/service-removal cutover, Agent ingress stamps `agent_id` directly and
+new ACP runtime events carry their owner `agent_id`; active queries no longer
+infer ownership from `service_id`. Any retained SQL service column is
+historical-only.
+
 `origin_agent_id` for cross-agent handoff is deferred to P2/P3, because there is
 nothing to stamp until handoff exists. It is added the same additive way when
 handoff ships.
@@ -549,8 +632,13 @@ The control-plane contract is:
 - builtin routes are owned by one agent and target that same agent;
 - generic agent policy and attribution rules remain shared with `acp` and
   `http`;
-- future tasks use the shared `RuntimeBackend` contract rather than a
-  builtin-only task model.
+- future `agent` Workflow Tasks use the shared `runtimeapi.Backend` contract rather
+  than a builtin-only task model.
+
+After the AgentRoute cutover, the runtime-specific builtin route family is
+removed and one `AgentRoute.agent_id` relationship covers builtin, ACP, and
+eventually executable HTTP Agents. The current builtin route remains
+authoritative until that breaking milestone lands.
 
 The authoritative runtime design—including the definition schema, topology,
 middleware order, host and session lifecycle, SSE protocol, observability,
@@ -562,12 +650,13 @@ inventory and framework-level tradeoffs remain in
 
 ## 6. Admin API Direction
 
-The existing `/admin/agents` endpoints are stubs. They should become the
-product-level API for agent management and UI aggregation.
+The implemented `/admin/agents` endpoints are the product-level API for agent
+management and UI aggregation. The unified-runtime cutover expands them with
+AgentRoute and common runtime capabilities while removing service CRUD.
 
 These endpoints are management-plane APIs. They are not the primary data-plane
-entrypoint for end-user chat or task execution. End users and business apps
-should continue to call route-dispatched ACP endpoints such as:
+entrypoint for end-user chat or task execution. Today, end users and business
+apps call route-dispatched ACP endpoints such as:
 
 ```text
 POST /<acp-route>/turn
@@ -576,11 +665,13 @@ GET  /<acp-route>/sessions
 GET  /<acp-route>/sessions/{session_id}/transcript
 ```
 
-Likewise, agents should continue to access LLM and MCP resources through the
-existing LLM API and MCP route surfaces. `/admin/agents` coordinates and
-observes those surfaces; it does not replace them.
+After M5 the same operations live under `/<agent-route>/...`; their ACP-specific
+optional fields and capabilities continue through the adapter. Likewise,
+agents continue to access LLM and MCP resources through the existing LLM API
+and MCP route surfaces. `/admin/agents` coordinates and observes those
+surfaces; it does not replace them.
 
-### 6.1 P0 Endpoints
+### 6.1 P0 Endpoints (Current Pre-unification Implementation)
 
 P0 should make the frontend productive without introducing scheduling or
 multi-agent workflows.
@@ -594,8 +685,8 @@ multi-agent workflows.
 
 P0 semantics:
 
-- an agent can bind to one ACP service
-- create/update can optionally create or update the backing ACP service
+- an agent binds to one pre-existing ACP service
+- Agent create/update does not create or mutate the backing service
 - route creation can remain explicit at first, but the workspace must list
   matching ACP routes
 - the workspace response includes enough references for the frontend to call
@@ -609,19 +700,10 @@ P0 lifecycle and ownership semantics:
   ACP service/route objects remain independently managed under `/admin/acp/...`.
   In P0 a given ACP service is bound by **at most one** agent (see the
   one-runtime-one-agent rule in [5.1](#51-agent)); create/update rejects a
-  `service_id` already claimed by another agent. Intentional multi-agent sharing
-  is a deferred opt-in `shared` mode, not the default.
+  `service_id` already claimed by another agent.
 - deleting an agent deletes only the `Agent` record. It must not cascade-delete
-  the backing ACP service or routes, because they may be shared or independently
-  operated. The response should report what was unbound, not silently destroy
-  runtime backends.
-- a convenience `cascade` flag may be offered to also delete an
-  auto-created-and-unshared service/route, but the default is non-cascading, and
-  cascade must refuse when the service is still referenced by another agent.
-- when create/update auto-creates a service, the agent records that it was the
-  creator (provenance) so the UI can distinguish "agent owns this service" from
-  "agent references a pre-existing shared service"; enforcement of single-owner
-  vs shared deletion uses this provenance plus a reference check.
+  the backing ACP service or routes. `OwnsService` exists in the current model,
+  but no auto-create/provenance write path shipped.
 
 ACP-backed agents should use existing ACP management endpoints for runtime
 operations:
@@ -632,6 +714,20 @@ operations:
 - `GET /admin/acp/runtime/inflight`
 - `DELETE /admin/acp/runtime/threads/{service_id}/{thread_id}`
 - `POST /admin/acp/runtime/permissions/{request_id}`
+
+All service/route ownership semantics and endpoints in this subsection describe
+the implemented migration source only. M4-M7 of the unified-runtime plan
+replace them with:
+
+- Agent CRUD storing ACP config directly under `runtime.acp`;
+- AgentRoute CRUD under `/admin/agents/routes`;
+- Agent-scoped session, transcript, permission, run, capability, workspace, and
+  health APIs;
+- `/admin/acp/runtime/...` only for native pool/process diagnosis and recovery,
+  keyed by `agent_id`.
+
+There is no `/admin/acp/services`, `service_id`, `OwnsService`, service cascade,
+or shared-service mode in the target architecture.
 
 ### 6.2 P1 Endpoints
 
@@ -649,7 +745,9 @@ P1 semantics:
 - activity is assembled from recent ACP events, LLM events, MCP events, and
   pending permissions
 - usage is assembled from metrics breakdown and timeseries APIs
-- interactions are filtered by route, service, session, and trace identifiers
+- interactions are currently filtered by route, service, session, and trace
+  identifiers; after the cutover new ACP events use direct `agent_id`
+  attribution and no service dimension
 - resources show the LLM providers, routes, MCP services, and VirtualKeys the
   agent can use
 - health is shallow at first: disabled state, runtime instances, in-flight
@@ -657,56 +755,54 @@ P1 semantics:
 
 ### 6.3 P2 Endpoints
 
-P2 adds external orchestration and scheduling.
+P2 adds durable agent execution and scheduling through the shared Workflow
+Definition/Run surface. The endpoint list, run/task state machines, and
+invocation contracts are authoritative in
+[Unified Workflow Runtime §10](workflow-runtime.md#10-durable-runs-scheduling-and-handoff);
+they are not repeated here. From the agent control plane's perspective, P2 is
+characterized by:
 
-Agent-scoped (nested under a concrete agent id):
+- Workflow Runs and Task Runs are gateway-owned external work items, executed
+  through the agent's runtime backend ([5.4](#54-runtime-backends)):
+  the Workflow `agent` task invokes the already-proven
+  `runtimeapi.Backend`; ACP and builtin adapters arrive during the unified
+  runtime foundation, while HTTP becomes executable only after its own backend
+  milestone;
+- schedules create durable Workflow Runs; they do not become hidden runtime
+  loops, and cancellation is gateway-visible and auditable;
+- agent-scoped UI views filter Workflow Runs/Task Runs by `agent_id`; they do
+  not introduce a second AgentTask API or state machine.
 
-- `POST /admin/agents/{id}/tasks`
-- `GET /admin/agents/{id}/tasks`
-- `GET /admin/agents/{id}/schedules`
-- `POST /admin/agents/{id}/schedules`
-- `PUT /admin/agents/{id}/schedules/{schedule_id}`
-- `DELETE /admin/agents/{id}/schedules/{schedule_id}`
-
-Global task collection (separate prefix to avoid colliding with
-`/admin/agents/{id}`, where a literal segment like `tasks` is ambiguous with an
-agent id):
-
-- `GET /admin/agent-tasks`
-- `GET /admin/agent-tasks/{task_id}`
-- `POST /admin/agent-tasks/{task_id}/cancel`
-
-P2 semantics:
-
-- tasks are gateway-owned external work items
-- tasks execute through the agent's runtime backend (see [5.4](#54-runtime-backends)):
-  `acp` issues a turn against the agent's ACP service, `http` dispatches to the
-  agent's endpoint; the task layer itself is backend-agnostic
-- schedules create tasks; they do not become hidden runtime loops
-- cancellation must be gateway-visible and auditable
-- the same collision rule applies to P3: keep global workflow collections under
-  `/admin/agent-workflows` and never under `/admin/agents/<literal>`
+**Why P2 is limited to one `agent` task per durable definition.** This is a
+deliberate product rollout boundary, not a runner or config-store limitation:
+P2 first proves one durable backend dispatch, cancellation, recovery, and audit
+lifecycle before exposing handoff graphs. A definition containing even one
+`agent` task can create the valid management-reference cycle described in
+[workflow-runtime §15](workflow-runtime.md#15-validation-and-safety) when an
+Agent's LLM resource route binds a workflow that targets the same Agent. The
+one-way AgentRoute ingress model does not create that cycle, but it does not
+remove this LLM-resource cycle either. The transactional staged-apply operation
+must therefore land **before any** P2 Agent Task is enabled. Once it lands, it
+safely covers both one-step and multi-step definitions. P3 then removes the
+one-task product validation when the handoff, topology, and multi-agent
+management surfaces are ready.
 
 ### 6.4 P3 Endpoints
 
-P3 adds multi-agent coordination.
-
-- `GET /admin/agent-workflows`
-- `POST /admin/agent-workflows`
-- `GET /admin/agent-workflows/{id}`
-- `PUT /admin/agent-workflows/{id}`
-- `DELETE /admin/agent-workflows/{id}`
-- `POST /admin/agent-workflows/{id}/runs`
-- `GET /admin/agent-workflows/{id}/runs/{run_id}`
-
-P3 semantics:
-
-- workflows coordinate external turns and handoffs
-- workflow state belongs to the gateway
-- each step calls a runtime backend or a resource route
-- interaction traces remain the source for runtime topology
+P3 extends the same P2 surface and Runner to static multi-step DAGs. It adds no
+parallel `/admin/agent-workflows` object family. The graph coordinates external
+turns, resource tasks (`llm`/`mcp`/`transform`), and handoffs; it is static and
+gateway-owned, and never becomes an agent's internal reasoning loop. The
+authoritative API, storage, invocation-policy, and task contracts are in
+[Unified Workflow Runtime](workflow-runtime.md).
 
 ## 7. Backend Implementation Plan
+
+P0/P1 below record the service-backed implementation sequence that has already
+landed. They are retained as implementation history, not as the target ACP
+model. The breaking M4-M7 replacement is defined in
+[Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md#8-delivery-sequence)
+and summarized in [§9.4](#94-remove-acp-service-as-a-product-object).
 
 ### P0: Agent Resource And ACP-Backed Workspace
 
@@ -780,22 +876,34 @@ should not introduce rollup tables unless query performance requires it.
 
 ### P2: External Tasks And Scheduling
 
-Goals:
+The Workflow Runner, Definition/Run models, durable persistence, and scheduling
+loop are built once in `pkg/workflow` per
+[workflow-runtime §16 W2/W3](workflow-runtime.md#16-implementation-plan); this
+section lists only what the *agent* control plane contributes on top of that
+runner.
 
-- add the `RuntimeBackend` SPI (see [5.4](#54-runtime-backends)) with the `acp`
-  backend; add the `http` backend and `runtime.type = "http"` once a concrete
-  HTTP-agent consumer exists (the SPI lands first so the task layer never calls a
-  protocol directly)
-- add `AgentTask`
-- add task state transitions
-- add task history and cancellation
-- add schedule config
-- add a scheduler loop in the gateway runtime
+Agent-control-plane goals for P2:
 
-Tasks should call runtime backends through the SPI. They should not implement an
-internal reasoning loop, and the task layer must not hard-code ACP.
+- require the common runtime contracts, registry, identities, events, errors,
+  and ACP/builtin adapters from
+  [Unified Agent Runtime M0–M3](../plans/unified-agent-runtime.md#8-delivery-sequence)
+  before durable Agent Tasks consume them
+- add the `agent` task handler over `runtimeapi.Backend`, registered into the
+  Workflow Runner at bootstrap
+- enable a backend for durable retry/recovery only when its capabilities can
+  propagate the stable logical execution key; builtin durable
+  session/checkpoint recovery additionally waits for PB2
+- require the transactional staged-apply operation from
+  [workflow-runtime §15](workflow-runtime.md#15-validation-and-safety) before
+  enabling any Agent Task
+- after staged apply is available, enforce one `agent` task per durable
+  definition as the explicit P2 product scope
 
-Scheduler placement constraint:
+Agent tasks call `runtimeapi.Backend` through the shared registry. They must not
+implement an internal reasoning loop or hard-code ACP/builtin/HTTP behavior.
+
+Scheduler placement constraint (agent-control-plane concern, not a workflow
+concern):
 
 - the runtime has two assembly paths, `agw` (Caddy app) and `agwd` (standalone
   daemon). The scheduler loop must be owned by the shared runtime core so both
@@ -806,34 +914,33 @@ Scheduler placement constraint:
   task claiming must move to a store-backed lease/leader mechanism rather than an
   in-memory loop. P2 should make this assumption explicit rather than silently
   double-firing schedules.
-- task and schedule state must be durable so an in-flight task survives a
-  restart with a well-defined recovery state (for example, re-queued or marked
-  interrupted); the storage choice is an open question below.
 
 ### P3: Multi-Agent Workflow
 
-Goals:
-
-- add workflow definitions
-- add workflow runs
-- add handoff and dependency semantics
-- add topology view support
-
-The runtime implementation should remain conservative until real workflow
-needs are clear from UI and operator usage.
+P3 lifts the P2 one-`agent`-task product limit to static multi-step DAGs. The
+transactional staged-apply prerequisite has already landed in P2; P3 adds
+handoff and dependency semantics plus topology-view support. The runtime remains
+a static external orchestration graph, never a model-authored reasoning loop;
+the multi-step DAG mechanics themselves are the Workflow Runner's, already
+exercised by the synchronous profile.
 
 ### PB: Builtin Runtime Track
 
-PB is independent of the P2/P3 control-plane schedule except where it adopts
-the shared task backend:
+PB is independent of the P2/P3 control-plane schedule except where builtin
+durable session/checkpoint state integrates with Workflow Agent Tasks:
 
 - **PB0 — bridge adapters:** implemented
   (`pkg/mcp/einotool`, `pkg/llm/provider/einomodel`).
 - **PB1 — runtime type, host, routes, ingress, observability, management
   parity, sessions, topologies, and middleware:** implemented.
 - **PB1b — interactive MCP tool permissions:** implemented.
-- **PB2 — shared task backend and durable Runner-managed sessions:** deferred
-  until the P2 task layer and a stable eino persistence surface exist.
+- **PB2 — durable Workflow integration and Runner-managed sessions:**
+  the turn-first builtin `runtimeapi.Backend` adapter is delivered by the
+  unified runtime foundation; PB2 is the additional durable
+  session/checkpoint integration, deferred until Workflow W2 and a stable eino
+  persistence surface exist. The two prerequisites are stated authoritatively in
+  [workflow-runtime §16.1](workflow-runtime.md#161-builtin-agent-durable-dependency-gate-authoritative);
+  this document does not restate it.
 
 The detailed scope and implementation notes are authoritative in
 [**Builtin Agent Runtime §11–§12**](builtin-agent-runtime.md#11-implementation-track).
@@ -878,35 +985,16 @@ Screens and widgets:
 - call-chain / interaction topology
 - resource access panel
 
-### P2 Frontend: Tasks And Scheduling
+### P2/P3 Frontend: Workflows, Runs, And Scheduling
 
-Use:
-
-- task endpoints
-- schedule endpoints
-
-Screens and widgets:
-
-- task queue
-- task run detail
-- schedule editor
-- cancellation controls
-- retry status
-
-### P3 Frontend: Multi-Agent Orchestration
-
-Use:
-
-- workflow endpoints
-- workflow run endpoints
-- interaction traces
-
-Screens and widgets:
-
-- workflow graph editor
-- run timeline
-- agent handoff visualization
-- per-step logs and usage
+Once the Workflow Runtime ships durable runs (W2) and scheduling (W3), the
+agent console adds task/run/schedule surfaces driven by the workflow Admin APIs
+([workflow-runtime §10](workflow-runtime.md#10-durable-runs-scheduling-and-handoff))
+and filtered by `agent_id`. The screen inventory (task queue, run detail,
+schedule editor, workflow graph editor, run timeline, handoff visualization,
+per-step logs and usage) belongs to the workflow UI and is not enumerated here;
+from the agent console's perspective these are filtered projections of the
+shared workflow surfaces, not agent-specific screens.
 
 ## 9. Migration Notes
 
@@ -944,25 +1032,38 @@ When implementing P0, update:
 The docs should describe `agents` as the primary product surface and
 LLM/MCP/ACP as resource/runtime layers.
 
+### 9.4 Remove ACP Service As A Product Object
+
+The unified-runtime cutover is deliberately breaking:
+
+- move reusable ACP normalization/validation out of `pkg/acp/service` into an
+  identity-free protocol runtime config;
+- rename ACP-internal `Service` identifiers that represented that management
+  object to runtime/owner terminology;
+- copy each bound service's execution fields into its owning
+  `Agent.runtime.acp`;
+- use `agent_id` as the ACP pool, scope, session, permission, diagnostic, and
+  usage owner key;
+- remove `service_id`, `OwnsService`, the `acp_services` store/bundle family,
+  service CRUD/Admin client/CLI, and service-to-Agent indexes;
+- retain `/admin/acp/runtime` only as an Agent-keyed native diagnostic/recovery
+  surface.
+
+An unbound legacy service has no implicit target identity. Migration requires
+the operator to create an Agent for it or delete it. The new binary rejects old
+service-backed shapes with an actionable export/rewrite/apply error rather than
+silently inventing Agent IDs.
+
 ## 10. Open Questions
 
 The following are still genuinely open. Items the body now takes a position on
-(resource enforcement, deletion/cascade, runtime-vs-routes authority,
+(Agent-owned ACP config, resource enforcement, runtime-vs-routes authority,
 attribution timing, and bundle/CLI parity) are decided there and are not
 repeated here.
-
-- Should creating an agent automatically create the backing ACP service and
-  route, or should that remain an explicit advanced option? (The body allows
-  optional auto-create; the default is still undecided.)
-- When should intentional **shared-service** mode ship (several agents binding one
-  ACP service via an opt-in `shared` flag), and what is the degraded-attribution
-  contract in that mode? P0 enforces one service → one agent (see 5.1); shared
-  mode would relax that and drop precise `agent_id` stamping for the shared
-  service. What concrete use case justifies it over modeling each consumer as its
-  own agent?
-- Should `AgentTask` and schedule state be persisted in the generic config store
-  or in a dedicated operational table? (Tasks are high-churn operational state,
-  unlike config objects.)
+- Which dedicated operational schema and retention policy should back
+  `workflow_runs`, `workflow_task_runs`, `workflow_events`, and schedules?
+  Workflow Definitions may use the generic config-store pattern, but
+  high-churn run state must not.
 - What is the first budget model: token budget, cost budget, turn budget, or
   all three? And is budget enforced (data-plane) or only observed (management)
   in its first version?
@@ -973,9 +1074,10 @@ repeated here.
   mechanism rather than the single-process assumption stated in P2.
 - If/when memory becomes an agent resource, what is its reference shape and is it
   enforced or observed first? (See 9.2a.)
-- Does the agent ever become a data-plane principal (request-path identity that
-  enforces `resources` directly), or does enforcement stay on VirtualKey + route
-  policy indefinitely? (See 5.1.)
+- Beyond AgentRoute resolving the Agent for ingress, does the Agent gain scoped
+  callback credentials that enforce `resources` directly, or does external
+  ACP/HTTP resource enforcement stay on VirtualKey + route policy
+  indefinitely? (See 5.1.)
 - Should one logical agent ever front several interchangeable runtime backends
   (failover, load balance, A-B) — analogous to logical-model routing over
   multiple provider bindings? The body keeps agent:runtime at 1:1 (see 5.1). If

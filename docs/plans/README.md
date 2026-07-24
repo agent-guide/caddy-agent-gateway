@@ -20,3 +20,9 @@ Current plans:
   `v0.4.x` line
 - [observability-implementation.md](observability-implementation.md):
   implementation plan companion to `design/observability.md`
+- [unified-agent-runtime.md](unified-agent-runtime.md): implementation plan for
+  one turn-first Agent runtime capability layer and one AgentRoute across ACP,
+  HTTP, and builtin Agent identities, with ACP config owned directly by
+  `Agent.runtime.acp` rather than a separate service object; durable task/DAG
+  execution remains owned by the
+  [Unified Workflow Runtime](../design/workflow-runtime.md)

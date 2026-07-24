@@ -17,6 +17,9 @@ Related documents deliberately own different concerns:
 - [Agents Control Plane](agents-control-plane.md) defines the shared `Agent`
   identity, resources, policy, attribution, runtime-backend contract, tasks,
   scheduling, and workflows across `acp`, `http`, and `builtin`.
+- [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md)
+  defines the turn-first `runtimeapi.Backend` adapter, common capability/event
+  plane, and breaking migration from BuiltinRoute/ACPRoute to AgentRoute.
 - [Eino Capability Reuse](eino-reuse.md) records which eino/eino-ext
   capabilities the repository adopts, defers, or rejects and why.
 - This document defines how the builtin runtime itself works. Other documents
@@ -255,12 +258,17 @@ lower protocol layers still never import `pkg/agent`.
   (`delta`, `content`, `tool_call`, `usage`, `done`, `error`); whether the
   vocabulary is exactly the ACP set or a marked subset is an open question
   (see [§13](#13-open-questions)).
-- **Task layer (PB2)**: the builtin runtime will register as the third
-  `RuntimeBackend` under [the control-plane runtime backend
-  contract](agents-control-plane.md#54-runtime-backends). `StartTask` will
-  materialize (or reuse) the graph and run the task as a Runner execution;
-  the task state machine, scheduling, cancellation, and audit stay shared
-  and backend-agnostic.
+- **Unified turn adapter**: before the AgentRoute cutover, the unified runtime
+  plan registers builtin as a turn-first `runtimeapi.Backend` and makes the
+  existing BuiltinRoute call it. AgentRoute later becomes the only public
+  ingress; this document continues to describe BuiltinRoute as current behavior
+  until that breaking milestone lands.
+- **Durable task layer (PB2)**: the Workflow `agent` task reuses that same
+  turn adapter. PB2 adds durable Runner session/checkpoint integration rather
+  than a second backend SPI, following the dependency gate in
+  [workflow-runtime §16.1](workflow-runtime.md#161-builtin-agent-durable-dependency-gate-authoritative).
+  Workflow Run/Task Run state, scheduling, cancellation, retry, and audit stay
+  owned by `pkg/workflow`.
 
 ## 8. Observability and attribution
 
@@ -493,9 +501,10 @@ the caller's to abandon by disconnecting.
 
 ## 11. Implementation track
 
-The builtin runtime is its own track. PB0 has no dependency on P2/P3 and can
-proceed independently; PB2
-lands with the P2 task layer.
+The builtin runtime is its own track. PB0/PB1/PB1b have no dependency on the
+Workflow Runtime roadmap. The turn-first builtin `runtimeapi.Backend` adapter
+belongs to the unified Agent runtime foundation; PB2 is only the later durable
+Workflow session/checkpoint integration.
 
 **PB0 — bridge adapters (no agent-model change):** implemented.
 
@@ -545,12 +554,17 @@ its ACP posture.
   unanswered calls) fails closed
 - `GET /admin/builtin/runtime` pending-permission view
 
-**PB2 — task backend and durable sessions:**
+**PB2 — durable Workflow integration and sessions:**
 
-- register `builtin` as the third `RuntimeBackend` when the P2 task layer
-  lands
+- plug the existing builtin `runtimeapi.Backend` adapter into the durable
+  Workflow Agent task path
 - adopt Runner session/checkpoint persistence only after eino v0.10
   stabilizes; do not hand-roll durable agent state before that
+
+The two prerequisites for this item (W2 durable runs + eino v0.10 persistence
+→ PB2 durable integration) are stated authoritatively in
+[workflow-runtime §16.1](workflow-runtime.md#161-builtin-agent-durable-dependency-gate-authoritative);
+this document does not restate it.
 
 ## 12. Implementation notes: PB1b interactive tool permissions
 
@@ -604,8 +618,9 @@ The following builtin-specific items remain open:
   offload require a gateway workspace and allowed-roots design. Until then,
   agentsmd documents and skills remain inline, and reduction remains
   clear-only.
-- **Task backend:** builtin becomes a shared `RuntimeBackend` when the
-  control-plane P2 task layer lands.
+- **Durable task integration:** the shared builtin turn adapter lands with the
+  unified Agent runtime; durable Workflow session/checkpoint support remains
+  PB2.
 
 The turn event vocabulary and explicit operator cancellation are decided:
 builtin exposes the documented ACP-compatible subset, and force/graceful

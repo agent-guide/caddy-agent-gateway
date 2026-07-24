@@ -332,7 +332,10 @@ infrastructure surfaces.
 3. ~~Build the `builtin` agent runtime on ADK (§5).~~ Done (PB1): bridges,
    generic ADK host, definition schema, turn ingress, and management parity
    all landed; see `builtin-agent-runtime.md` §11 for the scope notes and
-   the PB2 remainder (task backend, durable sessions after eino v0.10).
+   the PB2 remainder (durable Workflow session/checkpoint integration after
+   Workflow W2 and eino v0.10). The turn-first builtin backend adapter belongs
+   to the [Unified Agent Runtime](../plans/unified-agent-runtime.md)
+   foundation, not PB2.
 4. Migrate openai/codex Responses paths to agentic* components after they
    graduate from Beta (§6.1).
 5. ~~Wire the gateway-side OTel exit (§4.4).~~ Done: usage events export

@@ -470,7 +470,17 @@ The following are partial or placeholder:
 - first-class non-HTTP MCP transports such as stdio in the active request path
 - full upstream progress relay back to MCP clients
 - full memory retrieval and writeback in request path
-- the `agents` control plane is implemented through P0 + P1 (CRUD, workspace, observability, and write-time `agent_id` attribution); external tasks/scheduling (P2) and multi-agent workflows (P3) remain future work. The legacy `pkg/llm/agent` orchestrator has been removed.
+- the `agents` control plane is implemented through P0 + P1 (CRUD, workspace,
+  observability, and write-time `agent_id` attribution); the turn-first Agent
+  runtime capability layer and breaking migration from ACPRoute/BuiltinRoute
+  to one AgentRoute remain future work. See
+  [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md).
+- the unified Workflow Runtime for synchronous resource composition, durable
+  Agent Tasks, scheduling, and multi-agent DAGs remains future work. It
+  consumes the same turn-first Agent runtime backend rather than defining a
+  second execution SPI. See
+  [Unified Workflow Runtime](../design/workflow-runtime.md).
+- the legacy `pkg/llm/agent` orchestrator has been removed
 - richer static Caddyfile route syntax for all route fields
 
 ## 9. Extension Points
@@ -504,7 +514,23 @@ The MCP and memory packages are structured as internal subsystem boundaries. The
 - MCP expands from the current Streamable HTTP gateway path into broader transport coverage and richer runtime semantics
 - memory becomes retrieval and persistence around model calls
 
-The agent direction is different and is intentionally **not** an internal execution mode inside `pkg/llm`. A first-class `agents` layer (`pkg/agent`) becomes an **external control plane** that composes the LLM, MCP, ACP, and metrics subsystems: it manages agent identities, binds them to runtime backends such as ACP services, governs the resources they may use, and observes their sessions, usage, and call chains. It does not own an agent's internal reasoning loop. The legacy `pkg/llm/agent` orchestrator is removed rather than expanded. This supersedes the earlier "agent orchestration becomes an execution mode" direction. See [../design/agents-control-plane.md](../design/agents-control-plane.md).
+The agent direction is different and is intentionally **not** an internal execution mode inside `pkg/llm`. A first-class `agents` layer (`pkg/agent`) becomes an **external control plane** that composes the LLM, MCP, ACP, and metrics subsystems: it manages agent identities and their runtime-specific configuration, governs the resources they may use, and observes their sessions, usage, and call chains. It does not own an agent's internal reasoning loop. The legacy `pkg/llm/agent` orchestrator is removed rather than expanded. This supersedes the earlier "agent orchestration becomes an execution mode" direction. See [Agent Control Plane](../design/agents-control-plane.md).
+
+The target execution boundary is one turn-first `runtimeapi.Backend`
+capability layer for ACP, builtin, and HTTP agents. Current ACPRoute and
+BuiltinRoute ingress remains authoritative until a later breaking cutover to
+one `AgentRoute.agent_id` relationship. Workflow `agent` tasks call the same
+backend while the Workflow Runner exclusively owns durable run/task state,
+retry, scheduling, and DAG semantics. See
+[Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md) and
+[Unified Workflow Runtime](../design/workflow-runtime.md).
+
+That cutover also removes ACP service as a first-class product/config object.
+An ACP Agent owns its execution config under `Agent.runtime.acp`, and
+`agent_id` directly owns the ACP process pool, sessions, permissions, runtime
+diagnostics, and attribution. The current `acp_services` store and
+`/admin/acp/services` APIs remain current behavior only until that milestone;
+native `/admin/acp/runtime` diagnostics remain but become Agent-keyed.
 
 Those boundaries are already visible in code, but they should still be treated as evolving.
 
@@ -545,7 +571,16 @@ The most coherent next steps for the architecture are:
 - extend MCP runtime beyond the current Streamable HTTP and request-scoped cancellation model
 - include MCP objects in bundle/export/apply flows
 - finish the missing admin handlers for memory
-- extend the `agents` control plane beyond P0 + P1 (which are implemented: `pkg/agent`, the `agents` store, `/admin/agents` CRUD + workspace + observability, and `agent_id` attribution) to external tasks/scheduling (P2) and multi-agent workflows (P3) (see [../design/agents-control-plane.md](../design/agents-control-plane.md))
+- implement the turn-first
+  [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md)
+  capability foundation, then replace runtime-specific Agent ingress with one
+  AgentRoute and fold ACP service config into `Agent.runtime.acp` in a breaking
+  cutover
+- implement the [Unified Workflow Runtime](../design/workflow-runtime.md) for
+  request-bound LLM/MCP composition, durable Agent Tasks, scheduling, and
+  multi-agent DAGs, integrated with the implemented P0 + P1
+  [agents control plane](../design/agents-control-plane.md); its Agent task
+  handler depends on the unified turn-first runtime foundation
 - expand enforcement of route policy beyond the currently active subset
 - integrate memory into the request path
 - expand Caddyfile route syntax to cover more of the existing route data model
