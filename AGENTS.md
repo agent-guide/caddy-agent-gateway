@@ -407,6 +407,10 @@ managers; those packages must not depend on `pkg/agent`.
 
 Important files:
 
+- `runtimeapi/`: the runtime-neutral, turn-first Agent execution contracts,
+  optional capability interfaces, normalized errors, and backend registry.
+  It may depend on the `Agent` definition but must not import ACP, LLM, MCP, or
+  other runtime implementations; gateway-owned adapters sit above both sides.
 - `types.go`: the `Agent` model. Runtime is `acp` (gateway owns the lifecycle via
   an ACP `service_id`), `http` (the agent owns its own lifecycle), or `builtin`
   (no separate process — a persisted definition materialized by the in-process

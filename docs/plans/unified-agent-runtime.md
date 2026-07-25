@@ -1,6 +1,6 @@
 # Unified Agent Runtime and Routing Plan
 
-Status: implementation-ready
+Status: implementation in progress — M0 complete
 
 Source branch: `feature/unified-agent-runtime` working tree based on `bc4e739`
 
@@ -1360,6 +1360,8 @@ The implementation contract-test matrix is:
 | Migration helper | M5/M7 | explicit/generated IDs, VirtualKey rewrites, collision, orphan/multi-bind, unrelated-object byte preservation, no partial output |
 
 ### M0 — Runtime API contracts and registry
+
+Implementation status: complete.
 
 - add `pkg/agent/runtimeapi` with backend, optional capability, request, event,
   capability, runtime-summary, health, and normalized error types;

@@ -12,6 +12,7 @@ import (
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
@@ -47,6 +48,7 @@ type BootstrapOptions struct {
 	UsageStats          usage.RuntimeStats
 	UsagePrometheus     usage.PrometheusProvider
 	UsageConfig         usage.Config
+	RuntimeBackends     []runtimeapi.Backend
 	Logger              *zap.Logger
 }
 
@@ -73,6 +75,7 @@ type AgentGateway struct {
 	acpServiceManager    *acpservice.Manager
 	acpRuntimeManager    *acpruntime.Manager
 	agentManager         *agentpkg.Manager
+	runtimeRegistry      *runtimeapi.Registry
 	usageObserver        usage.InteractionObserver
 	usageQuery           usage.QueryService
 	usageStats           usage.RuntimeStats
@@ -84,6 +87,7 @@ func NewAgentGateway() *AgentGateway {
 	return &AgentGateway{
 		configured:         false,
 		mcpRuntimeRegistry: mcpruntime.NewRegistry(),
+		runtimeRegistry:    runtimeapi.NewRegistry(),
 		usageObserver:      usage.NoopObserver{},
 	}
 }
@@ -92,6 +96,9 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	if err := g.runtimeRegistry.RegisterAll(opts.RuntimeBackends...); err != nil {
+		return fmt.Errorf("register agent runtime backends: %w", err)
+	}
 	g.configureConfigStoreBackend(opts.ConfigStoreBackend)
 	staticRoutes := make([]routecore.AgentRouteConfig, 0, len(opts.StaticLLMRoutes)+len(opts.StaticMCPRoutes)+len(opts.StaticACPRoutes))
 	staticRoutes = append(staticRoutes, opts.StaticLLMRoutes...)
@@ -173,6 +180,7 @@ func (g *AgentGateway) Reset() {
 	g.acpServiceManager = nil
 	g.acpRuntimeManager = nil
 	g.agentManager = nil
+	g.runtimeRegistry = runtimeapi.NewRegistry()
 	g.usageObserver = usage.NoopObserver{}
 	g.usageQuery = nil
 	g.usageStats = nil
@@ -309,6 +317,15 @@ func (g *AgentGateway) AgentManager() *agentpkg.Manager {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.agentManager
+}
+
+// RuntimeRegistry returns the runtime-neutral Agent backend registry. Runtime
+// adapters are registered during Bootstrap; existing dispatch paths do not
+// consume it until their migration milestone.
+func (g *AgentGateway) RuntimeRegistry() *runtimeapi.Registry {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.runtimeRegistry
 }
 
 func (g *AgentGateway) UsageObserver() usage.InteractionObserver {
