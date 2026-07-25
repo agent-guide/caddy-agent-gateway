@@ -12,6 +12,7 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
@@ -163,6 +164,9 @@ func TestDispatchBuiltinTurnEndToEnd(t *testing.T) {
 	if turn.AgentID != "triage" || turn.Operation != "turn" || turn.ResultStatus != "success" {
 		t.Fatalf("turn event = %+v, want triage/turn/success", turn)
 	}
+	if !runtimeapi.ValidRunID(turn.RunID) || turn.RuntimeType != "builtin" || turn.InteractionEvent.RunID != turn.RunID {
+		t.Fatalf("turn common identity = %+v", turn)
+	}
 	if !turn.Success || turn.TopologyKind != "single" || turn.ModelSteps == 0 {
 		t.Fatalf("turn event = %+v, want successful single-topology turn with model steps", turn)
 	}
@@ -170,7 +174,7 @@ func TestDispatchBuiltinTurnEndToEnd(t *testing.T) {
 		t.Fatalf("llm child events = 0, want inner model call recorded (events: %#v)", sink.events)
 	}
 	inner := llmEvents[0]
-	if inner.AgentID != "triage" || inner.ParentSpanID != turn.SpanID || inner.TraceID != turn.TraceID {
+	if inner.AgentID != "triage" || inner.ParentSpanID != turn.SpanID || inner.TraceID != turn.TraceID || inner.RunID != turn.RunID || inner.RuntimeType != "builtin" {
 		t.Fatalf("inner llm event = %+v, want parented under the turn span with agent attribution", inner)
 	}
 	if inner.TotalTokens != 9 {

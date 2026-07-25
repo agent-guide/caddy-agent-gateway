@@ -1,6 +1,6 @@
 # Unified Agent Runtime and Routing Plan
 
-Status: implementation in progress — M0 complete
+Status: implementation in progress — M0-M1 complete
 
 Source branch: `feature/unified-agent-runtime` working tree based on `bc4e739`
 
@@ -546,6 +546,9 @@ environment values, or unapproved filesystem paths.
 Pre-stream errors return real HTTP status codes. Mid-stream failures emit one
 terminal SSE `error`; cancellation emits `done` with
 `stop_reason=cancelled`. A stream has exactly one terminal event.
+`RunSequencer.ServeSegment` returns a `SegmentResult` with explicit `Started`
+and `Terminal` flags: callers map a returned error to HTTP only when `Started`
+is false, and never guess stream state from the error or backend behavior.
 
 ### 5.7 Run inspection and cancellation
 
@@ -1381,6 +1384,8 @@ Verification:
 
 ### M1 — Common identities, events, and errors
 
+Implementation status: complete.
+
 M1 is foundational runtime work, not only shared type extraction. The common
 sink/sequencer must outlive one SSE segment, and the builtin checkpoint record
 must carry its cursor into resume. ACP and builtin adapters must not number
@@ -1433,6 +1438,10 @@ common control plane. Estimate and review those as explicit workstreams.
   `runtimeapi` request/event types; keep native-only data behind validated
   options and typed event payloads;
 - implement ACP and builtin turn adapters over their existing managers/hosts;
+- bridge `runtimeapi.Identities` and the existing observability
+  `usage.InteractionDimensions` once at each adapter boundary so Agent/run/
+  session/request and trace identities cannot diverge between common backend
+  context and nested usage spans;
 - make current `dispatchBuiltin` and every Agent-bound `dispatchACP` call the
   common turn contract, including one shared event sink/sequencer rather than
   independent backend sequence allocation;

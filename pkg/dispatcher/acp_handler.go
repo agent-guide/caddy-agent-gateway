@@ -12,6 +12,8 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	"go.uber.org/zap"
@@ -97,6 +99,20 @@ func (h *Handler) dispatchACP(w http.ResponseWriter, r *http.Request, next NextH
 	}
 	if strings.TrimSpace(req.Input) == "" {
 		return httpjson.Error(w, http.StatusBadRequest, "input is required")
+	}
+	if dims, ok := usage.DimensionsFromContext(rewritten.Context()); ok && dims.AgentID != "" {
+		runID, generateErr := runtimeapi.NewRunID()
+		if generateErr != nil {
+			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "turn_failed")
+			return httpjson.Error(w, http.StatusInternalServerError, "failed to initialize run")
+		}
+		dims.RuntimeType = agentpkg.RuntimeTypeACP
+		dims.RunID = runID
+		usage.SpanFromContext(rewritten.Context()).SetExtension(usage.CommonExtension{
+			AgentID: dims.AgentID, RuntimeType: dims.RuntimeType, RunID: dims.RunID,
+		})
+		rewritten = rewritten.WithContext(usage.ContextWithDimensions(rewritten.Context(), dims))
+		logRequestPhase(h.logger, "dispatcher: agent run initialized", rewritten)
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")

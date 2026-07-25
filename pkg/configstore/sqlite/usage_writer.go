@@ -19,7 +19,7 @@ var llmUsageInsertColumns = []string{
 	"llm_api", "api_operation", "provider_id", "provider_type", "logical_model", "upstream_model",
 	"credential_source", "credential_id", "stream", "input_tokens", "output_tokens", "total_tokens",
 	"cached_tokens", "reasoning_tokens",
-	"usage_finalized", "request_tool_count", "request_tool_names", "tool_call_count", "tool_names", "agent_id",
+	"usage_finalized", "request_tool_count", "request_tool_names", "tool_call_count", "tool_names", "agent_id", "run_id", "runtime_type",
 }
 
 var mcpUsageInsertColumns = []string{
@@ -27,7 +27,7 @@ var mcpUsageInsertColumns = []string{
 	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
 	"request_id", "service_id", "method", "tool_name", "presented_tool_name", "executed_tool_name",
 	"execution_mode", "policy_action", "resource_uri", "prompt_name", "completion_ref_type", "completion_argument",
-	"arg_count", "result_status", "cancelled", "tool_args_json", "agent_id",
+	"arg_count", "result_status", "cancelled", "tool_args_json", "agent_id", "run_id", "runtime_type",
 }
 
 var builtinUsageInsertColumns = []string{
@@ -35,14 +35,14 @@ var builtinUsageInsertColumns = []string{
 	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
 	"operation", "session_id", "run_id", "permission_request_id", "link_trace_id", "link_span_id",
 	"topology_kind", "model_steps", "tool_steps",
-	"event_counts_json", "result_status", "agent_id",
+	"event_counts_json", "result_status", "agent_id", "runtime_type",
 }
 
 var acpUsageInsertColumns = []string{
 	"event_id", "trace_id", "span_id", "parent_span_id", "agent_depth", "started_at", "finished_at",
 	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
 	"service_id", "agent_type", "operation", "thread_id", "session_id", "permission_request_id", "fresh_session",
-	"event_counts_json", "usage_json", "result_status", "agent_id",
+	"event_counts_json", "usage_json", "result_status", "agent_id", "run_id", "runtime_type",
 }
 
 func InsertLLMUsageEvent(db *gorm.DB, ev usage.LLMUsageEvent) error {
@@ -54,7 +54,7 @@ func InsertLLMUsageEvent(db *gorm.DB, ev usage.LLMUsageEvent) error {
 		ev.LLMAPI, ev.APIOperation, ev.ProviderID, ev.ProviderType, ev.LogicalModel, ev.UpstreamModel,
 		ev.CredentialSource, ev.CredentialID, boolInt(ev.Stream), ev.InputTokens, ev.OutputTokens, ev.TotalTokens,
 		ev.CachedTokens, ev.ReasoningTokens,
-		boolInt(ev.UsageFinalized), ev.RequestToolCount, string(names), ev.ToolCallCount, string(toolNames), nullString(ev.AgentID),
+		boolInt(ev.UsageFinalized), ev.RequestToolCount, string(names), ev.ToolCallCount, string(toolNames), nullString(ev.AgentID), nullString(ev.RunID), nullString(ev.RuntimeType),
 	).Error
 }
 
@@ -64,7 +64,7 @@ func InsertMCPUsageEvent(db *gorm.DB, ev usage.MCPUsageEvent) error {
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
 		ev.RequestID, ev.ServiceID, ev.Method, ev.ToolName, ev.PresentedToolName, ev.ExecutedToolName,
 		ev.ExecutionMode, ev.PolicyAction, ev.ResourceURI, ev.PromptName, ev.CompletionRefType, ev.CompletionArgument,
-		ev.ArgCount, ev.ResultStatus, boolInt(ev.Cancelled), truncatePayload(ev.ToolArgsJSON), nullString(ev.AgentID),
+		ev.ArgCount, ev.ResultStatus, boolInt(ev.Cancelled), truncatePayload(ev.ToolArgsJSON), nullString(ev.AgentID), nullString(ev.RunID), nullString(ev.RuntimeType),
 	).Error
 }
 
@@ -78,7 +78,7 @@ func InsertACPUsageEvent(db *gorm.DB, ev usage.ACPUsageEvent) error {
 		ev.EventID, ev.TraceID, ev.SpanID, ev.ParentSpanID, ev.AgentDepth, unixMillis(ev.StartedAt), unixMillis(ev.FinishedAt),
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
 		ev.ServiceID, ev.AgentType, ev.Operation, ev.ThreadID, ev.SessionID, ev.PermissionRequestID, fresh,
-		string(counts), truncatePayload(ev.UsageJSON), ev.ResultStatus, nullString(ev.AgentID),
+		string(counts), truncatePayload(ev.UsageJSON), ev.ResultStatus, nullString(ev.AgentID), nullString(ev.RunID), nullString(ev.RuntimeType),
 	).Error
 }
 
@@ -87,9 +87,9 @@ func InsertBuiltinUsageEvent(db *gorm.DB, ev usage.BuiltinUsageEvent) error {
 	return db.Exec(usageInsertSQL("builtin_usage_events", builtinUsageInsertColumns),
 		ev.EventID, ev.TraceID, ev.SpanID, ev.ParentSpanID, ev.AgentDepth, unixMillis(ev.StartedAt), unixMillis(ev.FinishedAt),
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
-		ev.Operation, ev.SessionID, ev.RunID, ev.PermissionRequestID, ev.LinkTraceID, ev.LinkSpanID,
+		ev.Operation, ev.SessionID, nullString(ev.RunID), ev.PermissionRequestID, ev.LinkTraceID, ev.LinkSpanID,
 		ev.TopologyKind, ev.ModelSteps, ev.ToolSteps,
-		string(counts), ev.ResultStatus, nullString(ev.AgentID),
+		string(counts), ev.ResultStatus, nullString(ev.AgentID), nullString(ev.RuntimeType),
 	).Error
 }
 

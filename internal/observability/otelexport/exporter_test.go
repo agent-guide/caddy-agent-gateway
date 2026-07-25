@@ -200,6 +200,9 @@ func TestBuiltinSpanStubCarriesRunCorrelationAndResumeLink(t *testing.T) {
 	if got := attrs["agw.builtin.run_id"].AsString(); got != "run-123" {
 		t.Fatalf("run_id attribute = %q", got)
 	}
+	if got := attrs["agw.agent.run_id"].AsString(); got != "run-123" {
+		t.Fatalf("common run_id attribute = %q", got)
+	}
 	if got := attrs["agw.builtin.permission_request_id"].AsString(); got != "perm-123" {
 		t.Fatalf("permission_request_id attribute = %q", got)
 	}

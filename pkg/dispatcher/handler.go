@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
+	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	builtinroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
@@ -158,6 +160,7 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 		}
 	}
 	span, spanCtx := h.gateway.UsageObserver().Begin(r.Context(), dims)
+	spanCtx = bindAgentRuntimeIdentity(spanCtx, span, cfg.Kind)
 	r = r.WithContext(spanCtx)
 	defer func() {
 		status := rec.StatusCode()
@@ -202,6 +205,26 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 	default:
 		return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusServiceUnavailable, rec, r, "dispatch route", "route kind is not configured", fmt.Errorf("route %q kind %q is not configured", cfg.ID, cfg.Kind))
 	}
+}
+
+// bindAgentRuntimeIdentity adds a runtime type only after Agent attribution is
+// known. In particular, an unbound legacy ACP route is direct non-Agent
+// traffic and must keep agent_id, run_id, and runtime_type empty.
+func bindAgentRuntimeIdentity(ctx context.Context, span usage.InteractionSpan, kind routecore.RouteKind) context.Context {
+	dims, ok := usage.DimensionsFromContext(ctx)
+	if !ok || dims.AgentID == "" {
+		return ctx
+	}
+	switch kind {
+	case routecore.RouteKindACP:
+		dims.RuntimeType = agentpkg.RuntimeTypeACP
+	case routecore.RouteKindBuiltin:
+		dims.RuntimeType = agentpkg.RuntimeTypeBuiltin
+	default:
+		return ctx
+	}
+	span.SetExtension(usage.CommonExtension{AgentID: dims.AgentID, RuntimeType: dims.RuntimeType})
+	return usage.ContextWithDimensions(ctx, dims)
 }
 
 func rateLimitDimension(kind routecore.RouteKind) (virtualkeypkg.RateLimitDimension, error) {

@@ -33,6 +33,24 @@ func TestObserverGeneratesW3CTraceAndSpanIDs(t *testing.T) {
 	}
 }
 
+func TestObserverCarriesCommonRuntimeIdentity(t *testing.T) {
+	sink := &captureEventSink{}
+	observer := NewObserver(sink)
+	span, ctx := observer.Begin(t.Context(), InteractionDimensions{
+		RouteKind: "builtin", AgentID: "agent-1", RuntimeType: "builtin", RunID: "run-1",
+	})
+	dims, ok := DimensionsFromContext(ctx)
+	if !ok || dims.AgentID != "agent-1" || dims.RuntimeType != "builtin" || dims.RunID != "run-1" {
+		t.Fatalf("context dimensions = %+v, present=%v", dims, ok)
+	}
+	span.SetExtension(CommonExtension{RunID: "run-2"})
+	span.Finish(InteractionOutcome{Success: true, StatusCode: 200})
+	ev := sink.events[0].(BuiltinUsageEvent)
+	if ev.InteractionEvent.RunID != "run-2" || ev.RunID != "run-2" || ev.RuntimeType != "builtin" {
+		t.Fatalf("common usage identity = %+v", ev)
+	}
+}
+
 func TestFinishFallbackErrorTypeClassifiesByStatusClass(t *testing.T) {
 	sink := &captureEventSink{}
 	observer := NewObserver(sink)

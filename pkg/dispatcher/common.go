@@ -229,6 +229,18 @@ func logRequestPhase(logger *zap.Logger, message string, r *http.Request, fields
 		return
 	}
 	logFields := requestLogFields(r)
+	if r != nil {
+		if dims, ok := usage.DimensionsFromContext(r.Context()); ok {
+			logFields = append(logFields,
+				zap.String("agent_id", dims.AgentID),
+				zap.String("runtime_type", dims.RuntimeType),
+				zap.String("run_id", dims.RunID),
+				zap.String("trace_id", dims.TraceID),
+				zap.String("span_id", dims.SpanID),
+				zap.String("parent_span_id", dims.ParentSpanID),
+			)
+		}
+	}
 	logFields = append(logFields, fields...)
 	logger.Debug(message, logFields...)
 }

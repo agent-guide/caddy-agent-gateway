@@ -1,6 +1,7 @@
 package runtimeapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -77,6 +78,22 @@ func ErrorCodeOf(err error) (ErrorCode, bool) {
 		return "", false
 	}
 	return normalized.Code, true
+}
+
+// NormalizeError preserves an existing runtime error and closes over native
+// failures so transports never need to expose or classify backend details.
+func NormalizeError(err error) error {
+	if err == nil || IsNormalized(err) {
+		return err
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return WrapError(ErrorTurnCancelled, "turn cancelled", err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return WrapError(ErrorBackendTimeout, "runtime backend timed out", err)
+	default:
+		return WrapError(ErrorTurnFailed, "turn failed", err)
+	}
 }
 
 var (

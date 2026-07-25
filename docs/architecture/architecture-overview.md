@@ -460,7 +460,8 @@ The following are implemented enough to be production-shape code, even if still 
 - CLI login orchestration
 - OpenAI-compatible and Anthropic-compatible ingress handlers
 - MCP dispatcher, upstream discovery, upstream execution, and runtime inspection
-- SQLite-backed usage metrics summaries and recent interaction event inspection
+- SQLite-backed usage metrics summaries and recent interaction event inspection,
+  including nullable common Agent `run_id`/`runtime_type` dimensions
 - OTLP span export of usage events to an OpenTelemetry collector (opt-in via the `metrics.otlp` config)
 
 The following are partial or placeholder:
@@ -471,9 +472,10 @@ The following are partial or placeholder:
 - full upstream progress relay back to MCP clients
 - full memory retrieval and writeback in request path
 - the `agents` control plane is implemented through P0 + P1 (CRUD, workspace,
-  observability, and write-time `agent_id` attribution); the turn-first Agent
-  runtime capability layer and breaking migration from ACPRoute/BuiltinRoute
-  to one AgentRoute remain future work. See
+  observability, write-time `agent_id` attribution, the turn-first runtime API
+  contract/registry, run-scoped event sequencing, normalized errors, and common
+  usage identities); ACP/builtin backend adapters and the breaking migration
+  from ACPRoute/BuiltinRoute to one AgentRoute remain future work. See
   [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md).
 - the unified Workflow Runtime for synchronous resource composition, durable
   Agent Tasks, scheduling, and multi-agent DAGs remains future work. It

@@ -23,6 +23,10 @@ type InteractionEvent struct {
 	// traffic and for events whose route/service maps to zero or more than one
 	// agent (stamp only when unambiguous).
 	AgentID string
+	// RuntimeType and RunID are common Agent-execution dimensions. They remain
+	// empty for direct non-Agent protocol traffic and legacy rows.
+	RuntimeType string
+	RunID       string
 }
 
 type LLMUsageEvent struct {
@@ -91,8 +95,10 @@ type ACPUsageEvent struct {
 // than ACP's side channel, and carry topology step counts instead.
 type BuiltinUsageEvent struct {
 	InteractionEvent
-	Operation           string
-	SessionID           string
+	Operation string
+	SessionID string
+	// RunID is retained as the typed builtin extension field while the embedded
+	// common event carries the same value for cross-runtime consumers.
 	RunID               string
 	PermissionRequestID string
 	// LinkTraceID/LinkSpanID identify the earlier asynchronous segment of the
@@ -189,6 +195,10 @@ type InteractionDimensions struct {
 	// AgentID, when set by the caller, is stamped verbatim. When empty the
 	// observer attempts attribution from RouteID via the wired AgentAttributor.
 	AgentID string
+	// RuntimeType selects the Agent backend while RunID identifies one logical
+	// execution across transport/HITL resume segments.
+	RuntimeType string
+	RunID       string
 }
 
 type InteractionOutcome struct {
@@ -196,6 +206,14 @@ type InteractionOutcome struct {
 	StatusCode int
 	ErrorType  string
 	FinishedAt time.Time
+}
+
+// CommonExtension lets an execution boundary bind identities that are only
+// known after the outer HTTP span begins (for example a generated run_id).
+type CommonExtension struct {
+	AgentID     string
+	RuntimeType string
+	RunID       string
 }
 
 type EventSink interface {

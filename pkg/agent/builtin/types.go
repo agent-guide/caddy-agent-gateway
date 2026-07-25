@@ -39,6 +39,9 @@ var ErrAgentNotFound = errors.New("builtin agent not found")
 // a turn, Permission resumes one suspended on a tool-permission interrupt
 // (§5.7.7) and streams the continuation on this request's SSE response.
 type TurnRequest struct {
+	// RunID is allocated by the Agent execution boundary for a fresh run. A
+	// permission resume preserves the pending checkpoint's logical run id.
+	RunID      string          `json:"-"`
 	SessionID  string          `json:"session_id,omitempty"`
 	Input      string          `json:"input,omitempty"`
 	Permission *TurnPermission `json:"permission,omitempty"`

@@ -61,11 +61,15 @@ func (q *UsageQueries) ListInteractions(opts usage.EventListOptions) (usage.Even
 		"route_kind": "route_kind", "route_protocol": "route_protocol", "route_id": "route_id",
 		"virtual_key_id": "virtual_key_id", "trace_id": "trace_id", "parent_span_id": "parent_span_id",
 		"agent_depth": "agent_depth", "agent_id": "agent_id", "service_id": "service_id", "session_id": "session_id",
-		"run_id": "run_id", "permission_request_id": "permission_request_id",
+		"run_id": "run_id", "runtime_type": "runtime_type", "permission_request_id": "permission_request_id",
 		"link_trace_id": "link_trace_id", "link_span_id": "link_span_id",
 	}
+	return q.listRows(interactionListBaseQuery(), "interactions", filters, opts)
+}
+
+func interactionListBaseQuery() string {
 	baseCols := `event_id, trace_id, span_id, parent_span_id, agent_depth, started_at, finished_at,
-		route_id, route_kind, route_protocol, virtual_key_id, success, status_code, error_type, latency_ms, agent_id`
+		route_id, route_kind, route_protocol, virtual_key_id, success, status_code, error_type, latency_ms, agent_id, run_id, runtime_type`
 	// Project protocol-specific columns so the UNION lines up, ACP session
 	// filtering works through the mixed interaction view, and the consumer can
 	// label a span by what it actually did (LLM upstream_model, MCP tool_name,
@@ -78,18 +82,18 @@ func (q *UsageQueries) ListInteractions(opts usage.EventListOptions) (usage.Even
 	llmExtra := `request_tool_count, request_tool_names, tool_call_count, tool_names, input_tokens, output_tokens, total_tokens, cached_tokens, reasoning_tokens`
 	nullExtra := `NULL AS request_tool_count, NULL AS request_tool_names, NULL AS tool_call_count, NULL AS tool_names, NULL AS input_tokens, NULL AS output_tokens, NULL AS total_tokens, NULL AS cached_tokens, NULL AS reasoning_tokens`
 	query := "SELECT * FROM (" +
-		"SELECT " + baseCols + ", NULL AS service_id, NULL AS session_id, NULL AS operation, NULL AS run_id, NULL AS permission_request_id, NULL AS link_trace_id, NULL AS link_span_id, NULL AS tool_name, upstream_model, " + llmExtra + " FROM llm_usage_events UNION ALL " +
-		"SELECT " + baseCols + ", service_id, NULL AS session_id, NULL AS operation, NULL AS run_id, NULL AS permission_request_id, NULL AS link_trace_id, NULL AS link_span_id, tool_name, NULL AS upstream_model, " + nullExtra + " FROM mcp_usage_events UNION ALL " +
-		"SELECT " + baseCols + ", service_id, session_id, operation, NULL AS run_id, permission_request_id, NULL AS link_trace_id, NULL AS link_span_id, NULL AS tool_name, NULL AS upstream_model, " + nullExtra + " FROM acp_usage_events UNION ALL " +
-		"SELECT " + baseCols + ", NULL AS service_id, session_id, operation, run_id, permission_request_id, link_trace_id, link_span_id, NULL AS tool_name, NULL AS upstream_model, " + nullExtra + " FROM builtin_usage_events) interactions"
-	return q.listRows(query, "interactions", filters, opts)
+		"SELECT " + baseCols + ", NULL AS service_id, NULL AS session_id, NULL AS operation, NULL AS permission_request_id, NULL AS link_trace_id, NULL AS link_span_id, NULL AS tool_name, upstream_model, " + llmExtra + " FROM llm_usage_events UNION ALL " +
+		"SELECT " + baseCols + ", service_id, NULL AS session_id, NULL AS operation, NULL AS permission_request_id, NULL AS link_trace_id, NULL AS link_span_id, tool_name, NULL AS upstream_model, " + nullExtra + " FROM mcp_usage_events UNION ALL " +
+		"SELECT " + baseCols + ", service_id, session_id, operation, permission_request_id, NULL AS link_trace_id, NULL AS link_span_id, NULL AS tool_name, NULL AS upstream_model, " + nullExtra + " FROM acp_usage_events UNION ALL " +
+		"SELECT " + baseCols + ", NULL AS service_id, session_id, operation, permission_request_id, link_trace_id, link_span_id, NULL AS tool_name, NULL AS upstream_model, " + nullExtra + " FROM builtin_usage_events) interactions"
+	return query
 }
 
 // Per-protocol dimension whitelists and measure expressions shared by the
 // timeseries and breakdown queries so both surfaces stay column-aligned.
 var (
 	llmGroups = map[string]string{
-		"route_id": "route_id", "provider_id": "provider_id", "virtual_key_id": "virtual_key_id", "upstream_model": "upstream_model", "llm_api": "llm_api",
+		"route_id": "route_id", "provider_id": "provider_id", "virtual_key_id": "virtual_key_id", "upstream_model": "upstream_model", "llm_api": "llm_api", "run_id": "run_id", "runtime_type": "runtime_type",
 	}
 	llmMeasures = `COUNT(*) AS request_count, COALESCE(SUM(success),0) AS success_count,
 		COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) AS failure_count,
@@ -99,7 +103,7 @@ var (
 		COALESCE(AVG(latency_ms),0) AS avg_latency_ms`
 
 	mcpGroups = map[string]string{
-		"route_id": "route_id", "service_id": "service_id", "virtual_key_id": "virtual_key_id", "method": "method", "tool_name": "tool_name", "result_status": "result_status",
+		"route_id": "route_id", "service_id": "service_id", "virtual_key_id": "virtual_key_id", "method": "method", "tool_name": "tool_name", "result_status": "result_status", "run_id": "run_id", "runtime_type": "runtime_type",
 	}
 	mcpMeasures = `COUNT(*) AS request_count, COALESCE(SUM(success),0) AS success_count,
 		COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) AS failure_count,
@@ -107,7 +111,7 @@ var (
 		COALESCE(AVG(latency_ms),0) AS avg_latency_ms`
 
 	acpGroups = map[string]string{
-		"route_id": "route_id", "route_protocol": "route_protocol", "service_id": "service_id", "virtual_key_id": "virtual_key_id", "agent_type": "agent_type", "operation": "operation",
+		"route_id": "route_id", "route_protocol": "route_protocol", "service_id": "service_id", "virtual_key_id": "virtual_key_id", "agent_type": "agent_type", "operation": "operation", "run_id": "run_id", "runtime_type": "runtime_type",
 	}
 	acpMeasures = `COUNT(*) AS request_count, COALESCE(SUM(CASE WHEN operation='turn' THEN 1 ELSE 0 END),0) AS turn_count,
 		COALESCE(SUM(success),0) AS success_count, COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) AS failure_count,
@@ -140,7 +144,7 @@ func (q *UsageQueries) ACPBreakdown(opts usage.BreakdownOptions) (usage.Breakdow
 
 func (q *UsageQueries) MCPToolsSummary(opts usage.SummaryOptions) (usage.BreakdownResponse, error) {
 	bo := usage.BreakdownOptions{From: opts.From, To: opts.To, GroupBy: "tool_name", Limit: opts.Limit, Filters: opts.Filters, OrderBy: "request_count", Attribution: opts.Attribution}
-	return q.breakdown(`mcp_usage_events`, bo, map[string]string{"tool_name": "tool_name", "route_id": "route_id", "service_id": "service_id"}, `COUNT(*) AS request_count,
+	return q.breakdown(`mcp_usage_events`, bo, map[string]string{"tool_name": "tool_name", "route_id": "route_id", "service_id": "service_id", "run_id": "run_id", "runtime_type": "runtime_type"}, `COUNT(*) AS request_count,
 		COALESCE(SUM(success),0) AS success_count, COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) AS failure_count,
 		COALESCE(AVG(latency_ms),0) AS avg_latency_ms`)
 }
@@ -152,6 +156,7 @@ func (q *UsageQueries) ACPSummary(opts usage.BreakdownOptions) (usage.BreakdownR
 func (q *UsageQueries) InteractionsSummary(opts usage.BreakdownOptions) (usage.BreakdownResponse, error) {
 	allowed := map[string]string{
 		"route_kind": "route_kind", "route_protocol": "route_protocol", "route_id": "route_id", "virtual_key_id": "virtual_key_id",
+		"runtime_type": "runtime_type",
 	}
 	groupCol, err := allowedGroupBy(opts.GroupBy, allowed)
 	if err != nil {
@@ -167,9 +172,9 @@ func (q *UsageQueries) InteractionsSummary(opts usage.BreakdownOptions) (usage.B
 	// without exposing them as group_by dimensions.
 	filterable := map[string]string{
 		"route_kind": "route_kind", "route_protocol": "route_protocol", "route_id": "route_id", "virtual_key_id": "virtual_key_id",
-		"service_id": "service_id", "session_id": "session_id",
+		"service_id": "service_id", "session_id": "session_id", "run_id": "run_id", "runtime_type": "runtime_type",
 	}
-	baseCols := `event_id, started_at, route_kind, route_protocol, route_id, virtual_key_id, success, latency_ms, agent_id`
+	baseCols := `event_id, started_at, route_kind, route_protocol, route_id, virtual_key_id, success, latency_ms, agent_id, run_id, runtime_type`
 	query := "SELECT " + groupCol + ` AS group_value, COUNT(*) AS request_count, COALESCE(SUM(success),0) AS success_count,
 		COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) AS failure_count, COALESCE(AVG(latency_ms),0) AS avg_latency_ms
 		FROM (` +
@@ -346,7 +351,7 @@ func eventTable(kind string) (string, map[string]string, error) {
 			"route_id": "route_id", "provider_id": "provider_id", "virtual_key_id": "virtual_key_id",
 			"logical_model": "logical_model", "upstream_model": "upstream_model", "llm_api": "llm_api",
 			"api_operation": "api_operation", "request_tool_name": "request_tool_names", "has_tool_use": "tool_call_count",
-			"agent_id": "agent_id",
+			"agent_id": "agent_id", "run_id": "run_id", "runtime_type": "runtime_type",
 		}, nil
 	case "mcp":
 		return "mcp_usage_events", map[string]string{
@@ -354,13 +359,13 @@ func eventTable(kind string) (string, map[string]string, error) {
 			"method": "method", "tool_name": "tool_name", "resource_uri": "resource_uri",
 			"prompt_name": "prompt_name", "completion_ref_type": "completion_ref_type",
 			"completion_argument": "completion_argument", "result_status": "result_status",
-			"agent_id": "agent_id",
+			"agent_id": "agent_id", "run_id": "run_id", "runtime_type": "runtime_type",
 		}, nil
 	case "acp":
 		return "acp_usage_events", map[string]string{
 			"route_id": "route_id", "route_protocol": "route_protocol", "service_id": "service_id", "virtual_key_id": "virtual_key_id",
 			"agent_type": "agent_type", "operation": "operation", "thread_id": "thread_id", "session_id": "session_id",
-			"agent_id": "agent_id",
+			"agent_id": "agent_id", "run_id": "run_id", "runtime_type": "runtime_type",
 		}, nil
 	case "builtin":
 		return "builtin_usage_events", map[string]string{
@@ -368,7 +373,7 @@ func eventTable(kind string) (string, map[string]string, error) {
 			"session_id": "session_id", "topology_kind": "topology_kind", "result_status": "result_status",
 			"run_id": "run_id", "permission_request_id": "permission_request_id",
 			"link_trace_id": "link_trace_id", "link_span_id": "link_span_id",
-			"agent_id": "agent_id",
+			"agent_id": "agent_id", "runtime_type": "runtime_type",
 		}, nil
 	default:
 		return "", nil, fmt.Errorf("unknown usage event kind %q", kind)

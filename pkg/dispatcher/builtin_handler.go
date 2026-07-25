@@ -9,7 +9,9 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
+	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinhost "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	"go.uber.org/zap"
 )
@@ -70,6 +72,22 @@ func (h *Handler) dispatchBuiltin(w http.ResponseWriter, r *http.Request, next N
 	if req.Input == "" && req.Permission == nil {
 		usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "invalid_request")
 		return httpjson.Error(w, http.StatusBadRequest, "input or permission is required")
+	}
+	if req.Permission == nil {
+		req.RunID, err = runtimeapi.NewRunID()
+		if err != nil {
+			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "turn_failed")
+			return httpjson.Error(w, http.StatusInternalServerError, "failed to initialize run")
+		}
+		span := usage.SpanFromContext(rewritten.Context())
+		span.SetExtension(usage.CommonExtension{AgentID: route.AgentID, RuntimeType: agentpkg.RuntimeTypeBuiltin, RunID: req.RunID})
+		if dims, ok := usage.DimensionsFromContext(rewritten.Context()); ok {
+			dims.AgentID = route.AgentID
+			dims.RuntimeType = agentpkg.RuntimeTypeBuiltin
+			dims.RunID = req.RunID
+			rewritten = rewritten.WithContext(usage.ContextWithDimensions(rewritten.Context(), dims))
+		}
+		logRequestPhase(h.logger, "dispatcher: agent run initialized", rewritten)
 	}
 
 	// SSE headers are written lazily on the first event: everything the host

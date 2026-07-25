@@ -1,7 +1,9 @@
 package sqlite
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -43,6 +45,7 @@ func TestUsageWriterColumnsMatchSchema(t *testing.T) {
 		{table: "llm_usage_events", columns: llmUsageInsertColumns},
 		{table: "mcp_usage_events", columns: mcpUsageInsertColumns},
 		{table: "acp_usage_events", columns: acpUsageInsertColumns},
+		{table: "builtin_usage_events", columns: builtinUsageInsertColumns},
 	} {
 		t.Run(tt.table, func(t *testing.T) {
 			got, err := tableColumns(db, tt.table)
@@ -144,8 +147,8 @@ func TestMigrateUsageTablesRebuildsLegacyLLMTable(t *testing.T) {
 	if err := db.Raw(`SELECT count(*) FROM sqlite_master WHERE type='index' AND tbl_name='llm_usage_events' AND name LIKE 'idx_llm_events_%'`).Scan(&indexCount).Error; err != nil {
 		t.Fatalf("count indexes: %v", err)
 	}
-	if indexCount != 6 {
-		t.Fatalf("llm_usage_events indexes = %d, want 6", indexCount)
+	if indexCount != 8 {
+		t.Fatalf("llm_usage_events indexes = %d, want 8", indexCount)
 	}
 
 	// Migration is idempotent: a second pass is a no-op, not a second rebuild.
@@ -158,6 +161,149 @@ func TestMigrateUsageTablesRebuildsLegacyLLMTable(t *testing.T) {
 	}
 	if rowCount != 1 {
 		t.Fatalf("rows after second migration = %d, want 1", rowCount)
+	}
+}
+
+func TestMigrateUsageTablesAddsCommonIdentityToPreM1Schema(t *testing.T) {
+	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := backend.UsageDB()
+	if err := MigrateUsageTables(db); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := InsertLLMUsageEvent(db, usage.LLMUsageEvent{InteractionEvent: usage.InteractionEvent{EventID: "legacy-llm", SpanID: "s1", StartedAt: now, FinishedAt: now, RouteKind: "llm"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := InsertMCPUsageEvent(db, usage.MCPUsageEvent{InteractionEvent: usage.InteractionEvent{EventID: "legacy-mcp", SpanID: "s2", StartedAt: now, FinishedAt: now, RouteKind: "mcp"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := InsertACPUsageEvent(db, usage.ACPUsageEvent{InteractionEvent: usage.InteractionEvent{EventID: "legacy-acp", SpanID: "s3", StartedAt: now, FinishedAt: now, RouteKind: "acp"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := InsertBuiltinUsageEvent(db, usage.BuiltinUsageEvent{InteractionEvent: usage.InteractionEvent{EventID: "legacy-builtin", SpanID: "s4", StartedAt: now, FinishedAt: now, RouteKind: "builtin"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove the M1-only indexes and columns to construct an on-disk pre-M1
+	// shape while retaining representative legacy rows.
+	for _, index := range []string{
+		"idx_llm_events_run", "idx_llm_events_runtime", "idx_mcp_events_run", "idx_mcp_events_runtime",
+		"idx_acp_events_run", "idx_acp_events_runtime", "idx_builtin_events_run", "idx_builtin_events_runtime",
+	} {
+		if err := db.Exec("DROP INDEX " + index).Error; err != nil {
+			t.Fatalf("drop %s: %v", index, err)
+		}
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE llm_usage_events DROP COLUMN run_id", "ALTER TABLE llm_usage_events DROP COLUMN runtime_type",
+		"ALTER TABLE mcp_usage_events DROP COLUMN run_id", "ALTER TABLE mcp_usage_events DROP COLUMN runtime_type",
+		"ALTER TABLE acp_usage_events DROP COLUMN run_id", "ALTER TABLE acp_usage_events DROP COLUMN runtime_type",
+		"ALTER TABLE builtin_usage_events DROP COLUMN runtime_type",
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			t.Fatalf("construct pre-M1 schema with %q: %v", stmt, err)
+		}
+	}
+	if err := MigrateUsageTables(db); err != nil {
+		t.Fatalf("MigrateUsageTables(pre-M1) error = %v", err)
+	}
+	for _, table := range []string{"llm_usage_events", "mcp_usage_events", "acp_usage_events", "builtin_usage_events"} {
+		cols, err := tableColumns(db, table)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(cols, "run_id") || !slices.Contains(cols, "runtime_type") {
+			t.Fatalf("%s common columns = %#v", table, cols)
+		}
+		var count int64
+		if err := db.Raw(fmt.Sprintf("SELECT count(*) FROM %s WHERE run_id IS NULL AND runtime_type IS NULL", table)).Scan(&count).Error; err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("%s legacy null identity rows = %d, want 1", table, count)
+		}
+	}
+}
+
+func TestUsageCommonIdentityMixedRowsAndQueryPlans(t *testing.T) {
+	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := backend.UsageDB()
+	if err := MigrateUsageTables(db); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for _, ev := range []usage.LLMUsageEvent{
+		{InteractionEvent: usage.InteractionEvent{EventID: "direct", SpanID: "direct-span", StartedAt: now, FinishedAt: now, RouteKind: "llm"}},
+		{InteractionEvent: usage.InteractionEvent{EventID: "agent", SpanID: "agent-span", StartedAt: now, FinishedAt: now, RouteKind: "llm", AgentID: "a1", RunID: "run-common", RuntimeType: "builtin"}},
+	} {
+		if err := InsertLLMUsageEvent(db, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := NewUsageQueries(db)
+	for _, filter := range []map[string]string{{"run_id": "run-common"}, {"runtime_type": "builtin"}, {"agent_id": "a1"}} {
+		events, err := q.ListEvents("llm", usage.EventListOptions{Filters: filter})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(events.Items) != 1 || events.Items[0]["event_id"] != "agent" {
+			t.Fatalf("filter %v events = %#v", filter, events.Items)
+		}
+		interactions, err := q.ListInteractions(usage.EventListOptions{Filters: filter})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(interactions.Items) != 1 || interactions.Items[0]["event_id"] != "agent" {
+			t.Fatalf("filter %v interactions = %#v", filter, interactions.Items)
+		}
+	}
+	all, err := q.ListInteractions(usage.EventListOptions{})
+	if err != nil || len(all.Items) != 2 {
+		t.Fatalf("mixed interactions = %#v, error = %v", all.Items, err)
+	}
+	for _, item := range all.Items {
+		if item["event_id"] == "direct" && (item["run_id"] != nil || item["runtime_type"] != nil || item["agent_id"] != nil) {
+			t.Fatalf("direct row gained Agent identity = %#v", item)
+		}
+	}
+
+	for _, tt := range []struct{ filter, index string }{
+		{"run_id = 'run-common'", "idx_llm_events_run"},
+		{"runtime_type = 'builtin'", "idx_llm_events_runtime"},
+	} {
+		rows, err := q.rawItems("EXPLAIN QUERY PLAN SELECT * FROM llm_usage_events WHERE " + tt.filter + " ORDER BY started_at DESC")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 0 || !strings.Contains(fmt.Sprint(rows[0]["detail"]), tt.index) {
+			t.Fatalf("query plan for %s = %#v, want %s", tt.filter, rows, tt.index)
+		}
+	}
+
+	for _, tt := range []struct {
+		filter  string
+		value   string
+		indexes []string
+	}{
+		{"run_id = ?", "run-common", []string{"idx_llm_events_run", "idx_mcp_events_run", "idx_acp_events_run", "idx_builtin_events_run"}},
+		{"runtime_type = ?", "builtin", []string{"idx_llm_events_runtime", "idx_mcp_events_runtime", "idx_acp_events_runtime", "idx_builtin_events_runtime"}},
+	} {
+		rows, err := q.rawItems("EXPLAIN QUERY PLAN "+interactionListBaseQuery()+" WHERE "+tt.filter+" ORDER BY started_at DESC", tt.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		details := fmt.Sprint(rows)
+		for _, index := range tt.indexes {
+			if !strings.Contains(details, index) {
+				t.Fatalf("interaction query plan for %s = %s, want %s", tt.filter, details, index)
+			}
+		}
 	}
 }
 

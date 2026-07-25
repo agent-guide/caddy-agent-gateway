@@ -101,7 +101,11 @@ func acpSpanStub(ev usage.ACPUsageEvent) (tracetest.SpanStub, error) {
 
 func builtinSpanStub(ev usage.BuiltinUsageEvent) (tracetest.SpanStub, error) {
 	name := spanName("builtin", ev.Operation)
-	attrs := commonAttributes(ev.InteractionEvent)
+	common := ev.InteractionEvent
+	if common.RunID == "" {
+		common.RunID = ev.RunID
+	}
+	attrs := commonAttributes(common)
 	attrs = appendString(attrs, "agw.builtin.operation", ev.Operation)
 	attrs = appendString(attrs, "agw.builtin.session_id", ev.SessionID)
 	attrs = appendString(attrs, "agw.builtin.run_id", ev.RunID)
@@ -110,7 +114,7 @@ func builtinSpanStub(ev usage.BuiltinUsageEvent) (tracetest.SpanStub, error) {
 	attrs = appendPositiveInt(attrs, "agw.builtin.model_steps", ev.ModelSteps)
 	attrs = appendPositiveInt(attrs, "agw.builtin.tool_steps", ev.ToolSteps)
 	attrs = appendString(attrs, "agw.builtin.result_status", ev.ResultStatus)
-	stub, err := baseSpanStub(name, trace.SpanKindServer, ev.InteractionEvent, attrs)
+	stub, err := baseSpanStub(name, trace.SpanKindServer, common, attrs)
 	if err != nil {
 		return tracetest.SpanStub{}, err
 	}
@@ -173,6 +177,8 @@ func commonAttributes(ev usage.InteractionEvent) []attribute.KeyValue {
 	attrs = appendString(attrs, "agw.route.protocol", ev.RouteProtocol)
 	attrs = appendString(attrs, "agw.virtual_key.id", ev.VirtualKeyID)
 	attrs = appendString(attrs, "agw.agent.id", ev.AgentID)
+	attrs = appendString(attrs, "agw.agent.runtime_type", ev.RuntimeType)
+	attrs = appendString(attrs, "agw.agent.run_id", ev.RunID)
 	attrs = appendPositiveInt(attrs, "agw.agent.depth", ev.AgentDepth)
 	attrs = appendPositiveInt(attrs, "http.response.status_code", ev.StatusCode)
 	attrs = appendString(attrs, "agw.error.type", ev.ErrorType)

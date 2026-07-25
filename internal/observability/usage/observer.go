@@ -49,6 +49,15 @@ func DimensionsFromContext(ctx context.Context) (InteractionDimensions, bool) {
 	return dims, ok
 }
 
+// ContextWithDimensions replaces the dimensions visible to nested spans while
+// retaining the current InteractionSpan binding.
+func ContextWithDimensions(ctx context.Context, dims InteractionDimensions) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, dimsContextKey{}, dims)
+}
+
 func SpanFromContext(ctx context.Context) InteractionSpan {
 	if ctx == nil {
 		return NoopSpan{}
@@ -104,6 +113,8 @@ func (o Observer) Begin(ctx context.Context, dims InteractionDimensions) (Intera
 			RouteProtocol: dims.RouteProtocol,
 			VirtualKeyID:  dims.VirtualKeyID,
 			AgentID:       agentID,
+			RuntimeType:   dims.RuntimeType,
+			RunID:         dims.RunID,
 		},
 	}
 	ctx = context.WithValue(ctx, dimsContextKey{}, dims)
@@ -129,6 +140,12 @@ func (s *eventSpan) SetExtension(v any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch ext := v.(type) {
+	case CommonExtension:
+		s.mergeCommon(ext)
+	case *CommonExtension:
+		if ext != nil {
+			s.mergeCommon(*ext)
+		}
 	case LLMExtension:
 		mergeLLM(&s.llm, ext)
 	case *LLMExtension:
@@ -153,6 +170,18 @@ func (s *eventSpan) SetExtension(v any) {
 		if ext != nil {
 			mergeBuiltin(&s.builtin, *ext)
 		}
+	}
+}
+
+func (s *eventSpan) mergeCommon(ext CommonExtension) {
+	if ext.AgentID != "" {
+		s.base.AgentID = ext.AgentID
+	}
+	if ext.RuntimeType != "" {
+		s.base.RuntimeType = ext.RuntimeType
+	}
+	if ext.RunID != "" {
+		s.base.RunID = ext.RunID
 	}
 }
 
@@ -299,10 +328,13 @@ func mcpEvent(base InteractionEvent, ext MCPExtension) MCPUsageEvent {
 }
 
 func builtinEvent(base InteractionEvent, ext BuiltinExtension) BuiltinUsageEvent {
+	if base.RunID == "" {
+		base.RunID = ext.RunID
+	}
 	ev := BuiltinUsageEvent{InteractionEvent: base}
 	ev.Operation = ext.Operation
 	ev.SessionID = ext.SessionID
-	ev.RunID = ext.RunID
+	ev.RunID = base.RunID
 	ev.PermissionRequestID = ext.PermissionRequestID
 	ev.LinkTraceID = ext.LinkTraceID
 	ev.LinkSpanID = ext.LinkSpanID

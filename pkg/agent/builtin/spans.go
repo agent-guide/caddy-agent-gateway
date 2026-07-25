@@ -29,6 +29,8 @@ func childDims(ctx context.Context, kind, routeID, agentID string) usage.Interac
 		dims.ParentSpanID = parent.SpanID
 		dims.AgentDepth = parent.AgentDepth
 		dims.VirtualKeyID = parent.VirtualKeyID
+		dims.RuntimeType = parent.RuntimeType
+		dims.RunID = parent.RunID
 	}
 	return dims
 }

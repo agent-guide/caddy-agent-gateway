@@ -28,7 +28,7 @@ func llmUsageEventsDDL(table string) string {
 		cached_tokens INTEGER, reasoning_tokens INTEGER,
 		usage_finalized INTEGER NOT NULL, request_tool_count INTEGER NOT NULL DEFAULT 0,
 		request_tool_names TEXT, tool_call_count INTEGER NOT NULL DEFAULT 0, tool_names TEXT,
-		agent_id TEXT
+		agent_id TEXT, run_id TEXT, runtime_type TEXT
 	)`
 }
 
@@ -54,7 +54,7 @@ func MigrateUsageTables(db *gorm.DB) error {
 			executed_tool_name TEXT, execution_mode TEXT, policy_action TEXT, resource_uri TEXT, prompt_name TEXT,
 			completion_ref_type TEXT, completion_argument TEXT, arg_count INTEGER, result_status TEXT,
 			cancelled INTEGER NOT NULL DEFAULT 0, tool_args_json TEXT,
-			agent_id TEXT
+			agent_id TEXT, run_id TEXT, runtime_type TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS acp_usage_events (
 			event_id TEXT PRIMARY KEY, trace_id TEXT, span_id TEXT NOT NULL, parent_span_id TEXT,
@@ -63,7 +63,7 @@ func MigrateUsageTables(db *gorm.DB) error {
 			success INTEGER NOT NULL DEFAULT 0, status_code INTEGER, error_type TEXT, latency_ms INTEGER,
 			service_id TEXT, agent_type TEXT, operation TEXT, thread_id TEXT, session_id TEXT,
 			permission_request_id TEXT, fresh_session INTEGER, event_counts_json TEXT, usage_json TEXT,
-			result_status TEXT, agent_id TEXT
+			result_status TEXT, agent_id TEXT, run_id TEXT, runtime_type TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS builtin_usage_events (
 			event_id TEXT PRIMARY KEY, trace_id TEXT, span_id TEXT NOT NULL, parent_span_id TEXT,
@@ -72,7 +72,8 @@ func MigrateUsageTables(db *gorm.DB) error {
 			success INTEGER NOT NULL DEFAULT 0, status_code INTEGER, error_type TEXT, latency_ms INTEGER,
 			operation TEXT, session_id TEXT, run_id TEXT, permission_request_id TEXT,
 			link_trace_id TEXT, link_span_id TEXT, topology_kind TEXT, model_steps INTEGER NOT NULL DEFAULT 0,
-			tool_steps INTEGER NOT NULL DEFAULT 0, event_counts_json TEXT, result_status TEXT, agent_id TEXT
+			tool_steps INTEGER NOT NULL DEFAULT 0, event_counts_json TEXT, result_status TEXT, agent_id TEXT,
+			runtime_type TEXT
 		)`,
 	}
 	for _, stmt := range tables {
@@ -91,6 +92,13 @@ func MigrateUsageTables(db *gorm.DB) error {
 		{"llm_usage_events", "agent_id TEXT"},
 		{"mcp_usage_events", "agent_id TEXT"},
 		{"acp_usage_events", "agent_id TEXT"},
+		{"llm_usage_events", "run_id TEXT"},
+		{"llm_usage_events", "runtime_type TEXT"},
+		{"mcp_usage_events", "run_id TEXT"},
+		{"mcp_usage_events", "runtime_type TEXT"},
+		{"acp_usage_events", "run_id TEXT"},
+		{"acp_usage_events", "runtime_type TEXT"},
+		{"builtin_usage_events", "runtime_type TEXT"},
 		{"llm_usage_events", "cached_tokens INTEGER"},
 		{"llm_usage_events", "reasoning_tokens INTEGER"},
 		{"builtin_usage_events", "run_id TEXT"},
@@ -117,23 +125,30 @@ func MigrateUsageTables(db *gorm.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_llm_events_trace ON llm_usage_events (trace_id, started_at) WHERE trace_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_events_tool_use ON llm_usage_events (tool_call_count, started_at) WHERE tool_call_count > 0`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_events_agent ON llm_usage_events (agent_id, started_at) WHERE agent_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_events_run ON llm_usage_events (run_id, started_at) WHERE run_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_llm_events_runtime ON llm_usage_events (runtime_type, started_at) WHERE runtime_type IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_mcp_events_started ON mcp_usage_events (started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_mcp_events_route ON mcp_usage_events (route_id, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_mcp_events_request ON mcp_usage_events (route_id, request_id, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_mcp_events_trace ON mcp_usage_events (trace_id, started_at) WHERE trace_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_mcp_events_tool ON mcp_usage_events (tool_name, started_at) WHERE tool_name IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_mcp_events_agent ON mcp_usage_events (agent_id, started_at) WHERE agent_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_events_run ON mcp_usage_events (run_id, started_at) WHERE run_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_mcp_events_runtime ON mcp_usage_events (runtime_type, started_at) WHERE runtime_type IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_started ON acp_usage_events (started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_route ON acp_usage_events (route_id, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_service ON acp_usage_events (service_id, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_trace ON acp_usage_events (trace_id, started_at) WHERE trace_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_thread ON acp_usage_events (thread_id, started_at) WHERE thread_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_acp_events_agent ON acp_usage_events (agent_id, started_at) WHERE agent_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_acp_events_run ON acp_usage_events (run_id, started_at) WHERE run_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_acp_events_runtime ON acp_usage_events (runtime_type, started_at) WHERE runtime_type IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_started ON builtin_usage_events (started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_route ON builtin_usage_events (route_id, started_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_trace ON builtin_usage_events (trace_id, started_at) WHERE trace_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_run ON builtin_usage_events (run_id, started_at) WHERE run_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_builtin_events_agent ON builtin_usage_events (agent_id, started_at) WHERE agent_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_builtin_events_runtime ON builtin_usage_events (runtime_type, started_at) WHERE runtime_type IS NOT NULL`,
 	}
 	for _, stmt := range indexes {
 		if err := db.Exec(stmt).Error; err != nil {

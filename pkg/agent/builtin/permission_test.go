@@ -159,6 +159,62 @@ func TestPermissionResumePreservesRunAndLinksOriginalSpan(t *testing.T) {
 	}
 }
 
+func TestPermissionResumePropagatesRunToInnerUsage(t *testing.T) {
+	events := &usage.InMemorySink{}
+	observer := usage.NewObserver(events)
+	host := NewHost(Config{
+		Agents:   &fakeAgentSource{agents: map[string]agent.Agent{"gated": interactiveAgent("gated")}},
+		Models:   &fakeModelResolver{model: gatedToolModel()},
+		Tools:    fetchDocCaller("resumed tool output"),
+		Observer: observer,
+	})
+	turnSpan, turnCtx := observer.Begin(t.Context(), usage.InteractionDimensions{
+		TraceID: "11111111111111111111111111111111", SpanID: "2222222222222222",
+		RouteID: "builtin:gated:turn", RouteKind: "builtin", AgentID: "gated", RuntimeType: agent.RuntimeTypeBuiltin,
+	})
+	sessionID, payload := suspendOneTurnContext(t, turnCtx, host, "gated")
+	turnSpan.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
+
+	resumeTraceID := "33333333333333333333333333333333"
+	resumeSpan, resumeCtx := observer.Begin(t.Context(), usage.InteractionDimensions{
+		TraceID: resumeTraceID, SpanID: "4444444444444444",
+		RouteID: "builtin:gated:turn", RouteKind: "builtin", AgentID: "gated", RuntimeType: agent.RuntimeTypeBuiltin,
+	})
+	err := host.ServeTurn(resumeCtx, "gated", TurnRequest{
+		SessionID: sessionID,
+		Permission: &TurnPermission{RequestID: payload.RequestID, Decisions: []TurnPermissionDecision{{
+			CallID: payload.Calls[0].CallID, Outcome: "allow",
+		}}},
+	}, (&collectedEvents{}).sink)
+	if err != nil {
+		t.Fatalf("allow resume error = %v", err)
+	}
+	resumeSpan.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
+
+	innerKinds := map[string]bool{}
+	for _, event := range events.Events {
+		switch typed := event.(type) {
+		case usage.LLMUsageEvent:
+			if typed.TraceID == resumeTraceID {
+				innerKinds["llm"] = true
+				if typed.RunID != payload.RunID || typed.RuntimeType != agent.RuntimeTypeBuiltin {
+					t.Fatalf("resumed LLM identity = %+v, want run/runtime %q/%q", typed, payload.RunID, agent.RuntimeTypeBuiltin)
+				}
+			}
+		case usage.MCPUsageEvent:
+			if typed.TraceID == resumeTraceID {
+				innerKinds["mcp"] = true
+				if typed.RunID != payload.RunID || typed.RuntimeType != agent.RuntimeTypeBuiltin {
+					t.Fatalf("resumed MCP identity = %+v, want run/runtime %q/%q", typed, payload.RunID, agent.RuntimeTypeBuiltin)
+				}
+			}
+		}
+	}
+	if !innerKinds["llm"] || !innerKinds["mcp"] {
+		t.Fatalf("resumed inner usage kinds = %v, want llm and mcp", innerKinds)
+	}
+}
+
 func TestServeTurnInteractiveInterruptAndResumeAllow(t *testing.T) {
 	tools := fetchDocCaller("TOOL OUTPUT MARKER")
 	// Recording happens inside the script closure: with tools configured, ADK

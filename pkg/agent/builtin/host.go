@@ -164,11 +164,18 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 		return err
 	}
 	sessionID := handle.sessionID()
-	runID, err := newRunID()
-	if err != nil {
-		handle.release()
-		return err
+	runID := req.RunID
+	if runID == "" {
+		// Direct Host callers remain supported until M2 moves every shipping
+		// path behind runtimeapi. Route execution supplies this id at the common
+		// boundary and the Host preserves it verbatim.
+		runID, err = newRunID()
+		if err != nil {
+			handle.release()
+			return err
+		}
 	}
+	turnCtx = withBuiltinRunDimensions(turnCtx, agentID, runID)
 	// A session suspended on a pending permission only moves forward through
 	// an explicit resume or cancel; new input is rejected rather than
 	// silently discarding the suspended work (§5.7.7).
@@ -201,6 +208,7 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 		<-entry.turnSem
 	}()
 	span := usage.SpanFromContext(ctx)
+	span.SetExtension(usage.CommonExtension{AgentID: agentID, RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID})
 	span.SetExtension(usage.BuiltinExtension{
 		Operation:    "turn",
 		SessionID:    sessionID,
@@ -414,6 +422,8 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 			return fmt.Errorf("%w: decision references unknown call %q", ErrInvalidRequest, callID)
 		}
 	}
+	ctx = withBuiltinRunDimensions(ctx, a.ID, pending.runID)
+	span.SetExtension(usage.CommonExtension{AgentID: a.ID, RuntimeType: agent.RuntimeTypeBuiltin, RunID: pending.runID})
 
 	if perm.Outcome == "cancel" {
 		dropPending()
@@ -536,6 +546,8 @@ func (h *Host) deleteExpiredPermissions(expired []*pendingPermission) {
 				VirtualKeyID:  p.virtualKeyID,
 				AgentDepth:    p.agentDepth,
 				AgentID:       p.agentID,
+				RuntimeType:   agent.RuntimeTypeBuiltin,
+				RunID:         p.runID,
 			})
 			span.SetExtension(usage.BuiltinExtension{
 				Operation:           "permission_expire",
@@ -549,6 +561,14 @@ func (h *Host) deleteExpiredPermissions(expired []*pendingPermission) {
 			span.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
 		}
 	}
+}
+
+func withBuiltinRunDimensions(ctx context.Context, agentID, runID string) context.Context {
+	dims, _ := usage.DimensionsFromContext(ctx)
+	dims.AgentID = agentID
+	dims.RuntimeType = agent.RuntimeTypeBuiltin
+	dims.RunID = runID
+	return usage.ContextWithDimensions(ctx, dims)
 }
 
 // pendingCallsFromInterrupt extracts the approval gate's root-cause interrupt
