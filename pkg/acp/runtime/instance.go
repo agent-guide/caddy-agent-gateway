@@ -126,7 +126,7 @@ func (c *sessionMetaCache) turnStartEvents() []TurnEvent {
 	return events
 }
 
-func newInstance(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequest, permissions *permissionBroker) (*instance, error) {
+func newInstance(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequest, permissions *permissionBroker, observers ...func(string, json.RawMessage)) (*instance, error) {
 	cwd := strings.TrimSpace(req.CWD)
 	if cwd == "" {
 		cwd = cfg.CWD
@@ -145,6 +145,9 @@ func newInstance(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequ
 		return nil, err
 	}
 	inst.t = t
+	if len(observers) > 0 && observers[0] != nil {
+		inst.t = observedTransport{Transport: t, notify: observers[0]}
+	}
 	// Subscribe for the whole instance lifetime so state pushed outside a turn
 	// is not lost — the real opencode binary pushes available_commands_update
 	// right after session/new, before any prompt.
@@ -160,6 +163,23 @@ func newInstance(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequ
 		return nil, err
 	}
 	return inst, nil
+}
+
+// observedTransport is a narrow wire tap used by native-agent acceptance
+// tests. The observer runs only after the JSON-RPC notification was written to
+// the real transport, so tests can assert the session/cancel frame itself.
+type observedTransport struct {
+	acptransport.Transport
+	notify func(string, json.RawMessage)
+}
+
+func (t observedTransport) Notify(method string, params any) error {
+	if err := t.Transport.Notify(method, params); err != nil {
+		return err
+	}
+	raw, _ := json.Marshal(params)
+	t.notify(method, raw)
+	return nil
 }
 
 // consumeMetadata feeds the session metadata cache from a dedicated updates
@@ -619,11 +639,11 @@ func parseStopReason(raw json.RawMessage) string {
 	return strings.TrimSpace(payload.StopReason)
 }
 
-func (i *instance) cancel() {
+func (i *instance) cancel() error {
 	if i == nil || i.t == nil || i.protocolSessionID() == "" {
-		return
+		return ErrRunNotReady
 	}
-	i.agent.Cancel(context.Background(), i.t, i.protocolSessionID())
+	return i.agent.Cancel(context.Background(), i.t, i.protocolSessionID())
 }
 
 func (i *instance) close() error {
@@ -713,7 +733,8 @@ func (i *instance) interactivePermission(ctx context.Context, params json.RawMes
 		return cancelled
 	}
 	defer i.permissions.remove(pending.info.RequestID)
-	if err := emit(TurnEvent{Event: "permission", RequestID: pending.info.RequestID, SessionID: i.sessionID, Data: params}); err != nil {
+	expiresAt, _ := ctx.Deadline()
+	if err := emit(TurnEvent{Event: "permission", RequestID: pending.info.RequestID, SessionID: i.sessionID, PermissionExpiresAt: expiresAt, Data: params}); err != nil {
 		return cancelled
 	}
 	select {

@@ -41,7 +41,7 @@ func (a *fakePoolAgentImpl) PromptParams(string, string, string) map[string]any 
 	return map[string]any{}
 }
 
-func (a *fakePoolAgentImpl) Cancel(context.Context, acptransport.Transport, string) {}
+func (a *fakePoolAgentImpl) Cancel(context.Context, acptransport.Transport, string) error { return nil }
 
 type fakePoolTransport struct {
 	mu    sync.Mutex
@@ -87,6 +87,7 @@ func newTestManager() *Manager {
 	return &Manager{
 		active:      NewActivityTracker(),
 		permissions: newPermissionBroker(),
+		runs:        newActiveRunRegistry(),
 		instances:   map[string]*managedInstance{},
 		done:        make(chan struct{}),
 	}

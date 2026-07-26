@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -70,10 +71,11 @@ func (a *fakeBinAgentImpl) PromptParams(id, input string, _ string) map[string]a
 	return map[string]any{"sessionId": id, "prompt": []map[string]any{{"type": "text", "text": input}}}
 }
 
-func (a *fakeBinAgentImpl) Cancel(_ context.Context, t acptransport.Transport, id string) {
+func (a *fakeBinAgentImpl) Cancel(_ context.Context, t acptransport.Transport, id string) error {
 	if t != nil && id != "" {
-		_ = t.Notify("session/cancel", map[string]any{"sessionId": id})
+		return t.Notify("session/cancel", map[string]any{"sessionId": id})
 	}
+	return nil
 }
 
 func TestIntegrationFakeBinaryFullLifecycle(t *testing.T) {
@@ -202,6 +204,149 @@ func TestIntegrationInteractivePermissionRoundTrip(t *testing.T) {
 	}
 	if got := m.ListPendingPermissions(); len(got) != 0 {
 		t.Fatalf("pending permissions after the turn = %+v, want empty", got)
+	}
+}
+
+func TestIntegrationExactRunCancelSendsNativeSessionCancel(t *testing.T) {
+	cwd := t.TempDir()
+	cfg := acpservice.ServiceConfig{ID: "reviewer", Name: "reviewer", AgentType: fakeBinPermAgent, CWD: cwd, AllowedRoots: []string{cwd}, PermissionMode: baseacp.PermissionModeInteractive, MaxInstances: 2}
+	cfg.Normalize()
+	m := newTestManager()
+	defer m.Close()
+	cancelFrames := make(chan json.RawMessage, 2)
+	m.notifyObserver = func(method string, params json.RawMessage) {
+		if method == "session/cancel" {
+			cancelFrames <- params
+		}
+	}
+	type turnResult struct {
+		runID string
+		err   error
+	}
+	events := make(chan struct {
+		runID string
+		event TurnEvent
+	}, 32)
+	done := make(chan turnResult, 2)
+	runA := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	runB := "run-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	start := func(runID, threadID string) {
+		go func() {
+			err := m.serveTurn(context.Background(), cfg, TurnRequest{RunID: runID, ThreadID: threadID, Input: "wait"}, func(ev TurnEvent) error {
+				events <- struct {
+					runID string
+					event TurnEvent
+				}{runID: runID, event: ev}
+				return nil
+			})
+			done <- turnResult{runID: runID, err: err}
+		}()
+	}
+	start(runA, "thread-cancel-a")
+	start(runB, "thread-cancel-b")
+	deadline := time.After(10 * time.Second)
+	pending := map[string]bool{}
+	for len(pending) != 2 {
+		select {
+		case observed := <-events:
+			if observed.event.Event == "permission" {
+				pending[observed.runID] = true
+			}
+		case result := <-done:
+			t.Fatalf("run %s ended before both permissions: %v", result.runID, result.err)
+		case <-deadline:
+			t.Fatalf("permission events did not arrive for both runs: %+v", pending)
+		}
+	}
+	if got := m.ListActiveRuns("reviewer"); len(got) != 2 || got[0].RunID != runA || got[1].RunID != runB {
+		t.Fatalf("active runs=%+v", got)
+	}
+	if err := m.CancelRun("reviewer", runA); err != nil {
+		t.Fatal(err)
+	}
+	assertNativeCancelFrame(t, cancelFrames, "sess-fake")
+	select {
+	case result := <-done:
+		if result.runID != runA || result.err != nil {
+			t.Fatalf("first completed run=%s error=%v, want cancelled %s", result.runID, result.err, runA)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled turn did not terminate")
+	}
+	if got := m.ListActiveRuns("reviewer"); len(got) != 1 || got[0].RunID != runB {
+		t.Fatalf("unrelated run was affected by exact cancel: %+v", got)
+	}
+	if len(m.ListInstances()) != 2 {
+		t.Fatalf("pool entries after exact cancel=%d, want 2", len(m.ListInstances()))
+	}
+	if err := m.CancelRun("reviewer", runB); err != nil {
+		t.Fatal(err)
+	}
+	assertNativeCancelFrame(t, cancelFrames, "sess-fake")
+	select {
+	case result := <-done:
+		if result.runID != runB || result.err != nil {
+			t.Fatalf("cleanup run=%s error=%v, want %s", result.runID, result.err, runB)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("unrelated run did not terminate during cleanup")
+	}
+}
+
+func TestExactRunCancelBeforeInstanceBindIsRetryable(t *testing.T) {
+	runs := newActiveRunRegistry()
+	ctx, run := runs.begin(t.Context(), "owner", "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
+	if run == nil {
+		t.Fatal("begin returned nil run")
+	}
+	if err := runs.cancel("owner", run.runID); !errors.Is(err, ErrRunNotReady) {
+		t.Fatalf("cancel before bind error=%v, want ErrRunNotReady", err)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("retryable pre-bind cancellation cancelled the run context")
+	default:
+	}
+	runs.finish(run)
+}
+
+type failingCancelAgent struct{ stubAgent }
+
+func (failingCancelAgent) Cancel(context.Context, acptransport.Transport, string) error {
+	return errors.New("notify failed")
+}
+
+func TestExactRunCancelWriteFailureLeavesContextRetryable(t *testing.T) {
+	runs := newActiveRunRegistry()
+	ctx, run := runs.begin(t.Context(), "owner", "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
+	inst := &instance{agent: failingCancelAgent{}, t: &scriptedTransport{}, rawSessionID: "sess-1", sessionID: "sess-1"}
+	runs.bind(run, inst)
+	if err := runs.cancel("owner", run.runID); !errors.Is(err, ErrRunNotReady) {
+		t.Fatalf("cancel write error=%v", err)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("failed session/cancel write cancelled the run context")
+	default:
+	}
+	runs.finish(run)
+}
+
+func assertNativeCancelFrame(t *testing.T, frames <-chan json.RawMessage, wantSessionID string) {
+	t.Helper()
+	select {
+	case raw := <-frames:
+		var params struct {
+			SessionID string `json:"sessionId"`
+		}
+		if err := json.Unmarshal(raw, &params); err != nil {
+			t.Fatalf("decode session/cancel params %s: %v", raw, err)
+		}
+		if params.SessionID != wantSessionID {
+			t.Fatalf("session/cancel sessionId=%q, want %q", params.SessionID, wantSessionID)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("session/cancel frame was not written")
 	}
 }
 

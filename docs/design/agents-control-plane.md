@@ -493,8 +493,10 @@ The common run registry owns exact-run control identity. Active entries hold
 backend cancellation bindings; completed entries become process-local,
 10-minute terminal tombstones capped at 1,024 per Agent. Repeated cancellation
 of a retained terminal run returns its terminal result without re-invoking the
-backend. Durable Workflow state replaces this process-local history only for
-Workflow-owned runs.
+backend. A `run_id` cannot be reused while its tombstone is retained; Workflow
+retries keep the stable logical execution key separate and allocate a distinct
+per-attempt `run_id`. Durable Workflow state replaces this process-local
+history only for Workflow-owned runs.
 
 The common permission broker owns pending identity, expiry, atomic claim, and
 audit. A broker record contains an unguessable opaque backend token; ACP waiter
@@ -502,7 +504,18 @@ state and builtin checkpoint/calls/transcript/trace state stay in backend-owned
 stores and are resolved through the selected adapter. Decision, expiry,
 cancellation, Agent deletion/runtime switch, adapter failure, and process
 shutdown consume the common claim once and clean up fail-closed. A backend
-store is never an independently claimable permission registry.
+store is never an independently claimable permission registry. After claim,
+the broker retains only bounded-lifetime owner/runtime routing metadata so
+concurrent ACP route, ACP Admin, and Agent Admin decisions still converge on
+the common one-shot result instead of falling through to native waiter state.
+
+Expiry scheduling is broker-owned and invokes the same atomic claim path as an
+operator decision. Backend continuation stores do not sweep by wall clock.
+Common permission listing exposes only allowlisted action ids/display names
+and ACP option ids/kinds/display names;
+it never contains native payloads, tool arguments, checkpoints, transcripts,
+or trace-link data. Gateway shutdown closes the broker first, rejects late
+publications, drains pending continuations, and then tears down the runtimes.
 
 ACP advertises `resume_mode=active_stream` and delivers a claimed decision to
 its live waiter. Builtin advertises `resume_mode=new_stream`: an Admin decision
@@ -739,6 +752,23 @@ P1 should make the UI an agent console rather than a resource CRUD console.
 - `GET /admin/agents/{id}/resources`
 - `PUT /admin/agents/{id}/resources`
 - `GET /admin/agents/{id}/health`
+
+M3 also ships the runtime-neutral operator surface while legacy ACP/builtin
+ingress remains in place:
+
+- `GET /admin/agents/{id}/capabilities`
+- `GET /admin/agents/{id}/runs`
+- `DELETE /admin/agents/{id}/runs/{run_id}?mode=force|graceful`
+- `GET /admin/agents/{id}/permissions`
+- `POST /admin/agents/{id}/permissions/{request_id}`
+- `GET /admin/agents/{id}/sessions`
+- `GET /admin/agents/{id}/sessions/{session_id}/transcript`
+
+Unsupported optional operations return the normalized
+`capability_not_supported` error. Run history is process-local, retained for
+ten minutes, and capped at 1,024 terminal runs per Agent. Permission records
+are claimed atomically through the common opaque-token broker before an ACP
+waiter or builtin checkpoint continuation is touched.
 
 P1 semantics:
 
@@ -1172,7 +1202,9 @@ Three points the design left open were resolved as follows; revisit if needed:
 ### 11.5 Convention notes
 
 - `agwctl gateway agent` provides `list`/`get`/`delete` plus the P0/P1 read
-  surfaces `workspace`/`activity`/`usage`/`interactions`/`resources`/`health`.
+  surfaces `workspace`/`activity`/`usage`/`interactions`/`resources`/`health`,
+  and the M3 `capabilities`/`runs`/`cancel`/`permissions`/`decide`/`sessions`/
+  `transcript` runtime controls.
   Agent create/update go through `agwctl gateway apply` (the gateway-bundle
   path), the same convention every other config object follows; there is no
   per-object create-from-file CLI. This deliberately supersedes the literal

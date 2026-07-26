@@ -25,7 +25,7 @@ type Agent interface {
 	SessionNewParams(modelID string) map[string]any
 	SessionLoadParams(sessionID string) map[string]any
 	PromptParams(sessionID, input, modelID string) map[string]any
-	Cancel(ctx context.Context, t transport.Transport, sessionID string)
+	Cancel(ctx context.Context, t transport.Transport, sessionID string) error
 }
 
 type TerminalUpdateDetector interface {

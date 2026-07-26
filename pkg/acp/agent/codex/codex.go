@@ -106,9 +106,9 @@ func (a *Agent) PromptParams(sessionID, input string, _ string) map[string]any {
 	}
 }
 
-func (a *Agent) Cancel(_ context.Context, t transport.Transport, sessionID string) {
+func (a *Agent) Cancel(_ context.Context, t transport.Transport, sessionID string) error {
 	if t == nil || sessionID == "" {
-		return
+		return nil
 	}
-	_ = t.Notify("session/cancel", map[string]any{"sessionId": sessionID})
+	return t.Notify("session/cancel", map[string]any{"sessionId": sessionID})
 }

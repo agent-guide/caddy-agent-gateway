@@ -75,6 +75,8 @@ type AgentGateway struct {
 	acpRuntimeManager    *acpruntime.Manager
 	agentManager         *agentpkg.Manager
 	runtimeRegistry      *runtimeapi.Registry
+	runRegistry          *runtimeapi.RunRegistry
+	permissionBroker     *runtimeapi.PermissionBroker
 	usageObserver        usage.InteractionObserver
 	usageQuery           usage.QueryService
 	usageStats           usage.RuntimeStats
@@ -87,6 +89,8 @@ func NewAgentGateway() *AgentGateway {
 		configured:         false,
 		mcpRuntimeRegistry: mcpruntime.NewRegistry(),
 		runtimeRegistry:    runtimeapi.NewRegistry(),
+		runRegistry:        runtimeapi.NewRunRegistry(),
+		permissionBroker:   runtimeapi.NewPermissionBroker(),
 		usageObserver:      usage.NoopObserver{},
 	}
 }
@@ -146,11 +150,12 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 		})
 	}
 	var backends []runtimeapi.Backend
+	controls := RuntimeControls{Runs: g.runRegistry, Permissions: g.permissionBroker}
 	if g.acpServiceManager != nil && g.acpRuntimeManager != nil {
-		backends = append(backends, NewACPBackend(g.acpServiceManager, g.acpRuntimeManager))
+		backends = append(backends, NewACPBackend(g.acpServiceManager, g.acpRuntimeManager, controls))
 	}
 	if g.builtinHost != nil {
-		backends = append(backends, NewBuiltinBackend(g.builtinHost))
+		backends = append(backends, NewBuiltinBackend(g.builtinHost, controls))
 	}
 	if err := g.runtimeRegistry.RegisterAll(backends...); err != nil {
 		return fmt.Errorf("register agent runtime backends: %w", err)
@@ -162,6 +167,20 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 func (g *AgentGateway) Reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	// Stop new permission publications and drain every pending continuation
+	// before tearing down either native runtime. Claimed builtin decisions live
+	// outside the pending broker and are discarded explicitly as well.
+	if g.permissionBroker != nil {
+		g.permissionBroker.Close(runtimeapi.WithPermissionSource(context.Background(), "process_shutdown"))
+	}
+	if g.runtimeRegistry != nil {
+		if backend, err := g.runtimeRegistry.Resolve(agentpkg.RuntimeTypeBuiltin); err == nil {
+			if discarder, ok := backend.(interface{ DiscardAllContinuations() }); ok {
+				discarder.DiscardAllContinuations()
+			}
+		}
+	}
 
 	g.configured = false
 	g.configStoreBackend = nil
@@ -187,6 +206,8 @@ func (g *AgentGateway) Reset() {
 	g.acpRuntimeManager = nil
 	g.agentManager = nil
 	g.runtimeRegistry = runtimeapi.NewRegistry()
+	g.runRegistry = runtimeapi.NewRunRegistry()
+	g.permissionBroker = runtimeapi.NewPermissionBroker()
 	g.usageObserver = usage.NoopObserver{}
 	g.usageQuery = nil
 	g.usageStats = nil
@@ -332,6 +353,18 @@ func (g *AgentGateway) RuntimeRegistry() *runtimeapi.Registry {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.runtimeRegistry
+}
+
+func (g *AgentGateway) RunRegistry() *runtimeapi.RunRegistry {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.runRegistry
+}
+
+func (g *AgentGateway) PermissionBroker() *runtimeapi.PermissionBroker {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.permissionBroker
 }
 
 func (g *AgentGateway) UsageObserver() usage.InteractionObserver {

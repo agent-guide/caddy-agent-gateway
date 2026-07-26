@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 
 	"github.com/spf13/cobra"
 )
@@ -136,7 +140,76 @@ var gatewayAgentHealthCmd = &cobra.Command{
 	},
 }
 
+var agentCancelMode string
+var agentPermissionOutcome string
+var agentPermissionOptionID string
+var agentPermissionDecisions string
+var agentSessionCWD string
+var agentSessionCursor string
+
+var gatewayAgentCapabilitiesCmd = rawAgentReadCommand("capabilities <agent-id>", "Get runtime capabilities for an agent", func(ctx context.Context, id string) (json.RawMessage, error) {
+	return newGatewayClient().GetAgentCapabilities(ctx, id)
+})
+var gatewayAgentRunsCmd = rawAgentReadCommand("runs <agent-id>", "List active and retained runs for an agent", func(ctx context.Context, id string) (json.RawMessage, error) {
+	return newGatewayClient().ListAgentRuns(ctx, id)
+})
+var gatewayAgentPermissionsCmd = rawAgentReadCommand("permissions <agent-id>", "List pending permissions for an agent", func(ctx context.Context, id string) (json.RawMessage, error) {
+	return newGatewayClient().ListAgentPermissions(ctx, id)
+})
+
+var gatewayAgentCancelCmd = &cobra.Command{Use: "cancel <agent-id> <run-id>", Short: "Cancel one exact agent run", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	resp, err := newGatewayClient().CancelAgentRun(context.Background(), args[0], args[1], runtimeapi.CancelMode(agentCancelMode))
+	if err != nil {
+		return err
+	}
+	return printJSON(resp)
+}}
+var gatewayAgentDecideCmd = &cobra.Command{Use: "decide <agent-id> <request-id>", Short: "Resolve one pending agent permission", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	decision := runtimeapi.PermissionDecision{RequestID: args[1], Outcome: agentPermissionOutcome, OptionID: agentPermissionOptionID}
+	if agentPermissionDecisions != "" {
+		if err := json.Unmarshal([]byte(agentPermissionDecisions), &decision.Decisions); err != nil {
+			return fmt.Errorf("decode --decisions: %w", err)
+		}
+	}
+	resp, err := newGatewayClient().ResolveAgentPermission(context.Background(), args[0], args[1], decision)
+	if err != nil {
+		return err
+	}
+	return printJSON(resp)
+}}
+var gatewayAgentSessionsCmd = &cobra.Command{Use: "sessions <agent-id>", Short: "List sessions exposed by an agent runtime", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+	resp, err := newGatewayClient().ListAgentSessions(context.Background(), args[0], agentSessionCWD, agentSessionCursor)
+	if err != nil {
+		return err
+	}
+	return printJSON(resp)
+}}
+var gatewayAgentTranscriptCmd = &cobra.Command{Use: "transcript <agent-id> <session-id>", Short: "Load a session transcript exposed by an agent runtime", Args: cobra.ExactArgs(2), RunE: func(cmd *cobra.Command, args []string) error {
+	resp, err := newGatewayClient().GetAgentTranscript(context.Background(), args[0], args[1], agentSessionCWD)
+	if err != nil {
+		return err
+	}
+	return printJSON(resp)
+}}
+
+func rawAgentReadCommand(use, short string, read func(context.Context, string) (json.RawMessage, error)) *cobra.Command {
+	return &cobra.Command{Use: use, Short: short, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		resp, err := read(context.Background(), args[0])
+		if err != nil {
+			return err
+		}
+		return printJSON(resp)
+	}}
+}
+
 func init() {
+	gatewayAgentCancelCmd.Flags().StringVar(&agentCancelMode, "mode", "force", "cancel mode: force or graceful")
+	gatewayAgentDecideCmd.Flags().StringVar(&agentPermissionOutcome, "outcome", "", "runtime-native common outcome")
+	gatewayAgentDecideCmd.Flags().StringVar(&agentPermissionOptionID, "option-id", "", "ACP option id")
+	gatewayAgentDecideCmd.Flags().StringVar(&agentPermissionDecisions, "decisions", "", "builtin action decisions as JSON array")
+	gatewayAgentSessionsCmd.Flags().StringVar(&agentSessionCWD, "cwd", "", "session cwd filter")
+	gatewayAgentSessionsCmd.Flags().StringVar(&agentSessionCursor, "cursor", "", "session page cursor")
+	gatewayAgentTranscriptCmd.Flags().StringVar(&agentSessionCWD, "cwd", "", "session cwd")
 	gatewayAgentCmd.AddCommand(
 		gatewayAgentListCmd,
 		gatewayAgentGetCmd,
@@ -147,6 +220,13 @@ func init() {
 		gatewayAgentInteractionsCmd,
 		gatewayAgentResourcesCmd,
 		gatewayAgentHealthCmd,
+		gatewayAgentCapabilitiesCmd,
+		gatewayAgentRunsCmd,
+		gatewayAgentCancelCmd,
+		gatewayAgentPermissionsCmd,
+		gatewayAgentDecideCmd,
+		gatewayAgentSessionsCmd,
+		gatewayAgentTranscriptCmd,
 	)
 	gatewayCmd.AddCommand(gatewayAgentCmd)
 }

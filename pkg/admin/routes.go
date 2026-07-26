@@ -178,6 +178,13 @@ func (h *Handler) Routes() []Route {
 		{Method: http.MethodGet, Path: "/admin/agents/{id}/resources", Handler: h.handleGetAgentResources},
 		{Method: http.MethodPut, Path: "/admin/agents/{id}/resources", Handler: h.handleUpdateAgentResources},
 		{Method: http.MethodGet, Path: "/admin/agents/{id}/health", Handler: h.handleGetAgentHealth},
+		{Method: http.MethodGet, Path: "/admin/agents/{id}/capabilities", Handler: h.handleGetAgentCapabilities},
+		{Method: http.MethodGet, Path: "/admin/agents/{id}/runs", Handler: h.handleListAgentRuns},
+		{Method: http.MethodDelete, Path: "/admin/agents/{id}/runs/{run_id}", Handler: h.handleCancelAgentRun},
+		{Method: http.MethodGet, Path: "/admin/agents/{id}/permissions", Handler: h.handleListAgentPermissions},
+		{Method: http.MethodPost, Path: "/admin/agents/{id}/permissions/{request_id}", Handler: h.handleResolveAgentPermission},
+		{Method: http.MethodGet, Path: "/admin/agents/{id}/sessions", Handler: h.handleListAgentSessions},
+		{Method: http.MethodGet, Path: "/admin/agents/{id}/sessions/{session_id}/transcript", Handler: h.handleGetAgentTranscript},
 
 		// Metrics
 		{Method: http.MethodGet, Path: "/admin/metrics", Handler: h.handleMetrics},

@@ -73,6 +73,11 @@ func (h *Handler) dispatchACP(w http.ResponseWriter, r *http.Request, next NextH
 		if rewritten.Method != http.MethodPost {
 			return httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+		if manager := h.gateway.AgentManager(); manager != nil {
+			if agentID, bound := manager.ResolveAgentID(route.ID, route.ServiceID, ""); bound && h.gateway.PermissionBroker() != nil {
+				return h.dispatchAgentACPPermission(w, rewritten, agentID)
+			}
+		}
 		return h.dispatchACPPermission(w, rewritten, runtimeManager)
 	case "sessions":
 		if rewritten.Method != http.MethodGet {
@@ -178,6 +183,21 @@ func (h *Handler) dispatchACP(w http.ResponseWriter, r *http.Request, next NextH
 	}
 	usage.SpanFromContext(rewritten.Context()).SetExtension(usage.ACPExtension{EventCounts: counts})
 	return nil
+}
+
+func (h *Handler) dispatchAgentACPPermission(w http.ResponseWriter, r *http.Request, agentID string) error {
+	var decision acpruntime.PermissionDecision
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, MaxACPRequestBodyBytes)
+	}
+	if err := json.NewDecoder(r.Body).Decode(&decision); err != nil {
+		return httpjson.Error(w, RequestBodyErrorStatus(err, http.StatusBadRequest), fmt.Sprintf("decode request: %v", err))
+	}
+	common := runtimeapi.PermissionDecision{RequestID: strings.TrimSpace(decision.RequestID), Outcome: strings.TrimSpace(decision.Outcome), OptionID: strings.TrimSpace(decision.OptionID)}
+	if err := h.gateway.PermissionBroker().Resolve(runtimeapi.WithPermissionSource(r.Context(), "acp_route"), agentID, common); err != nil {
+		return httpjson.Write(w, runtimeapi.HTTPStatus(err), runtimeapi.PublicError(err))
+	}
+	return httpjson.Write(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 
 func matchACPRouteEndpoint(path string) (endpoint string, sessionID string, matched bool) {

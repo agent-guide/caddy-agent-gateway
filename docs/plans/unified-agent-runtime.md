@@ -1,6 +1,6 @@
 # Unified Agent Runtime and Routing Plan
 
-Status: implementation in progress — M0-M2 complete
+Status: implementation in progress — M0-M3 complete
 
 Source branch: `feature/unified-agent-runtime` working tree based on `bc4e739`
 
@@ -19,7 +19,7 @@ over to one AgentRoute and folds ACP service config into the owning Agent. HTTP
 execution and durable Workflow Agent Tasks build on the same contract after the
 two shipping runtimes prove it. M0-M2 are complete: the common contracts,
 identities/sequencer, and ACP/builtin adapters are live behind the legacy
-ingress routes. M3 and the route/control-plane cutover remain pending.
+ingress routes. M3 is complete; the route/control-plane cutover remains pending.
 
 The target stack is:
 
@@ -588,6 +588,9 @@ all knowledge at completion:
   result into an in-memory tombstone;
 - tombstones are retained for 10 minutes, capped at 1,024 entries per Agent,
   with oldest-completed eviction when the cap is exceeded;
+- a retained `run_id` is therefore not reusable during that window. Workflow
+  retries must keep their durable logical execution key separate and allocate
+  a distinct per-attempt `run_id` for process-local cancellation;
 - `GET /admin/agents/{id}/runs` returns active entries and retained tombstones;
 - cancelling a retained terminal run returns its terminal result without
   calling the backend again;
@@ -632,12 +635,14 @@ fail-closed behavior:
 type PendingPermission struct {
     RequestID string
     AgentID   string
+    RuntimeType string
     RunID     string
     SessionID string
     CreatedAt time.Time
     ExpiresAt time.Time
     Actions   []PermissionAction
-    Native    json.RawMessage
+    Options   []PermissionOption
+    ResumeMode PermissionResumeMode
 }
 ```
 
@@ -649,18 +654,22 @@ POST /admin/agents/{id}/permissions/{request_id}
 ```
 
 These are the only operator decision APIs after M7. Once M3 lands and until
-M7, every decision entry point -- the legacy ACP route/Admin endpoints, builtin
-checkpoint resume on `POST /turn`, and the common Agent endpoint -- resolves
-through the same one-shot broker. The first valid decision wins and every
-later decision attempt receives `permission_not_found`; every attempt is
-audited with its control-plane source.
+M7, every **Agent-bound** decision entry point -- the legacy ACP route/Admin
+endpoints, builtin checkpoint resume on `POST /turn`, and the common Agent
+endpoint -- resolves through the same one-shot broker. The first valid
+decision wins and every later decision attempt receives
+`permission_not_found`; every attempt is audited with its control-plane
+source. The explicitly unbound legacy ACP exception in §8 remains on the
+native permission registry and is outside this broker/atomic-winner guarantee
+until M5 removes that path.
 
 The common broker owns pending identity, expiry, atomic claim, and audit for
 both runtimes. ACP's live waiter and builtin's ADK checkpoint store remain
 backend continuation mechanisms, not competing pending-request registries.
-Each backend registers one continuation binding with the broker. A decision
-entry point first atomically claims and removes the common record under the
-in-process broker lock, then dispatches that binding through the owning
+Each backend stores continuation state under an opaque token and publishes that
+token with the broker; the broker retains one resolver per runtime type. A
+decision entry point first atomically claims and removes the common record under
+the in-process broker lock, then dispatches its token through the owning
 adapter. Expiry similarly claims once and invokes the backend's
 fail-closed path. A future durable or multi-process broker must provide the
 equivalent compare-and-set transaction. M3 must move both backends and all
@@ -672,6 +681,12 @@ broker record stores `runtime_type` plus an unguessable process-local token;
 the selected adapter resolves that token in its backend-owned continuation
 store. The broker never stores, copies, or decodes ACP waiter state or
 builtin's ADK checkpoint/calls/transcript/trace-link payload.
+
+The operator-facing projection is allowlisted as well: actions contain only
+stable ids/display names, while ACP options contain their exact id, kind, and
+display name. Native tool arguments, ACP
+`rawInput`, ADK checkpoint data, transcripts, and trace-link payloads never
+enter the common record or its JSON representation.
 
 Lifecycle is fail-closed and one-shot:
 
@@ -1433,6 +1448,11 @@ permission checkpoint capacity failures from the former
 `permission_capacity_exceeded` value to `turn_limit_exceeded`; downstream
 `error_type` filters and alerts must use the common value.
 
+ACP capability discovery still resolves its service through the store-backed
+service manager; workspace and health embed that capability result. Runtime
+summary and bounded health inspection themselves are store-free, but M4's
+canonical Agent snapshot must replace this remaining capability lookup too.
+
 The backend adapters introduced here are the permanent boundary between the
 common Agent runtime contract and each native runtime. Only their temporary
 invocation through ACPRoute/BuiltinRoute is removed during M4-M7; the adapters
@@ -1512,8 +1532,10 @@ Verification:
 - replace both ACP's pending-request registry path and builtin's checkpoint
   permission registry path with the common broker ownership defined in §5.8;
   native waiters/checkpoints remain opaque continuation state behind adapters;
-- route every legacy and common permission decision transport through the same
-  atomic broker claim in this milestone, with no dual-write or fallback lookup;
+- route every Agent-bound legacy and common permission decision transport
+  through the same atomic broker claim in this milestone, with no dual-write
+  or fallback lookup; the unbound legacy ACP exception remains explicitly out
+  of scope until M5;
 - make unsupported operations return the normalized capability error;
 - expose equivalent `agwctl gateway agent` read/control commands.
 
@@ -1535,15 +1557,35 @@ Verification:
   intact; fake backends remain useful for race injection but are not the
   acceptance evidence for native cancellation;
 - ACP and builtin permission decision/expiry audit tests;
-- concurrent decisions across ACP route/Admin/Agent entry points and builtin
-  resume/Agent entry points prove exactly one atomic winner and decision losers
-  receive `permission_not_found`; expiry races have the same atomic-winner
-  property and a decision losing to expiry receives `permission_expired`;
+- concurrent decisions across Agent-bound ACP route/Admin/Agent entry points
+  and builtin resume/Agent entry points prove exactly one atomic winner and
+  decision losers receive `permission_not_found`; expiry races have the same
+  atomic-winner property and a decision losing to expiry receives
+  `permission_expired`; unbound ACP parity tests separately pin its temporary
+  native behavior without claiming common-broker coverage;
 - sessions/transcript capability tests preserve ACP's authentication,
   validation, status, and transient-connection semantics, while builtin
   returns `capability_not_supported`;
 - workspace contains common summary plus intact runtime details;
 - unsupported capability requests never fall through or silently no-op.
+
+Implemented M3 evidence:
+
+- the ACP registry rejects pre-bind force cancellation with a retryable
+  backend-unavailable result, returns HTTP `503` with `Retry-After: 1`, and
+  does not cancel the run context until a live instance with a protocol session
+  id is bound;
+- deterministic subprocess integration tests and opt-in real
+  `codex-acp`/`opencode acp` smoke tests start two concurrent runs under one
+  runtime owner, tap the transport to assert the cancelled run's exact
+  `session/cancel` frame and `sessionId`, and pin that the unrelated run and
+  both pool entries remain live;
+- builtin Admin decisions return `resume_required:true`, retain the broker's
+  original expiry in decided continuation state, fail closed on late resume,
+  and are discarded on definition update/runtime switch/delete;
+- permission listing filters expired entries without invoking backend cleanup;
+  the atomic claim path is the sole owner of expiry cleanup, and broker-default
+  expiry uses its injectable clock.
 
 M0-M3 are the first mergeable foundation boundary. At this point the product
 still documents ACPRoute/BuiltinRoute. Agent-bound execution no longer depends

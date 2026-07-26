@@ -35,7 +35,7 @@ func (stubAgent) PromptParams(sessionID, input string, _ string) map[string]any 
 	return map[string]any{"sessionId": sessionID, "input": input}
 }
 
-func (stubAgent) Cancel(context.Context, acptransport.Transport, string) {}
+func (stubAgent) Cancel(context.Context, acptransport.Transport, string) error { return nil }
 
 type recordedRequest struct {
 	method string

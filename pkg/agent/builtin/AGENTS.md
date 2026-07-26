@@ -30,6 +30,9 @@ feature inventories and implementation status there.
   releases the stream, goroutine, and turn slot while awaiting a decision.
   Expiry, definition mismatch, capacity exhaustion, omitted decisions, and new
   input on a suspended session all fail closed.
+- The common Agent permission broker is the sole expiry scheduler and atomic
+  claim owner. The builtin permission registry is an opaque continuation store;
+  it must not independently sweep expired checkpoints.
 - The permission gate wraps the MCP tool bridge outside observability, so
   denied or interrupted calls do not open MCP child spans. Builtin middleware
   tools (`skill`, `plantask`, `tool_search`) are never permission-gated.

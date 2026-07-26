@@ -441,9 +441,11 @@ func TestServeTurnPermissionExpiryFailsClosed(t *testing.T) {
 	sessionID, payload := suspendOneTurnContext(t, turnCtx, host, "gated")
 	turnSpan.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
 
-	base := time.Now()
-	nowFunc = func() time.Time { return base.Add(defaultPermissionTimeout + time.Minute) }
-	defer func() { nowFunc = time.Now }()
+	// The common permission broker is the sole expiry owner and invokes this
+	// backend cleanup after atomically claiming the request.
+	if !host.ExpirePermission("gated", payload.RequestID) {
+		t.Fatal("broker-owned expiry did not remove continuation")
+	}
 
 	err := host.ServeTurn(t.Context(), "gated", TurnRequest{
 		SessionID:  sessionID,

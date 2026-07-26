@@ -345,13 +345,29 @@ startup and by a periodic background janitor.
 - `GET /admin/agents/{id}/resources`
 - `PUT /admin/agents/{id}/resources`
 - `GET /admin/agents/{id}/health`
+- `GET /admin/agents/{id}/capabilities`
+- `GET /admin/agents/{id}/runs`
+- `DELETE /admin/agents/{id}/runs/{run_id}?mode=force|graceful`
+- `GET /admin/agents/{id}/permissions`
+- `POST /admin/agents/{id}/permissions/{request_id}`
+- `GET /admin/agents/{id}/sessions`
+- `GET /admin/agents/{id}/sessions/{session_id}/transcript`
 
 Agents are first-class management objects that bind an operator-facing identity
 to one runtime backend, currently an ACP service for managed local agents.
+Pending permission responses contain runtime-neutral identity, expiry,
+resume-mode, allowlisted action id/display-name fields, and exact ACP option
+id/kind/display-name fields. They never expose
+native ACP payloads, builtin checkpoints, tool arguments, transcripts, or
+trace-link state.
 P0/P1 agents are management-plane groupings: data-plane requests still
 authenticate through VirtualKeys and route policy. Agent usage and activity
 views prefer durable `agent_id` attribution and fall back to the agent's owned
 routes and ACP runtime service for older or untagged events.
+
+Run cancellation returns `503 Service Unavailable` with `Retry-After: 1` when
+an ACP run is registered but its live protocol session is not bound yet. The
+run remains active, so the same exact-run cancellation request can be retried.
 
 ## Stubbed Families
 

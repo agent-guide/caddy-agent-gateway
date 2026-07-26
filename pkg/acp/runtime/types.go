@@ -6,6 +6,7 @@ import (
 )
 
 type TurnRequest struct {
+	RunID           string            `json:"run_id,omitempty"`
 	ThreadID        string            `json:"thread_id"`
 	SessionID       string            `json:"session_id,omitempty"`
 	Input           string            `json:"input"`
@@ -15,14 +16,24 @@ type TurnRequest struct {
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
 }
 
+// ActiveRunInfo is the exact logical-run view used by the common Agent
+// control plane. It deliberately does not expose the native cancel handle.
+type ActiveRunInfo struct {
+	OwnerID   string    `json:"owner_id"`
+	RunID     string    `json:"run_id"`
+	SessionID string    `json:"session_id,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+}
+
 type TurnEvent struct {
-	Event      string          `json:"-"`
-	SessionID  string          `json:"session_id,omitempty"`
-	RequestID  string          `json:"request_id,omitempty"`
-	Text       string          `json:"text,omitempty"`
-	StopReason string          `json:"stop_reason,omitempty"`
-	Message    string          `json:"message,omitempty"`
-	Data       json.RawMessage `json:"data,omitempty"`
+	Event               string          `json:"-"`
+	SessionID           string          `json:"session_id,omitempty"`
+	RequestID           string          `json:"request_id,omitempty"`
+	PermissionExpiresAt time.Time       `json:"-"`
+	Text                string          `json:"text,omitempty"`
+	StopReason          string          `json:"stop_reason,omitempty"`
+	Message             string          `json:"message,omitempty"`
+	Data                json.RawMessage `json:"data,omitempty"`
 }
 
 type EventSink func(TurnEvent) error

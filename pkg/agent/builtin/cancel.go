@@ -156,3 +156,21 @@ func (r *activityRegistry) cancel(agentID, sessionID string, mode CancelMode) bo
 	r.mu.Unlock()
 	return contributed
 }
+
+func (r *activityRegistry) cancelRun(agentID, runID string, mode CancelMode) bool {
+	r.mu.Lock()
+	var t *inflightTurn
+	for _, candidate := range r.turns {
+		if candidate.agentID == agentID && candidate.runID == runID {
+			t = candidate
+			break
+		}
+	}
+	if t == nil {
+		r.mu.Unlock()
+		return false
+	}
+	_, contributed := t.cancel(mode.options()...)
+	r.mu.Unlock()
+	return contributed
+}

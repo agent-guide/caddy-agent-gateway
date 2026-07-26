@@ -370,6 +370,104 @@ func TestSmokeCodexPromptTurn(t *testing.T) {
 	})
 }
 
+func smokeExactRunCancel(t *testing.T, cfg acpservice.ServiceConfig) {
+	t.Helper()
+	cfg.MaxInstances = 2
+	cfg.Normalize()
+	m := newTestManager()
+	defer m.Close()
+	cancelFrames := make(chan json.RawMessage, 2)
+	m.notifyObserver = func(method string, params json.RawMessage) {
+		if method == "session/cancel" {
+			cancelFrames <- params
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	type turnResult struct {
+		runID string
+		err   error
+	}
+	const runA = "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const runB = "run-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	sessionSeen := make(chan string, 2)
+	releases := map[string]chan struct{}{runA: make(chan struct{}), runB: make(chan struct{})}
+	done := make(chan turnResult, 2)
+	start := func(runID, threadID string) {
+		go func() {
+			err := m.serveTurn(ctx, cfg, TurnRequest{RunID: runID, ThreadID: threadID, Input: "Explain the repository in detail."}, func(ev TurnEvent) error {
+				if ev.Event == "session" {
+					sessionSeen <- runID
+					<-releases[runID]
+				}
+				return nil
+			})
+			done <- turnResult{runID: runID, err: err}
+		}()
+	}
+	start(runA, "cancel-smoke-a")
+	start(runB, "cancel-smoke-b")
+	seen := map[string]bool{}
+	for len(seen) != 2 {
+		select {
+		case runID := <-sessionSeen:
+			seen[runID] = true
+		case result := <-done:
+			t.Fatalf("run %s ended before cancellation: %v", result.runID, result.err)
+		case <-ctx.Done():
+			t.Fatalf("both turns did not start: %+v", seen)
+		}
+	}
+	active := m.ListActiveRuns(cfg.ID)
+	if len(active) != 2 || active[0].RunID != runA || active[1].RunID != runB || active[0].SessionID == "" || active[1].SessionID == "" {
+		t.Fatalf("active runs missing native session bindings: %+v", active)
+	}
+	sessions := map[string]string{active[0].RunID: active[0].SessionID, active[1].RunID: active[1].SessionID}
+	if err := m.CancelRun(cfg.ID, runA); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	assertNativeCancelFrame(t, cancelFrames, sessions[runA])
+	close(releases[runA])
+	select {
+	case result := <-done:
+		if result.runID != runA || result.err != nil {
+			t.Fatalf("cancelled run=%s error=%v, want %s", result.runID, result.err, runA)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("native cancellation did not terminate promptly")
+	}
+	if got := m.ListActiveRuns(cfg.ID); len(got) != 1 || got[0].RunID != runB {
+		t.Fatalf("unrelated run was affected by exact cancel: %+v", got)
+	}
+	if len(m.ListInstances()) != 2 {
+		t.Fatalf("exact cancellation removed or replaced a pool entry")
+	}
+	if err := m.CancelRun(cfg.ID, runB); err != nil {
+		t.Fatalf("cleanup CancelRun: %v", err)
+	}
+	assertNativeCancelFrame(t, cancelFrames, sessions[runB])
+	close(releases[runB])
+	select {
+	case result := <-done:
+		if result.runID != runB || result.err != nil {
+			t.Fatalf("cleanup run=%s error=%v, want %s", result.runID, result.err, runB)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("unrelated run did not terminate during cleanup")
+	}
+}
+
+func TestSmokeOpencodeExactRunCancel(t *testing.T) {
+	requireSmoke(t, "opencode")
+	cwd := t.TempDir()
+	smokeExactRunCancel(t, acpservice.ServiceConfig{ID: "opencode-cancel-smoke", Name: "opencode", AgentType: baseacp.AgentTypeOpencode, CWD: cwd, AllowedRoots: []string{cwd}})
+}
+func TestSmokeCodexExactRunCancel(t *testing.T) {
+	requireSmoke(t, "codex-acp")
+	cwd := t.TempDir()
+	smokeExactRunCancel(t, acpservice.ServiceConfig{ID: "codex-cancel-smoke", Name: "codex", AgentType: baseacp.AgentTypeCodex, CWD: cwd, AllowedRoots: []string{cwd}, Codex: &acpservice.CodexConfig{Mode: acpservice.CodexModeAdapter}})
+}
+
 func TestSmokeCodexHandshake(t *testing.T) {
 	requireSmoke(t, "codex-acp")
 	cwd := t.TempDir()

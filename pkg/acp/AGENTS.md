@@ -44,3 +44,16 @@ status belong in `docs/architecture/acp-architecture.md`.
 - Pool changes must preserve dead-instance eviction, idle cleanup, instance
   caps, and scope rebind: a session-addressed turn adopts the live instance
   already bound to that session rather than spawning a second process.
+- Agent-bound turns register their exact common `run_id` in the native runtime.
+  Force cancellation must send ACP `session/cancel` through that run's live
+  instance and cancel only its context; never implement ordinary run cancel by
+  closing a scope, thread, service, or pooled process. Before the live instance
+  and protocol session id are bound, cancellation must return a retryable error
+  and leave the run context alive; it must never silently skip the native frame.
+- Agent-bound permission decisions are claimed by the common Agent permission
+  broker before the ACP waiter is resolved. The native waiter is continuation
+  state only. Unbound legacy ACP route and Admin decisions remain on the native
+  permission registry and are outside the common broker's atomic-winner/audit
+  guarantee; this is the temporary exception until route cutover removes it.
+  Agent-bound common records retain only an opaque continuation token; raw ACP
+  permission params and the native request id remain in the ACP-owned store.

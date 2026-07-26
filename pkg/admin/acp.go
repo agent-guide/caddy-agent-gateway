@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,8 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
 )
@@ -121,6 +124,7 @@ func (h *Handler) handleUpdateACPService(w http.ResponseWriter, r *http.Request)
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	h.drainACPServicePermissions(r.Context(), id, "config_fingerprint_retirement")
 	if h.acpRuntimeManager != nil {
 		h.acpRuntimeManager.CloseService(id)
 	}
@@ -138,7 +142,8 @@ func (h *Handler) handleDeleteACPService(w http.ResponseWriter, r *http.Request)
 		_ = httpjson.Error(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}
-	if err := manager.Delete(r.Context(), strings.TrimSpace(r.PathValue("id"))); err != nil {
+	id := strings.TrimSpace(r.PathValue("id"))
+	if err := manager.Delete(r.Context(), id); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			_ = httpjson.Error(w, http.StatusNotFound, "acp service not found")
 			return
@@ -146,10 +151,26 @@ func (h *Handler) handleDeleteACPService(w http.ResponseWriter, r *http.Request)
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.drainACPServicePermissions(r.Context(), id, "service_delete")
 	if h.acpRuntimeManager != nil {
-		h.acpRuntimeManager.CloseService(strings.TrimSpace(r.PathValue("id")))
+		h.acpRuntimeManager.CloseService(id)
 	}
 	_ = httpjson.Write(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (h *Handler) drainACPServicePermissions(ctx context.Context, serviceID, source string) {
+	if h == nil || h.agentManager == nil || h.permissionBroker == nil {
+		return
+	}
+	agents, err := h.agentManager.List(ctx)
+	if err != nil {
+		return
+	}
+	for _, a := range agents {
+		if a.Runtime.Type == agentpkg.RuntimeTypeACP && a.ACPServiceID() == strings.TrimSpace(serviceID) {
+			h.permissionBroker.DrainAgent(runtimeapi.WithPermissionSource(context.Background(), source), a.ID)
+		}
+	}
 }
 
 func (h *Handler) handleListACPSessions(w http.ResponseWriter, r *http.Request) {
@@ -430,6 +451,16 @@ func (h *Handler) handleResolveACPPermission(w http.ResponseWriter, r *http.Requ
 	if decision.RequestID != requestID {
 		finishAdminAudit(span, http.StatusBadRequest, "invalid_request")
 		_ = httpjson.Error(w, http.StatusBadRequest, "request_id in body must match path")
+		return
+	}
+	if agentID, runtimeType, ok := h.permissionBroker.PermissionOwner(requestID); ok && runtimeType == agentpkg.RuntimeTypeACP {
+		common := runtimeapi.PermissionDecision{RequestID: requestID, Outcome: decision.Outcome, OptionID: decision.OptionID}
+		if err := h.permissionBroker.Resolve(runtimeapi.WithPermissionSource(r.Context(), "acp_admin"), agentID, common); err != nil {
+			finishAdminAudit(span, runtimeapi.HTTPStatus(err), string(runtimeapi.PublicError(err).ErrorType))
+			_ = httpjson.Write(w, runtimeapi.HTTPStatus(err), runtimeapi.PublicError(err))
+			return
+		}
+		_ = httpjson.Write(w, http.StatusOK, map[string]string{"status": "resolved"})
 		return
 	}
 	if err := h.acpRuntimeManager.ResolvePermission(decision); err != nil {

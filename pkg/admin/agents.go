@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
 	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
@@ -98,6 +100,7 @@ func (h *Handler) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
+	previous, _ := manager.Get(r.Context(), id)
 	var a agentpkg.Agent
 	if err := httpjson.Decode(r, &a); err != nil {
 		_ = httpjson.Error(w, http.StatusBadRequest, fmt.Sprintf("decode request: %v", err))
@@ -115,6 +118,13 @@ func (h *Handler) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if h.permissionBroker != nil {
+		h.permissionBroker.DrainAgent(runtimeapi.WithPermissionSource(context.Background(), "definition_update"), id)
+	}
+	h.discardAgentContinuations(previous)
+	if h.runRegistry != nil && previous.Runtime.Type != "" && previous.Runtime.Type != updated.Runtime.Type {
+		h.runRegistry.CancelAgent(context.Background(), id)
 	}
 	_ = httpjson.Write(w, http.StatusOK, AgentView{Agent: updated, Source: "config_store"})
 }
@@ -139,6 +149,15 @@ func (h *Handler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if h.permissionBroker != nil {
+		h.permissionBroker.DrainAgent(runtimeapi.WithPermissionSource(context.Background(), "agent_delete"), id)
+	}
+	if getErr == nil {
+		h.discardAgentContinuations(current)
+	}
+	if h.runRegistry != nil {
+		h.runRegistry.CancelAgent(context.Background(), id)
+	}
 	unbound := map[string]any{}
 	if getErr == nil {
 		if svc := current.ACPServiceID(); svc != "" {
@@ -151,18 +170,34 @@ func (h *Handler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 	_ = httpjson.Write(w, http.StatusOK, map[string]any{"status": "deleted", "id": id, "unbound": unbound})
 }
 
+func (h *Handler) discardAgentContinuations(a agentpkg.Agent) {
+	if h == nil || h.runtimeRegistry == nil || strings.TrimSpace(a.Runtime.Type) == "" {
+		return
+	}
+	backend, err := h.runtimeRegistry.Resolve(a.Runtime.Type)
+	if err != nil {
+		return
+	}
+	if discarder, ok := backend.(interface{ DiscardAgentContinuations(string) }); ok {
+		discarder.DiscardAgentContinuations(a.ID)
+	}
+}
+
 // AgentWorkspace is the summary/index read model for the agent detail page. It
 // returns summaries, counts, runtime state, and references — never full session
 // transcripts. The frontend drills into the linked ACP endpoints for content.
 type AgentWorkspace struct {
-	Agent       agentpkg.Agent        `json:"agent"`
-	Runtime     string                `json:"runtime"`
-	ACPService  *ACPServiceView       `json:"acp_service,omitempty"`
-	ACPRoutes   []agentRouteRef       `json:"acp_routes,omitempty"`
-	Builtin     *BuiltinWorkspaceView `json:"builtin,omitempty"`
-	RuntimeView *agentRuntimeSummary  `json:"runtime_view,omitempty"`
-	Usage       *usage.ACPSummary     `json:"usage,omitempty"`
-	Links       map[string]string     `json:"links,omitempty"`
+	Agent          agentpkg.Agent             `json:"agent"`
+	RuntimeType    string                     `json:"runtime_type"`
+	Runtime        *runtimeapi.RuntimeSummary `json:"runtime,omitempty"`
+	RuntimeDetails json.RawMessage            `json:"runtime_details,omitempty"`
+	Capabilities   *runtimeapi.Capabilities   `json:"capabilities,omitempty"`
+	ACPService     *ACPServiceView            `json:"acp_service,omitempty"`
+	ACPRoutes      []agentRouteRef            `json:"acp_routes,omitempty"`
+	Builtin        *BuiltinWorkspaceView      `json:"builtin,omitempty"`
+	RuntimeView    *agentRuntimeSummary       `json:"runtime_view,omitempty"`
+	Usage          *usage.ACPSummary          `json:"usage,omitempty"`
+	Links          map[string]string          `json:"links,omitempty"`
 }
 
 // BuiltinWorkspaceView is the builtin-runtime slice of the agent workspace: a
@@ -221,7 +256,14 @@ func (h *Handler) handleGetAgentWorkspace(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ws := AgentWorkspace{Agent: a, Runtime: a.Runtime.Type}
+	ws := AgentWorkspace{Agent: a, RuntimeType: a.Runtime.Type}
+	if summary, caps, err := h.agentRuntimeRead(r.Context(), a); err == nil {
+		ws.Runtime, ws.Capabilities = summary, caps
+		if summary != nil {
+			ws.RuntimeDetails = summary.Details
+			summary.Details = nil
+		}
+	}
 
 	// The acp runtime view is the only one P0 assembles. An http-runtime agent
 	// degrades to the runtime-agnostic parts.
@@ -721,9 +763,30 @@ func (h *Handler) handleGetAgentHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	health := map[string]any{
-		"agent_id": a.ID,
-		"disabled": a.Disabled,
-		"runtime":  a.Runtime.Type,
+		"agent_id":     a.ID,
+		"disabled":     a.Disabled,
+		"runtime_type": a.Runtime.Type,
+	}
+	if summary, caps, err := h.agentRuntimeRead(r.Context(), a); err == nil {
+		health["runtime"] = summary
+		if len(summary.Details) > 0 {
+			health["runtime_details"] = summary.Details
+			summary.Details = nil
+		}
+		health["capabilities"] = caps
+	} else {
+		health["runtime_error"] = runtimeapi.PublicError(err)
+	}
+	if !a.Disabled {
+		if backend, err := h.agentBackend(a); err == nil {
+			if checker, ok := backend.(runtimeapi.HealthChecker); ok {
+				if runtimeHealth, checkErr := checker.Health(r.Context(), a); checkErr == nil {
+					health["runtime_health"] = runtimeHealth
+				} else {
+					health["runtime_health_error"] = runtimeapi.PublicError(checkErr)
+				}
+			}
+		}
 	}
 	if serviceID := a.ACPServiceID(); serviceID != "" {
 		if summary := h.acpRuntimeSummaryForService(serviceID); summary != nil {

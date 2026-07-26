@@ -167,13 +167,9 @@ type pendingPermission struct {
 	transcript []*schema.Message
 }
 
-func (p *pendingPermission) expired(now time.Time) bool {
-	return now.After(p.expiresAt)
-}
-
-// permissionRegistry tracks suspended turns. Entries are one-shot on resume
-// (taken before execution, ACP-broker style) and lazily swept on every
-// access; callers delete the matching checkpoints for swept ids.
+// permissionRegistry is the backend-owned opaque continuation store. Entries
+// are one-shot on resume, but it never owns expiry: the common Agent permission
+// broker claims expiry and calls Host.ExpirePermission for cleanup.
 type permissionRegistry struct {
 	mu        sync.Mutex
 	byRequest map[string]*pendingPermission
@@ -199,26 +195,12 @@ func newOpaqueID(prefix string) (string, error) {
 	return prefix + hex.EncodeToString(raw), nil
 }
 
-// sweepLocked removes expired entries and returns them so callers can delete
-// both their checkpoints and their session pins.
-func (r *permissionRegistry) sweepLocked(now time.Time) []*pendingPermission {
-	var expired []*pendingPermission
-	for id, p := range r.byRequest {
-		if p.expired(now) {
-			expired = append(expired, p)
-			delete(r.byRequest, id)
-		}
-	}
-	return expired
-}
-
 // register stores a pending permission after checking the per-agent cap.
-// It returns the expired entries it swept; capReached reports a fail-closed
-// rejection (nothing stored).
-func (r *permissionRegistry) register(p *pendingPermission, maxPending int) (expired []*pendingPermission, capReached bool) {
+// A true result reports a fail-closed rejection; only the common broker
+// performs expiry cleanup.
+func (r *permissionRegistry) register(p *pendingPermission, maxPending int) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	expired = r.sweepLocked(nowFunc())
 	live := 0
 	for _, existing := range r.byRequest {
 		if existing.agentID == p.agentID {
@@ -228,23 +210,33 @@ func (r *permissionRegistry) register(p *pendingPermission, maxPending int) (exp
 	// A re-interrupt re-registers under its original request id; replacing an
 	// entry never counts against the cap.
 	if _, replacing := r.byRequest[p.requestID]; !replacing && live >= maxPending {
-		return expired, true
+		return true
 	}
 	r.byRequest[p.requestID] = p
-	return expired, false
+	return false
 }
 
 // take removes and returns the pending permission (one-shot, fail-closed:
 // whatever happens next, the entry cannot resolve twice).
-func (r *permissionRegistry) take(requestID string) (*pendingPermission, []*pendingPermission, bool) {
+func (r *permissionRegistry) take(requestID string) (*pendingPermission, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	expired := r.sweepLocked(nowFunc())
 	p, ok := r.byRequest[requestID]
 	if ok {
 		delete(r.byRequest, requestID)
 	}
-	return p, expired, ok
+	return p, ok
+}
+
+func (r *permissionRegistry) discard(agentID, requestID string) (*pendingPermission, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p := r.byRequest[requestID]
+	if p == nil || p.agentID != agentID {
+		return nil, false
+	}
+	delete(r.byRequest, requestID)
+	return p, true
 }
 
 func (r *permissionRegistry) storeCursor(agentID, requestID string, cursor ContinuationCursor) bool {
@@ -269,16 +261,15 @@ func (r *permissionRegistry) loadCursor(agentID, requestID string) (Continuation
 }
 
 // liveForSession returns the live pending request id bound to a session.
-func (r *permissionRegistry) liveForSession(agentID, sessionID string) (string, []*pendingPermission, bool) {
+func (r *permissionRegistry) liveForSession(agentID, sessionID string) (string, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	expired := r.sweepLocked(nowFunc())
 	for id, p := range r.byRequest {
 		if p.agentID == agentID && p.sessionID == sessionID {
-			return id, expired, true
+			return id, true
 		}
 	}
-	return "", expired, false
+	return "", false
 }
 
 // PendingPermissionView is the admin runtime view of one suspended turn.
@@ -300,15 +291,14 @@ type PendingPermissionCall struct {
 	Arguments    string `json:"arguments,omitempty"`
 }
 
-func (r *permissionRegistry) list() ([]PendingPermissionView, []*pendingPermission) {
+func (r *permissionRegistry) list() []PendingPermissionView {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	expired := r.sweepLocked(nowFunc())
 	out := make([]PendingPermissionView, 0, len(r.byRequest))
 	for _, p := range r.byRequest {
 		out = append(out, pendingView(p))
 	}
-	return out, expired
+	return out
 }
 
 func pendingView(p *pendingPermission) PendingPermissionView {

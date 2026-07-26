@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
@@ -33,12 +36,95 @@ type acpTurnServer interface {
 // ACPBackend is the permanent Agent runtime adapter over the native ACP
 // manager. Legacy ACP routes decide whether to enter this boundary.
 type ACPBackend struct {
-	services acpServiceSource
-	runtime  acpTurnServer
+	services       acpServiceSource
+	runtime        acpTurnServer
+	runs           *runtimeapi.RunRegistry
+	permissions    *runtimeapi.PermissionBroker
+	continuationMu sync.Mutex
+	continuations  map[string]acpPermissionContinuation
 }
 
-func NewACPBackend(services acpServiceSource, runtime acpTurnServer) *ACPBackend {
-	return &ACPBackend{services: services, runtime: runtime}
+type acpPermissionContinuation struct {
+	runtime interface {
+		ResolvePermission(acpruntime.PermissionDecision) error
+	}
+	requestID string
+}
+
+func (b *ACPBackend) ValidateContinuationDecision(token string, info runtimeapi.PendingPermission, d runtimeapi.PermissionDecision) error {
+	if _, ok := b.acpContinuation(token, false); !ok {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+	}
+	if len(d.Decisions) != 0 {
+		return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "acp permission decisions do not accept per-action decisions")
+	}
+	switch strings.TrimSpace(d.Outcome) {
+	case "selected":
+		if strings.TrimSpace(d.OptionID) == "" {
+			return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "option_id is required for selected acp permission outcome")
+		}
+		if len(info.Options) > 0 && !slices.ContainsFunc(info.Options, func(option runtimeapi.PermissionOption) bool {
+			return option.OptionID == strings.TrimSpace(d.OptionID)
+		}) {
+			return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "option_id was not advertised by the acp agent")
+		}
+	case "cancelled":
+	default:
+		return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "invalid acp permission outcome")
+	}
+	return nil
+}
+
+func (b *ACPBackend) ResolveContinuation(_ context.Context, token string, d runtimeapi.PermissionDecision, _ time.Time) error {
+	continuation, ok := b.acpContinuation(token, true)
+	if !ok {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+	}
+	err := continuation.runtime.ResolvePermission(acpruntime.PermissionDecision{RequestID: continuation.requestID, Outcome: d.Outcome, OptionID: d.OptionID})
+	if errors.Is(err, acpruntime.ErrPermissionNotFound) {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission request not found")
+	}
+	return mapACPError(err)
+}
+func (b *ACPBackend) ExpireContinuation(_ context.Context, token string) error {
+	continuation, ok := b.acpContinuation(token, true)
+	if !ok {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+	}
+	err := continuation.runtime.ResolvePermission(acpruntime.PermissionDecision{RequestID: continuation.requestID, Outcome: "cancelled"})
+	if errors.Is(err, acpruntime.ErrPermissionNotFound) {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+	}
+	return mapACPError(err)
+}
+
+func (b *ACPBackend) acpContinuation(token string, take bool) (acpPermissionContinuation, bool) {
+	b.continuationMu.Lock()
+	defer b.continuationMu.Unlock()
+	continuation, ok := b.continuations[strings.TrimSpace(token)]
+	if ok && take {
+		delete(b.continuations, strings.TrimSpace(token))
+	}
+	return continuation, ok
+}
+
+func (b *ACPBackend) storeACPContinuation(token string, continuation acpPermissionContinuation) {
+	b.continuationMu.Lock()
+	b.continuations[token] = continuation
+	b.continuationMu.Unlock()
+}
+
+type RuntimeControls struct {
+	Runs        *runtimeapi.RunRegistry
+	Permissions *runtimeapi.PermissionBroker
+}
+
+func NewACPBackend(services acpServiceSource, runtime acpTurnServer, controls ...RuntimeControls) *ACPBackend {
+	b := &ACPBackend{services: services, runtime: runtime, continuations: map[string]acpPermissionContinuation{}}
+	if len(controls) > 0 {
+		b.runs, b.permissions = controls[0].Runs, controls[0].Permissions
+	}
+	return b
 }
 
 func (*ACPBackend) RuntimeType() string { return agentpkg.RuntimeTypeACP }
@@ -61,9 +147,10 @@ func (b *ACPBackend) Capabilities(ctx context.Context, a agentpkg.Agent) (runtim
 		Executable: true, Turn: runtimeapi.TurnCapabilities{Streaming: true},
 		// List/transcript remain on the legacy ACP route until M3 moves them
 		// onto the optional runtimeapi capability interfaces.
-		Sessions:    runtimeapi.SessionCapabilities{Resume: true, Durable: true},
-		Permissions: runtimeapi.PermissionCapabilities{Interactive: cfg.PermissionMode == "interactive", ResumeMode: runtimeapi.PermissionResumeActiveStream},
-		Events:      []string{runtimeapi.EventSession, runtimeapi.EventDelta, runtimeapi.EventReasoning, runtimeapi.EventContent, runtimeapi.EventPlan, runtimeapi.EventToolCall, runtimeapi.EventUsage, runtimeapi.EventAvailableCommands, runtimeapi.EventSessionInfo, runtimeapi.EventMode, runtimeapi.EventConfigOptions, runtimeapi.EventPermission, runtimeapi.EventDone, runtimeapi.EventError},
+		Sessions:     runtimeapi.SessionCapabilities{Resume: true, List: true, Transcript: true, Durable: true},
+		Permissions:  runtimeapi.PermissionCapabilities{Interactive: cfg.PermissionMode == "interactive", ResumeMode: runtimeapi.PermissionResumeActiveStream},
+		Cancellation: runtimeapi.CancelCapabilities{Force: true},
+		Events:       []string{runtimeapi.EventSession, runtimeapi.EventDelta, runtimeapi.EventReasoning, runtimeapi.EventContent, runtimeapi.EventPlan, runtimeapi.EventToolCall, runtimeapi.EventUsage, runtimeapi.EventAvailableCommands, runtimeapi.EventSessionInfo, runtimeapi.EventMode, runtimeapi.EventConfigOptions, runtimeapi.EventPermission, runtimeapi.EventDone, runtimeapi.EventError},
 	}, nil
 }
 
@@ -99,19 +186,311 @@ func (b *ACPBackend) ServeTurn(ctx context.Context, a agentpkg.Agent, req runtim
 		IdleTTL: cfg.IdleTTL, MaxInstances: cfg.MaxInstances, PermissionMode: cfg.PermissionMode, Codex: cloneCodexConfig(cfg.Codex),
 	}
 	nativeReq := acpruntime.TurnRequest{
+		RunID:    req.RunID,
 		ThreadID: opts.ThreadID, SessionID: req.SessionID, Input: req.Input, CWD: opts.CWD,
 		Model: opts.Model, FreshSession: opts.FreshSession, ConfigOverrides: cloneStringMap(opts.ConfigOverrides),
 	}
+	terminalState, stopReason, suspended := runtimeapi.RunStateCompleted, "", false
+	if b.runs != nil {
+		if err := b.runs.Begin(a.ID, a.Runtime.Type, req.RunID, req.SessionID, func(_ context.Context, mode runtimeapi.CancelMode) error {
+			if mode != runtimeapi.CancelModeForce {
+				return runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "acp graceful cancellation is not supported")
+			}
+			canceller, ok := b.runtime.(interface{ CancelRun(string, string) error })
+			if !ok {
+				return runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "acp cancellation is not supported")
+			}
+			if b.permissions != nil {
+				b.permissions.DrainRun(runtimeapi.WithPermissionSource(context.Background(), "run_cancel"), a.ID, req.RunID)
+			}
+			err := canceller.CancelRun(a.ID, req.RunID)
+			// The common registry publishes immediately before ServeConfiguredTurn
+			// enters the native registry. A cancellation in that narrow window is
+			// known to target a live common run even though native lookup cannot see
+			// it yet, so preserve the same retryable contract as native pre-bind.
+			if errors.Is(err, acpruntime.ErrRunNotFound) {
+				return runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "run cancellation is not ready; retry")
+			}
+			return mapACPCancelError(err)
+		}); err != nil {
+			return err
+		}
+		defer func() {
+			if !suspended {
+				b.runs.Complete(a.ID, req.RunID, terminalState, stopReason)
+			}
+		}()
+	}
 	err = b.runtime.ServeConfiguredTurn(ctx, a.ID, runtimeCfg, nativeReq, func(ev acpruntime.TurnEvent) error {
-		return emit(commonACPEvent(ev))
+		registeredPermission := false
+		if ev.SessionID != "" && b.runs != nil {
+			b.runs.SetSession(a.ID, req.RunID, ev.SessionID)
+		}
+		if ev.Event == runtimeapi.EventDone {
+			stopReason = ev.StopReason
+			suspended = ev.StopReason == runtimeapi.StopReasonPermissionRequired
+			if ev.StopReason == runtimeapi.StopReasonCancelled {
+				terminalState = runtimeapi.RunStateCancelled
+			}
+		}
+		if ev.Event == runtimeapi.EventError {
+			terminalState = runtimeapi.RunStateFailed
+		}
+		if ev.Event == runtimeapi.EventPermission && b.permissions != nil {
+			if resolver, ok := b.runtime.(interface {
+				ResolvePermission(acpruntime.PermissionDecision) error
+			}); ok {
+				token, tokenErr := runtimeapi.NewContinuationToken()
+				if tokenErr != nil {
+					return runtimeapi.WrapError(runtimeapi.ErrorTurnFailed, "generate permission continuation token", tokenErr)
+				}
+				b.storeACPContinuation(token, acpPermissionContinuation{runtime: resolver, requestID: ev.RequestID})
+				_, regErr := b.permissions.Register(runtimeapi.PendingPermission{RequestID: ev.RequestID, AgentID: a.ID, RuntimeType: a.Runtime.Type, RunID: req.RunID, SessionID: ev.SessionID, ExpiresAt: ev.PermissionExpiresAt, Actions: acpPermissionActions(ev.Data), Options: acpPermissionOptions(ev.Data), ResumeMode: runtimeapi.PermissionResumeActiveStream}, token, b)
+				if regErr != nil {
+					b.acpContinuation(token, true)
+					return regErr
+				}
+				registeredPermission = true
+			}
+		}
+		if emitErr := emit(commonACPEvent(ev)); emitErr != nil {
+			if registeredPermission {
+				_ = b.permissions.Expire(runtimeapi.WithPermissionSource(context.Background(), "permission_delivery_failed"), a.ID, ev.RequestID)
+			}
+			return emitErr
+		}
+		return nil
 	})
+	if errors.Is(err, acpruntime.ErrTurnCancelled) {
+		terminalState, stopReason = runtimeapi.RunStateCancelled, runtimeapi.StopReasonCancelled
+	}
+	if err != nil && terminalState != runtimeapi.RunStateCancelled {
+		terminalState = runtimeapi.RunStateFailed
+	}
 	return mapACPError(err)
+}
+
+func (b *ACPBackend) CancelRun(ctx context.Context, a agentpkg.Agent, req runtimeapi.CancelRequest) (runtimeapi.CancelResult, error) {
+	if req.Mode != runtimeapi.CancelModeForce {
+		return runtimeapi.CancelResult{}, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "acp graceful cancellation is not supported")
+	}
+	if b.runs == nil {
+		return runtimeapi.CancelResult{}, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "run cancellation is not configured")
+	}
+	return b.runs.Cancel(ctx, a.ID, req)
+}
+
+func (b *ACPBackend) ResolvePermission(ctx context.Context, a agentpkg.Agent, decision runtimeapi.PermissionDecision) error {
+	if b.permissions == nil {
+		return runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "permission resolution is not configured")
+	}
+	return b.permissions.Resolve(ctx, a.ID, decision)
+}
+
+func (b *ACPBackend) ListSessions(ctx context.Context, a agentpkg.Agent, req runtimeapi.ListSessionsRequest) (runtimeapi.ListSessionsResponse, error) {
+	provider, ok := b.runtime.(interface {
+		ListConfiguredSessions(context.Context, string, acpruntime.RuntimeConfig, acpruntime.ListSessionsRequest) (acpruntime.ListSessionsResponse, error)
+	})
+	if !ok {
+		return runtimeapi.ListSessionsResponse{}, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "session listing is not supported")
+	}
+	cfg, err := b.runtimeConfig(ctx, a)
+	if err != nil {
+		return runtimeapi.ListSessionsResponse{}, err
+	}
+	resp, err := provider.ListConfiguredSessions(ctx, a.ID, cfg, acpruntime.ListSessionsRequest{CWD: req.CWD, Cursor: req.Cursor})
+	if err != nil {
+		return runtimeapi.ListSessionsResponse{}, mapACPError(err)
+	}
+	out := runtimeapi.ListSessionsResponse{NextCursor: resp.NextCursor, Sessions: make([]runtimeapi.Session, 0, len(resp.Sessions))}
+	for _, s := range resp.Sessions {
+		out.Sessions = append(out.Sessions, runtimeapi.Session{SessionID: s.SessionID, Title: s.Title, UpdatedAt: s.UpdatedAt, Details: s.Meta})
+	}
+	return out, nil
+}
+
+func (b *ACPBackend) LoadTranscript(ctx context.Context, a agentpkg.Agent, req runtimeapi.TranscriptRequest) (runtimeapi.TranscriptResponse, error) {
+	provider, ok := b.runtime.(interface {
+		LoadConfiguredTranscript(context.Context, string, acpruntime.RuntimeConfig, acpruntime.TranscriptRequest) (acpruntime.TranscriptResponse, error)
+	})
+	if !ok {
+		return runtimeapi.TranscriptResponse{}, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "transcript loading is not supported")
+	}
+	cfg, err := b.runtimeConfig(ctx, a)
+	if err != nil {
+		return runtimeapi.TranscriptResponse{}, err
+	}
+	resp, err := provider.LoadConfiguredTranscript(ctx, a.ID, cfg, acpruntime.TranscriptRequest{SessionID: req.SessionID, CWD: req.CWD})
+	if err != nil {
+		return runtimeapi.TranscriptResponse{}, mapACPError(err)
+	}
+	out := runtimeapi.TranscriptResponse{SessionID: resp.SessionID, Messages: make([]runtimeapi.TranscriptMessage, 0, len(resp.Messages))}
+	for _, m := range resp.Messages {
+		out.Messages = append(out.Messages, runtimeapi.TranscriptMessage{Role: m.Role, Text: m.Text})
+	}
+	return out, nil
+}
+
+func (b *ACPBackend) RuntimeSummary(_ context.Context, a agentpkg.Agent) (runtimeapi.RuntimeSummary, error) {
+	if err := validateBackendAgent(a, agentpkg.RuntimeTypeACP); err != nil {
+		return runtimeapi.RuntimeSummary{}, err
+	}
+	if b == nil || b.services == nil || b.runtime == nil {
+		return runtimeapi.RuntimeSummary{}, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "acp runtime is not executable")
+	}
+	summary := runtimeapi.RuntimeSummary{Type: a.Runtime.Type, Executable: true, Healthy: true, State: runtimeapi.RuntimeStateReady}
+	if inspector, ok := b.runtime.(interface {
+		ListActiveRuns(string) []acpruntime.ActiveRunInfo
+	}); ok {
+		summary.ActiveRuns = len(inspector.ListActiveRuns(a.ID))
+	}
+	if b.permissions != nil {
+		summary.PendingPermissions = len(b.permissions.List(a.ID))
+	}
+	if inspector, ok := b.runtime.(interface {
+		ListOwnerInstances(string) []acpruntime.PooledInstanceInfo
+	}); ok {
+		details := struct {
+			Instances []acpruntime.PooledInstanceInfo `json:"instances"`
+		}{Instances: []acpruntime.PooledInstanceInfo{}}
+		sessions := map[string]struct{}{}
+		for _, inst := range inspector.ListOwnerInstances(a.ID) {
+			details.Instances = append(details.Instances, inst)
+			if inst.SessionID != "" {
+				sessions[inst.SessionID] = struct{}{}
+			}
+			if !inst.Alive {
+				summary.Healthy = false
+				summary.State = runtimeapi.RuntimeStateDegraded
+			}
+			at := inst.LastUsed
+			if summary.LastActivityAt == nil || at.After(*summary.LastActivityAt) {
+				summary.LastActivityAt = &at
+			}
+		}
+		summary.SessionCount = len(sessions)
+		summary.Details, _ = json.Marshal(details)
+	}
+	return summary, nil
+}
+func (b *ACPBackend) Health(_ context.Context, a agentpkg.Agent) (runtimeapi.Health, error) {
+	err := validateBackendAgent(a, agentpkg.RuntimeTypeACP)
+	if err == nil && (b == nil || b.services == nil || b.runtime == nil) {
+		err = runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "acp runtime is not executable")
+	}
+	state := runtimeapi.RuntimeStateReady
+	healthy := err == nil
+	if err != nil {
+		state = runtimeapi.RuntimeStateUnhealthy
+	}
+	return runtimeapi.Health{Healthy: healthy, State: state, CheckedAt: time.Now().UTC()}, err
+}
+
+func (b *ACPBackend) runtimeConfig(ctx context.Context, a agentpkg.Agent) (acpruntime.RuntimeConfig, error) {
+	cfg, err := b.services.Get(ctx, a.ACPServiceID())
+	if err != nil {
+		return acpruntime.RuntimeConfig{}, mapACPError(err)
+	}
+	return acpruntime.RuntimeConfig{AgentType: cfg.AgentType, CWD: cfg.CWD, AllowedRoots: append([]string(nil), cfg.AllowedRoots...), DefaultModel: cfg.DefaultModel, Env: cloneStringMap(cfg.Env), ConfigOverrides: cloneStringMap(cfg.ConfigOverrides), IdleTTL: cfg.IdleTTL, MaxInstances: cfg.MaxInstances, PermissionMode: cfg.PermissionMode, Codex: cloneCodexConfig(cfg.Codex)}, nil
 }
 
 // BuiltinBackend is the permanent Agent runtime adapter over the in-process
 // ADK Host. Cursor state lives beside the Host's process-lifetime checkpoint.
 type BuiltinBackend struct {
-	host builtinTurnServer
+	host           builtinTurnServer
+	runs           *runtimeapi.RunRegistry
+	permissions    *runtimeapi.PermissionBroker
+	continuationMu sync.Mutex
+	continuations  map[string]builtinPermissionContinuation
+	decidedMu      sync.Mutex
+	decided        map[string]decidedPermission
+}
+
+type decidedPermission struct {
+	decision  runtimeapi.PermissionDecision
+	agentID   string
+	runID     string
+	expiresAt time.Time
+}
+
+type builtinPermissionContinuation struct {
+	agentID, runID string
+	requestID      string
+}
+
+func (b *BuiltinBackend) ResolveContinuation(_ context.Context, token string, d runtimeapi.PermissionDecision, expiresAt time.Time) error {
+	continuation, ok := b.builtinContinuation(token, true)
+	if !ok {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+	}
+	b.decidedMu.Lock()
+	b.decided[continuation.requestID] = decidedPermission{decision: d, agentID: continuation.agentID, runID: continuation.runID, expiresAt: expiresAt}
+	b.decidedMu.Unlock()
+	return nil
+}
+func (b *BuiltinBackend) ValidateContinuationDecision(token string, info runtimeapi.PendingPermission, d runtimeapi.PermissionDecision) error {
+	if _, ok := b.builtinContinuation(token, false); !ok {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+	}
+	if strings.TrimSpace(d.OptionID) != "" {
+		return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "builtin permission decisions do not accept option_id")
+	}
+	outcome := strings.TrimSpace(d.Outcome)
+	if outcome != "" && outcome != "cancel" {
+		return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "invalid builtin permission outcome")
+	}
+	known := make(map[string]struct{}, len(info.Actions))
+	for _, action := range info.Actions {
+		known[action.ActionID] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(d.Decisions))
+	for _, decision := range d.Decisions {
+		actionID := strings.TrimSpace(decision.ActionID)
+		if actionID == "" || (decision.Outcome != "allow" && decision.Outcome != "deny") {
+			return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "invalid builtin per-action permission decision")
+		}
+		if _, duplicate := seen[actionID]; duplicate {
+			return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "duplicate builtin per-action permission decision")
+		}
+		if _, exists := known[actionID]; !exists {
+			return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "builtin permission decision references an unknown action")
+		}
+		seen[actionID] = struct{}{}
+	}
+	return nil
+}
+func (b *BuiltinBackend) ExpireContinuation(_ context.Context, token string) error {
+	continuation, ok := b.builtinContinuation(token, true)
+	if !ok {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+	}
+	removed := false
+	if host, ok := b.host.(interface{ ExpirePermission(string, string) bool }); ok {
+		removed = host.ExpirePermission(continuation.agentID, continuation.requestID)
+	}
+	b.decidedMu.Lock()
+	delete(b.decided, continuation.requestID)
+	b.decidedMu.Unlock()
+	if !removed {
+		return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+	}
+	return nil
+}
+
+func (b *BuiltinBackend) builtinContinuation(token string, take bool) (builtinPermissionContinuation, bool) {
+	b.continuationMu.Lock()
+	defer b.continuationMu.Unlock()
+	continuation, ok := b.continuations[strings.TrimSpace(token)]
+	if ok && take {
+		delete(b.continuations, strings.TrimSpace(token))
+	}
+	return continuation, ok
+}
+
+func (b *BuiltinBackend) storeBuiltinContinuation(token string, continuation builtinPermissionContinuation) {
+	b.continuationMu.Lock()
+	b.continuations[token] = continuation
+	b.continuationMu.Unlock()
 }
 
 type builtinTurnServer interface {
@@ -120,8 +499,12 @@ type builtinTurnServer interface {
 	StoreContinuationCursor(string, string, builtinhost.ContinuationCursor) bool
 }
 
-func NewBuiltinBackend(host builtinTurnServer) *BuiltinBackend {
-	return &BuiltinBackend{host: host}
+func NewBuiltinBackend(host builtinTurnServer, controls ...RuntimeControls) *BuiltinBackend {
+	b := &BuiltinBackend{host: host, continuations: map[string]builtinPermissionContinuation{}, decided: map[string]decidedPermission{}}
+	if len(controls) > 0 {
+		b.runs, b.permissions = controls[0].Runs, controls[0].Permissions
+	}
+	return b
 }
 
 func (*BuiltinBackend) RuntimeType() string { return agentpkg.RuntimeTypeBuiltin }
@@ -135,9 +518,10 @@ func (b *BuiltinBackend) Capabilities(_ context.Context, a agentpkg.Agent) (runt
 	}
 	return runtimeapi.Capabilities{
 		Executable: true, Turn: runtimeapi.TurnCapabilities{Streaming: true},
-		Sessions:    runtimeapi.SessionCapabilities{Resume: true},
-		Permissions: runtimeapi.PermissionCapabilities{Interactive: a.Runtime.Builtin.Permissions.Interactive(), ResumeMode: runtimeapi.PermissionResumeNewStream},
-		Events:      []string{runtimeapi.EventSession, runtimeapi.EventDelta, runtimeapi.EventContent, runtimeapi.EventToolCall, runtimeapi.EventUsage, runtimeapi.EventPermission, runtimeapi.EventDone, runtimeapi.EventError},
+		Sessions:     runtimeapi.SessionCapabilities{Resume: true},
+		Permissions:  runtimeapi.PermissionCapabilities{Interactive: a.Runtime.Builtin.Permissions.Interactive(), ResumeMode: runtimeapi.PermissionResumeNewStream},
+		Cancellation: runtimeapi.CancelCapabilities{Force: true, Graceful: true},
+		Events:       []string{runtimeapi.EventSession, runtimeapi.EventDelta, runtimeapi.EventContent, runtimeapi.EventToolCall, runtimeapi.EventUsage, runtimeapi.EventPermission, runtimeapi.EventDone, runtimeapi.EventError},
 	}, nil
 }
 
@@ -151,6 +535,50 @@ func (b *BuiltinBackend) ServeTurn(ctx context.Context, a agentpkg.Agent, req ru
 	if err := validateRuntimeOptionsVersion(req.Options); err != nil {
 		return err
 	}
+	if req.Permission != nil && b.permissions != nil {
+		now := time.Now().UTC()
+		b.decidedMu.Lock()
+		entry, already := b.decided[req.Permission.RequestID]
+		if already && entry.agentID == a.ID && entry.runID == req.RunID {
+			delete(b.decided, req.Permission.RequestID)
+		} else {
+			already = false
+		}
+		b.decidedMu.Unlock()
+		if already && !now.Before(entry.expiresAt) {
+			already = false
+			if host, ok := b.host.(interface{ ExpirePermission(string, string) bool }); ok {
+				host.ExpirePermission(a.ID, req.Permission.RequestID)
+			}
+			return runtimeapi.NewError(runtimeapi.ErrorPermissionExpired, "permission continuation expired")
+		}
+		decided := entry.decision
+		if !already {
+			if err := b.permissions.Resolve(runtimeapi.WithPermissionSource(ctx, "builtin_route"), a.ID, *req.Permission); err != nil {
+				return err
+			}
+			b.decidedMu.Lock()
+			entry, already = b.decided[req.Permission.RequestID]
+			if already && entry.agentID == a.ID && entry.runID == req.RunID {
+				delete(b.decided, req.Permission.RequestID)
+			} else {
+				already = false
+			}
+			b.decidedMu.Unlock()
+			if already && !now.Before(entry.expiresAt) {
+				already = false
+				if host, ok := b.host.(interface{ ExpirePermission(string, string) bool }); ok {
+					host.ExpirePermission(a.ID, req.Permission.RequestID)
+				}
+				return runtimeapi.NewError(runtimeapi.ErrorPermissionExpired, "permission continuation expired")
+			}
+			decided = entry.decision
+		}
+		if !already {
+			return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation not found")
+		}
+		req.Permission = &decided
+	}
 	var noOptions struct{}
 	if err := runtimeapi.DecodeRuntimeOptions(req.Options.Runtime, &noOptions); err != nil {
 		return err
@@ -163,10 +591,260 @@ func (b *BuiltinBackend) ServeTurn(ctx context.Context, a agentpkg.Agent, req ru
 		}
 	}
 	ctx = bridgeRuntimeIdentities(ctx)
+	terminalState, stopReason, suspended := runtimeapi.RunStateCompleted, "", false
+	if b.runs != nil {
+		bindRun := b.runs.Begin
+		if req.Permission != nil {
+			bindRun = b.runs.Rebind
+		}
+		if err := bindRun(a.ID, a.Runtime.Type, req.RunID, req.SessionID, func(_ context.Context, mode runtimeapi.CancelMode) error {
+			c, ok := b.host.(interface {
+				CancelRun(string, string, builtinhost.CancelMode) (bool, error)
+			})
+			if !ok {
+				return runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "builtin cancellation is not supported")
+			}
+			nativeMode := builtinhost.CancelModeForce
+			if mode == runtimeapi.CancelModeGraceful {
+				nativeMode = builtinhost.CancelModeGraceful
+			} else if mode != runtimeapi.CancelModeForce {
+				return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "invalid cancel mode")
+			}
+			drained := 0
+			if b.permissions != nil {
+				drained = b.permissions.DrainRun(runtimeapi.WithPermissionSource(context.Background(), "run_cancel"), a.ID, req.RunID)
+			}
+			discarded := b.discardRunContinuations(a.ID, req.RunID)
+			cancelled, err := c.CancelRun(a.ID, req.RunID, nativeMode)
+			if err != nil {
+				return mapBuiltinError(err)
+			}
+			if !cancelled {
+				if drained > 0 || discarded > 0 {
+					return nil
+				}
+				return runtimeapi.NewError(runtimeapi.ErrorRunNotFound, "run not found")
+			}
+			return nil
+		}); err != nil {
+			if req.Permission != nil && errors.Is(err, runtimeapi.ErrRunNotFound) {
+				if host, ok := b.host.(interface{ ExpirePermission(string, string) bool }); ok {
+					host.ExpirePermission(a.ID, req.Permission.RequestID)
+				}
+				if b.permissions != nil {
+					b.permissions.RecordContinuationLost(runtimeapi.WithPermissionSource(ctx, "builtin_resume"), a.ID, req.Permission.RequestID)
+				}
+				return runtimeapi.NewError(runtimeapi.ErrorPermissionNotFound, "permission continuation is no longer available")
+			}
+			return err
+		}
+		defer func() {
+			if !suspended {
+				b.runs.Complete(a.ID, req.RunID, terminalState, stopReason)
+			}
+		}()
+	}
 	err := b.host.ServeTurn(ctx, a.ID, nativeReq, func(ev builtinhost.TurnEvent) error {
-		return emit(commonBuiltinEvent(ev))
+		registeredPermission := false
+		if ev.SessionID != "" && b.runs != nil {
+			b.runs.SetSession(a.ID, req.RunID, ev.SessionID)
+		}
+		if ev.Event == runtimeapi.EventDone {
+			stopReason = ev.StopReason
+			suspended = ev.StopReason == runtimeapi.StopReasonPermissionRequired
+			if ev.StopReason == runtimeapi.StopReasonCancelled {
+				terminalState = runtimeapi.RunStateCancelled
+			}
+		}
+		if ev.Event == runtimeapi.EventError {
+			terminalState = runtimeapi.RunStateFailed
+		}
+		if ev.Event == runtimeapi.EventPermission && b.permissions != nil {
+			actions := []runtimeapi.PermissionAction{}
+			var payload struct {
+				Calls []struct {
+					CallID string `json:"call_id"`
+					Name   string `json:"name"`
+				} `json:"calls"`
+			}
+			_ = json.Unmarshal(ev.Data, &payload)
+			for _, call := range payload.Calls {
+				actions = append(actions, runtimeapi.PermissionAction{ActionID: call.CallID, Name: call.Name})
+			}
+			ttl := 10 * time.Minute
+			if permissions := a.Runtime.Builtin.Permissions; permissions != nil && permissions.TimeoutSeconds > 0 {
+				seconds := permissions.TimeoutSeconds
+				ttl = time.Duration(seconds) * time.Second
+			}
+			token, tokenErr := runtimeapi.NewContinuationToken()
+			if tokenErr != nil {
+				b.expireBuiltinRequests(a.ID, []string{ev.RequestID})
+				return runtimeapi.WrapError(runtimeapi.ErrorTurnFailed, "generate permission continuation token", tokenErr)
+			}
+			b.storeBuiltinContinuation(token, builtinPermissionContinuation{agentID: a.ID, runID: req.RunID, requestID: ev.RequestID})
+			_, regErr := b.permissions.Register(runtimeapi.PendingPermission{RequestID: ev.RequestID, AgentID: a.ID, RuntimeType: a.Runtime.Type, RunID: req.RunID, SessionID: ev.SessionID, TTL: ttl, Actions: actions, ResumeMode: runtimeapi.PermissionResumeNewStream}, token, b)
+			if regErr != nil {
+				b.builtinContinuation(token, true)
+				b.expireBuiltinRequests(a.ID, []string{ev.RequestID})
+				return regErr
+			}
+			registeredPermission = true
+		}
+		if emitErr := emit(commonBuiltinEvent(ev)); emitErr != nil {
+			if registeredPermission {
+				_ = b.permissions.Expire(runtimeapi.WithPermissionSource(context.Background(), "permission_delivery_failed"), a.ID, ev.RequestID)
+			}
+			return emitErr
+		}
+		return nil
 	})
+	if err != nil && terminalState != runtimeapi.RunStateCancelled {
+		terminalState = runtimeapi.RunStateFailed
+	}
 	return mapBuiltinError(err)
+}
+
+func acpPermissionActions(data json.RawMessage) []runtimeapi.PermissionAction {
+	var payload struct {
+		ToolCall struct {
+			ToolCallID string `json:"toolCallId"`
+			Title      string `json:"title"`
+		} `json:"toolCall"`
+	}
+	if json.Unmarshal(data, &payload) != nil || strings.TrimSpace(payload.ToolCall.ToolCallID) == "" {
+		return nil
+	}
+	return []runtimeapi.PermissionAction{{ActionID: payload.ToolCall.ToolCallID, Name: payload.ToolCall.Title}}
+}
+
+func acpPermissionOptions(data json.RawMessage) []runtimeapi.PermissionOption {
+	var payload struct {
+		Options []struct {
+			OptionID string `json:"optionId"`
+			ID       string `json:"id"`
+			Kind     string `json:"kind"`
+			Name     string `json:"name"`
+		} `json:"options"`
+	}
+	if json.Unmarshal(data, &payload) != nil {
+		return nil
+	}
+	options := make([]runtimeapi.PermissionOption, 0, len(payload.Options))
+	for _, option := range payload.Options {
+		id := strings.TrimSpace(option.OptionID)
+		if id == "" {
+			id = strings.TrimSpace(option.ID)
+		}
+		if id != "" {
+			options = append(options, runtimeapi.PermissionOption{OptionID: id, Kind: strings.TrimSpace(option.Kind), Name: strings.TrimSpace(option.Name)})
+		}
+	}
+	return options
+}
+
+func (b *BuiltinBackend) CancelRun(ctx context.Context, a agentpkg.Agent, req runtimeapi.CancelRequest) (runtimeapi.CancelResult, error) {
+	if req.Mode != runtimeapi.CancelModeForce && req.Mode != runtimeapi.CancelModeGraceful {
+		return runtimeapi.CancelResult{}, runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "invalid cancel mode")
+	}
+	if b.runs == nil {
+		return runtimeapi.CancelResult{}, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "run cancellation is not configured")
+	}
+	return b.runs.Cancel(ctx, a.ID, req)
+}
+func (b *BuiltinBackend) ResolvePermission(ctx context.Context, a agentpkg.Agent, decision runtimeapi.PermissionDecision) error {
+	if b.permissions == nil {
+		return runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "permission resolution is not configured")
+	}
+	return b.permissions.Resolve(ctx, a.ID, decision)
+}
+
+// DiscardAgentContinuations removes Admin-decided new-stream continuations
+// when an Agent definition is updated or deleted. Pending broker entries are
+// drained separately; these entries have already been claimed by Admin.
+func (b *BuiltinBackend) DiscardAgentContinuations(agentID string) {
+	if b == nil {
+		return
+	}
+	var requestIDs []string
+	b.decidedMu.Lock()
+	for requestID, entry := range b.decided {
+		if entry.agentID == strings.TrimSpace(agentID) {
+			delete(b.decided, requestID)
+			requestIDs = append(requestIDs, requestID)
+		}
+	}
+	b.decidedMu.Unlock()
+	b.expireBuiltinRequests(agentID, requestIDs)
+}
+
+// DiscardAllContinuations removes every Admin-decided continuation during
+// gateway shutdown after the common broker has drained still-pending records.
+func (b *BuiltinBackend) DiscardAllContinuations() {
+	if b == nil {
+		return
+	}
+	byAgent := map[string][]string{}
+	b.decidedMu.Lock()
+	for requestID, entry := range b.decided {
+		delete(b.decided, requestID)
+		byAgent[entry.agentID] = append(byAgent[entry.agentID], requestID)
+	}
+	b.decidedMu.Unlock()
+	for agentID, requestIDs := range byAgent {
+		b.expireBuiltinRequests(agentID, requestIDs)
+	}
+}
+
+func (b *BuiltinBackend) discardRunContinuations(agentID, runID string) int {
+	var requestIDs []string
+	b.decidedMu.Lock()
+	for requestID, entry := range b.decided {
+		if entry.agentID == strings.TrimSpace(agentID) && entry.runID == strings.TrimSpace(runID) {
+			delete(b.decided, requestID)
+			requestIDs = append(requestIDs, requestID)
+		}
+	}
+	b.decidedMu.Unlock()
+	b.expireBuiltinRequests(agentID, requestIDs)
+	return len(requestIDs)
+}
+
+func (b *BuiltinBackend) expireBuiltinRequests(agentID string, requestIDs []string) {
+	host, ok := b.host.(interface{ ExpirePermission(string, string) bool })
+	if !ok {
+		return
+	}
+	for _, requestID := range requestIDs {
+		host.ExpirePermission(agentID, requestID)
+	}
+}
+func (b *BuiltinBackend) RuntimeSummary(_ context.Context, a agentpkg.Agent) (runtimeapi.RuntimeSummary, error) {
+	stateProvider, ok := b.host.(interface {
+		State(string) builtinhost.EntryState
+	})
+	if !ok {
+		return runtimeapi.RuntimeSummary{}, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "builtin runtime is unavailable")
+	}
+	state := stateProvider.State(a.ID)
+	runtimeState := runtimeapi.RuntimeStateReady
+	if !state.Materialized {
+		runtimeState = runtimeapi.RuntimeStateUnknown
+	}
+	summary := runtimeapi.RuntimeSummary{Type: a.Runtime.Type, Executable: true, Healthy: true, State: runtimeState, ActiveRuns: state.InflightTurns, SessionCount: state.LiveSessions}
+	summary.Details, _ = json.Marshal(state)
+	if b.permissions != nil {
+		summary.PendingPermissions = len(b.permissions.List(a.ID))
+	}
+	if !state.MaterializedAt.IsZero() {
+		summary.LastActivityAt = &state.MaterializedAt
+	}
+	return summary, nil
+}
+func (b *BuiltinBackend) Health(_ context.Context, a agentpkg.Agent) (runtimeapi.Health, error) {
+	if err := validateBackendAgent(a, agentpkg.RuntimeTypeBuiltin); err != nil {
+		return runtimeapi.Health{Healthy: false, State: runtimeapi.RuntimeStateUnhealthy, CheckedAt: time.Now().UTC()}, err
+	}
+	return runtimeapi.Health{Healthy: true, State: runtimeapi.RuntimeStateReady, CheckedAt: time.Now().UTC()}, nil
 }
 
 func (b *BuiltinBackend) LoadContinuationCursor(_ context.Context, a agentpkg.Agent, requestID string) (runtimeapi.EventCursor, error) {
@@ -276,9 +954,26 @@ func mapACPError(err error) error {
 		return runtimeapi.WrapError(runtimeapi.ErrorInvalidRequest, "invalid acp request", err)
 	case errors.Is(err, acpruntime.ErrCapacityExceeded):
 		return runtimeapi.WrapError(runtimeapi.ErrorTurnLimitExceeded, "acp runtime capacity exceeded", err)
+	case errors.Is(err, acpruntime.ErrTurnCancelled):
+		return runtimeapi.WrapError(runtimeapi.ErrorTurnCancelled, "acp turn cancelled", err)
+	case strings.Contains(err.Error(), "does not advertise session/list"), strings.Contains(err.Error(), "does not advertise session/load"):
+		return runtimeapi.WrapError(runtimeapi.ErrorCapabilityNotSupported, "acp capability is not supported", err)
 	default:
 		return runtimeapi.NormalizeError(err)
 	}
+}
+
+func mapACPCancelError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, acpruntime.ErrRunNotFound) {
+		return runtimeapi.NewError(runtimeapi.ErrorRunNotFound, "run not found")
+	}
+	if errors.Is(err, acpruntime.ErrRunNotReady) {
+		return runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "run cancellation is not ready; retry")
+	}
+	return mapACPError(err)
 }
 
 func mapBuiltinError(err error) error {

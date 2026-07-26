@@ -192,7 +192,7 @@ Implemented families:
 - MCP: `/admin/mcp/services/...`, `/admin/mcp/routes/...`, `/admin/mcp/runtime/...` (discovery, execution, dispatcher runtime inspection)
 - ACP: `/admin/acp/services/...`, `/admin/acp/routes/...`, `/admin/acp/runtime/...`
 - builtin: `/admin/builtin/routes/...`; `/admin/builtin/runtime` (host materializations, pending interactive tool permissions, and in-flight turns; permission decisions flow through the data-plane resume); `/admin/builtin/runtime/inflight`; `DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}?mode=force|graceful` (operator force/graceful cancel, `docs/design/builtin-agent-runtime.md` §10)
-- agents: `/admin/agents/...` (CRUD plus `/{id}/workspace`, `/{id}/activity`, `/{id}/usage`, `/{id}/interactions`, `/{id}/resources`, `/{id}/health`; the workspace view carries a builtin slice — definition summary, host materialization state, builtin routes — for `runtime.type = "builtin"`)
+- agents: `/admin/agents/...` (CRUD; `/{id}/workspace`, activity/usage/interactions/resources/health; `/{id}/capabilities`; exact-run list/cancel; one-shot permission list/decision; capability-gated session/transcript reads; the workspace includes the common runtime summary/capabilities plus intact ACP/builtin detail)
 - metrics: summaries (with pipeline health counters), per-protocol LLM/MCP/ACP timeseries and breakdowns, recent interaction events, and the Prometheus exposition endpoint `GET /admin/metrics/prometheus`
 
 Stubbed families currently return `501 Not Implemented`:

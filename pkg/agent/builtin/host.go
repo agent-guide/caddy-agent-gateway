@@ -199,8 +199,7 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 	// A session suspended on a pending permission only moves forward through
 	// an explicit resume or cancel; new input is rejected rather than
 	// silently discarding the suspended work (§5.7.7).
-	if pendingID, expired, live := h.permissions.liveForSession(agentID, sessionID); true {
-		h.deleteExpiredPermissions(expired)
+	if pendingID, live := h.permissions.liveForSession(agentID, sessionID); true {
 		if live {
 			handle.release()
 			return fmt.Errorf("%w: session has pending permission request %q; resume or cancel it first", ErrInvalidRequest, pendingID)
@@ -351,8 +350,7 @@ func (h *Host) suspendTurn(ctx context.Context, a agent.Agent, handle *sessionHa
 		userMsg:       userMsg,
 		transcript:    append(priorTranscript, result.transcript...),
 	}
-	expired, capReached := h.permissions.register(pending, permissionMaxPending(perms))
-	h.deleteExpiredPermissions(expired)
+	capReached := h.permissions.register(pending, permissionMaxPending(perms))
 	if capReached {
 		_ = h.checkpoints.Delete(context.Background(), requestID)
 		handle.release()
@@ -403,8 +401,7 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 		decisions[d.CallID] = d.Outcome == "allow"
 	}
 
-	pending, expired, ok := h.permissions.take(requestID)
-	h.deleteExpiredPermissions(expired)
+	pending, ok := h.permissions.take(requestID)
 	if !ok {
 		return fmt.Errorf("%w: permission request %q not found or expired", ErrInvalidRequest, requestID)
 	}
@@ -552,35 +549,21 @@ func (h *Host) servePermissionTurn(ctx context.Context, a agent.Agent, req TurnR
 	return resumeEmit(TurnEvent{Event: EventDone, StopReason: "end_turn"})
 }
 
-// deleteExpiredPermissions drops the checkpoints and session pins of lazily
-// expired pending permissions.
-func (h *Host) deleteExpiredPermissions(expired []*pendingPermission) {
-	for _, p := range expired {
-		_ = h.checkpoints.Delete(context.Background(), p.requestID)
-		h.sessions.setPendingPermission(p.agentID, p.sessionID, false)
-		if h.observer != nil {
-			span, _ := h.observer.Begin(context.Background(), usage.InteractionDimensions{
-				RouteID:       p.routeID,
-				RouteKind:     "builtin",
-				RouteProtocol: p.routeProtocol,
-				VirtualKeyID:  p.virtualKeyID,
-				AgentDepth:    p.agentDepth,
-				AgentID:       p.agentID,
-				RuntimeType:   agent.RuntimeTypeBuiltin,
-				RunID:         p.runID,
-			})
-			span.SetExtension(usage.BuiltinExtension{
-				Operation:           "permission_expire",
-				SessionID:           p.sessionID,
-				RunID:               p.runID,
-				PermissionRequestID: p.requestID,
-				LinkTraceID:         p.linkTraceID,
-				LinkSpanID:          p.linkSpanID,
-				ResultStatus:        "expired",
-			})
-			span.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
-		}
+func (h *Host) recordPermissionExpiry(p *pendingPermission) {
+	if h.observer == nil || p == nil {
+		return
 	}
+	span, _ := h.observer.Begin(context.Background(), usage.InteractionDimensions{
+		RouteID: p.routeID, RouteKind: "builtin", RouteProtocol: p.routeProtocol,
+		VirtualKeyID: p.virtualKeyID, AgentDepth: p.agentDepth, AgentID: p.agentID,
+		RuntimeType: agent.RuntimeTypeBuiltin, RunID: p.runID,
+	})
+	span.SetExtension(usage.BuiltinExtension{
+		Operation: "permission_expire", SessionID: p.sessionID, RunID: p.runID,
+		PermissionRequestID: p.requestID, LinkTraceID: p.linkTraceID,
+		LinkSpanID: p.linkSpanID, ResultStatus: "expired",
+	})
+	span.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
 }
 
 func withBuiltinRunDimensions(ctx context.Context, agentID, runID string) context.Context {
@@ -652,8 +635,7 @@ func (h *Host) Runtime() RuntimeView {
 	for _, id := range ids {
 		view.Agents[id] = h.State(id)
 	}
-	pending, expired := h.permissions.list()
-	h.deleteExpiredPermissions(expired)
+	pending := h.permissions.list()
 	slices.SortFunc(pending, func(a, b PendingPermissionView) int {
 		return strings.Compare(a.RequestID, b.RequestID)
 	})
@@ -680,6 +662,29 @@ func (h *Host) CancelTurn(agentID, sessionID string, mode CancelMode) (bool, err
 		return false, fmt.Errorf("builtin host is not configured")
 	}
 	return h.activity.cancel(agentID, sessionID, mode), nil
+}
+
+// CancelRun targets the exact logical run id used by the common Agent API.
+func (h *Host) CancelRun(agentID, runID string, mode CancelMode) (bool, error) {
+	if h == nil {
+		return false, fmt.Errorf("builtin host is not configured")
+	}
+	return h.activity.cancelRun(agentID, runID, mode), nil
+}
+
+// ExpirePermission discards one opaque suspended checkpoint fail-closed.
+func (h *Host) ExpirePermission(agentID, requestID string) bool {
+	if h == nil || h.permissions == nil {
+		return false
+	}
+	p, ok := h.permissions.discard(agentID, requestID)
+	if !ok {
+		return false
+	}
+	_ = h.checkpoints.Delete(context.Background(), requestID)
+	h.sessions.setPendingPermission(p.agentID, p.sessionID, false)
+	h.recordPermissionExpiry(p)
+	return true
 }
 
 // entry returns the cached materialization for the agent, rebuilding when the

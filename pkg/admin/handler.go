@@ -12,6 +12,7 @@ import (
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
@@ -48,6 +49,9 @@ type Handler struct {
 	modelCatalog               modelcatalog.Service
 	mcpRuntimeRegistry         *mcpruntime.Registry
 	acpRuntimeManager          *acpruntime.Manager
+	runtimeRegistry            *runtimeapi.Registry
+	runRegistry                *runtimeapi.RunRegistry
+	permissionBroker           *runtimeapi.PermissionBroker
 	usageObserver              usage.InteractionObserver
 	usageQuery                 usage.QueryService
 	usageStats                 usage.RuntimeStats
@@ -84,6 +88,9 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 	var modelCatalogSvc modelcatalog.Service
 	var mcpRuntimeRegistry *mcpruntime.Registry
 	var acpRuntimeManager *acpruntime.Manager
+	var runtimeRegistry *runtimeapi.Registry
+	var runRegistry *runtimeapi.RunRegistry
+	var permissionBroker *runtimeapi.PermissionBroker
 	var usageObserver usage.InteractionObserver
 	var usageQuery usage.QueryService
 	var usageStats usage.RuntimeStats
@@ -107,6 +114,9 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 		modelCatalogSvc = agentGateway.ModelCatalog()
 		mcpRuntimeRegistry = agentGateway.MCPRuntimeRegistry()
 		acpRuntimeManager = agentGateway.ACPRuntimeManager()
+		runtimeRegistry = agentGateway.RuntimeRegistry()
+		runRegistry = agentGateway.RunRegistry()
+		permissionBroker = agentGateway.PermissionBroker()
 		usageObserver = agentGateway.UsageObserver()
 		usageQuery = agentGateway.UsageQuery()
 		usageStats = agentGateway.UsageStats()
@@ -132,6 +142,9 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 		modelCatalog:               modelCatalogSvc,
 		mcpRuntimeRegistry:         mcpRuntimeRegistry,
 		acpRuntimeManager:          acpRuntimeManager,
+		runtimeRegistry:            runtimeRegistry,
+		runRegistry:                runRegistry,
+		permissionBroker:           permissionBroker,
 		usageObserver:              usageObserver,
 		usageQuery:                 usageQuery,
 		usageStats:                 usageStats,

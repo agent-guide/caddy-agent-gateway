@@ -7,13 +7,93 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 )
+
+type permissionResponseBackend struct{ resolved bool }
+
+func (*permissionResponseBackend) RuntimeType() string { return agentpkg.RuntimeTypeBuiltin }
+func (*permissionResponseBackend) Capabilities(context.Context, agentpkg.Agent) (runtimeapi.Capabilities, error) {
+	return runtimeapi.Capabilities{Permissions: runtimeapi.PermissionCapabilities{Interactive: true, ResumeMode: runtimeapi.PermissionResumeNewStream}}, nil
+}
+func (*permissionResponseBackend) ServeTurn(context.Context, agentpkg.Agent, runtimeapi.TurnRequest, runtimeapi.EventSink) error {
+	return nil
+}
+func (b *permissionResponseBackend) ResolvePermission(context.Context, agentpkg.Agent, runtimeapi.PermissionDecision) error {
+	b.resolved = true
+	return nil
+}
+
+type retryableCancelBackend struct{}
+
+func (*retryableCancelBackend) RuntimeType() string { return agentpkg.RuntimeTypeBuiltin }
+func (*retryableCancelBackend) Capabilities(context.Context, agentpkg.Agent) (runtimeapi.Capabilities, error) {
+	return runtimeapi.Capabilities{Cancellation: runtimeapi.CancelCapabilities{Force: true}}, nil
+}
+func (*retryableCancelBackend) ServeTurn(context.Context, agentpkg.Agent, runtimeapi.TurnRequest, runtimeapi.EventSink) error {
+	return nil
+}
+func (*retryableCancelBackend) CancelRun(context.Context, agentpkg.Agent, runtimeapi.CancelRequest) (runtimeapi.CancelResult, error) {
+	return runtimeapi.CancelResult{}, runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "run cancellation is not ready; retry")
+}
+
+func TestResolveBuiltinAgentPermissionRequiresNewStreamResume(t *testing.T) {
+	store := newAgentConfigStore()
+	a := &agentpkg.Agent{ID: "a1", Name: "A1", Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeBuiltin, Builtin: &agentpkg.BuiltinRuntime{}}}
+	if err := store.Create(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	backend := &permissionResponseBackend{}
+	registry := runtimeapi.NewRegistry()
+	if err := registry.Register(backend); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{agentManager: agentpkg.NewManager(store), runtimeRegistry: registry}
+	req := httptest.NewRequest(http.MethodPost, "/admin/agents/a1/permissions/perm-1", strings.NewReader(`{"outcome":"allow"}`))
+	req.SetPathValue("id", "a1")
+	req.SetPathValue("request_id", "perm-1")
+	rec := httptest.NewRecorder()
+	h.handleResolveAgentPermission(rec, req)
+	if rec.Code != http.StatusOK || !backend.resolved {
+		t.Fatalf("status=%d resolved=%v body=%s", rec.Code, backend.resolved, rec.Body.String())
+	}
+	var response struct {
+		Status         string `json:"status"`
+		RequestID      string `json:"request_id"`
+		ResumeRequired bool   `json:"resume_required"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || response.Status != "accepted" || response.RequestID != "perm-1" || !response.ResumeRequired {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+}
+
+func TestCancelAgentRunBackendUnavailableIsRetryable(t *testing.T) {
+	store := newAgentConfigStore()
+	a := &agentpkg.Agent{ID: "a1", Name: "A1", Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeBuiltin, Builtin: &agentpkg.BuiltinRuntime{}}}
+	if err := store.Create(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	registry := runtimeapi.NewRegistry()
+	if err := registry.Register(&retryableCancelBackend{}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{agentManager: agentpkg.NewManager(store), runtimeRegistry: registry}
+	req := httptest.NewRequest(http.MethodDelete, "/admin/agents/a1/runs/run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil)
+	req.SetPathValue("id", "a1")
+	req.SetPathValue("run_id", "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	rec := httptest.NewRecorder()
+	h.handleCancelAgentRun(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "1" {
+		t.Fatalf("status=%d retry-after=%q body=%s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+}
 
 type agentConfigStore struct {
 	mu    sync.RWMutex

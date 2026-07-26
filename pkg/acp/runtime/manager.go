@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -22,13 +23,18 @@ const defaultJanitorInterval = 30 * time.Second
 var ErrInvalidRequest = errors.New("invalid acp request")
 
 var ErrCapacityExceeded = errors.New("acp instance capacity exceeded")
+var ErrRunNotFound = errors.New("acp run not found")
+var ErrRunNotReady = errors.New("acp run cancellation is not ready")
+var ErrTurnCancelled = errors.New("acp turn cancelled")
 
 type Manager struct {
 	services    *acpservice.Manager
 	active      *ActivityTracker
 	permissions *permissionBroker
+	runs        *activeRunRegistry
 
 	janitorInterval time.Duration
+	notifyObserver  func(string, json.RawMessage)
 
 	mu        sync.Mutex
 	instances map[string]*managedInstance
@@ -48,6 +54,7 @@ func NewManager(services *acpservice.Manager) *Manager {
 		services:        services,
 		active:          NewActivityTracker(),
 		permissions:     newPermissionBroker(),
+		runs:            newActiveRunRegistry(),
 		janitorInterval: defaultJanitorInterval,
 		instances:       map[string]*managedInstance{},
 		done:            make(chan struct{}),
@@ -215,6 +222,16 @@ func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, r
 	if req.Input == "" {
 		return fmt.Errorf("input is required")
 	}
+	var run *activeRun
+	if strings.TrimSpace(req.RunID) != "" {
+		var runCtx context.Context
+		runCtx, run = m.runs.begin(ctx, cfg.ID, strings.TrimSpace(req.RunID), req.SessionID)
+		if run == nil {
+			return fmt.Errorf("%w: duplicate run_id %q", ErrInvalidRequest, req.RunID)
+		}
+		ctx = runCtx
+		defer m.runs.finish(run)
+	}
 	cwd := strings.TrimSpace(req.CWD)
 	if cwd == "" {
 		cwd = cfg.CWD
@@ -238,14 +255,36 @@ func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, r
 	if err != nil {
 		return err
 	}
+	if run != nil {
+		m.runs.bind(run, inst)
+	}
 	stopReason, err := inst.prompt(ctx, req, emit)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return ErrTurnCancelled
+		}
 		return err
 	}
 	if emit != nil {
 		return emit(TurnEvent{Event: "done", StopReason: stopReason})
 	}
 	return nil
+}
+
+// CancelRun sends native session/cancel to exactly one active logical run and
+// cancels that run's context. It never closes a scope, thread, or pool entry.
+func (m *Manager) CancelRun(ownerID, runID string) error {
+	if m == nil || m.runs == nil {
+		return ErrRunNotFound
+	}
+	return m.runs.cancel(strings.TrimSpace(ownerID), strings.TrimSpace(runID))
+}
+
+func (m *Manager) ListActiveRuns(ownerID string) []ActiveRunInfo {
+	if m == nil || m.runs == nil {
+		return []ActiveRunInfo{}
+	}
+	return m.runs.list(strings.TrimSpace(ownerID))
 }
 
 func (m *Manager) ListSessions(ctx context.Context, serviceID string, req ListSessionsRequest) (ListSessionsResponse, error) {
@@ -258,6 +297,19 @@ func (m *Manager) ListSessions(ctx context.Context, serviceID string, req ListSe
 	}
 	if cfg.Disabled {
 		return ListSessionsResponse{}, fmt.Errorf("%w: acp service %q is disabled", ErrInvalidRequest, cfg.ID)
+	}
+	if req.CWD = strings.TrimSpace(req.CWD); req.CWD != "" {
+		if err := acpservice.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
+			return ListSessionsResponse{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+		}
+	}
+	return listAgentSessions(ctx, cfg, req)
+}
+
+func (m *Manager) ListConfiguredSessions(ctx context.Context, ownerID string, runtimeCfg RuntimeConfig, req ListSessionsRequest) (ListSessionsResponse, error) {
+	cfg, err := runtimeCfg.serviceConfig(strings.TrimSpace(ownerID))
+	if err != nil {
+		return ListSessionsResponse{}, err
 	}
 	if req.CWD = strings.TrimSpace(req.CWD); req.CWD != "" {
 		if err := acpservice.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
@@ -319,6 +371,19 @@ func (m *Manager) LoadTranscript(ctx context.Context, serviceID string, req Tran
 	return loadAgentTranscript(ctx, cfg, req)
 }
 
+func (m *Manager) LoadConfiguredTranscript(ctx context.Context, ownerID string, runtimeCfg RuntimeConfig, req TranscriptRequest) (TranscriptResponse, error) {
+	cfg, err := runtimeCfg.serviceConfig(strings.TrimSpace(ownerID))
+	if err != nil {
+		return TranscriptResponse{}, err
+	}
+	if req.CWD = strings.TrimSpace(req.CWD); req.CWD != "" {
+		if err := acpservice.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
+			return TranscriptResponse{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+		}
+	}
+	return loadAgentTranscript(ctx, cfg, req)
+}
+
 func (m *Manager) ListInFlight() []InFlightTurn {
 	if m == nil || m.active == nil {
 		return nil
@@ -353,6 +418,19 @@ func (m *Manager) ListInstances() []PooledInstanceInfo {
 	return out
 }
 
+// ListOwnerInstances keeps pool-scope encoding inside the ACP runtime while
+// exposing the instances owned by one Agent/service identity to adapters.
+func (m *Manager) ListOwnerInstances(ownerID string) []PooledInstanceInfo {
+	ownerID = strings.TrimSpace(ownerID)
+	out := make([]PooledInstanceInfo, 0)
+	for _, inst := range m.ListInstances() {
+		if ScopeServiceID(inst.Scope) == ownerID {
+			out = append(out, inst)
+		}
+	}
+	return out
+}
+
 func (m *Manager) resolveInstance(ctx context.Context, scope string, cfg acpservice.ServiceConfig, req TurnRequest) (*instance, error) {
 	// ServeTurn holds the per-scope activity lock for the whole turn, so only one
 	// turn resolves a given scope at a time and the janitor skips active scopes;
@@ -382,7 +460,7 @@ func (m *Manager) resolveInstance(ctx context.Context, scope string, cfg acpserv
 		m.mu.Unlock()
 	}
 
-	inst, err := newInstance(ctx, cfg, req, m.permissions)
+	inst, err := newInstance(ctx, cfg, req, m.permissions, m.notifyObserver)
 	if err != nil {
 		return nil, err
 	}

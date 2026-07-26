@@ -20,6 +20,21 @@ Important files:
   `AgentGateway` registers the shipping ACP and builtin adapters during
   bootstrap; Agent-bound legacy route turns share its run sequencer and
   identity bridge, while unbound ACP remains the sole temporary native path.
+  The gateway-owned run registry and permission broker provide M3 exact-run
+  cancellation, bounded terminal tombstones, and one-shot opaque continuation
+  claims. Claimed permission ids retain short-lived owner/runtime routing
+  metadata so concurrent legacy and Agent entry points keep converging on the
+  broker after the winner removes continuation state. Agent Admin
+  capability/run/permission/session/transcript reads must
+  resolve through these interfaces and fail with the normalized capability
+  error when unsupported. Builtin Admin permission decisions are two-phase:
+  the response advertises `resume_required`, and the decided continuation
+  retains the original permission expiry until the next turn consumes it.
+  The common broker owns expiry scheduling and shutdown drain; backend stores
+  never run independent expiry sweeps. Public pending-permission records expose
+  only allowlisted action identity/display and ACP option identity/kind/display
+  fields, never native payloads or tool arguments. Opaque continuation tokens
+  are resolved only in backend-owned stores.
 - `types.go`: the `Agent` model. Runtime is `acp` (gateway owns the lifecycle via
   an ACP `service_id`), `http` (the agent owns its own lifecycle), or `builtin`
   (no separate process — a persisted definition materialized by the in-process
