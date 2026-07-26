@@ -99,8 +99,8 @@ Responsibilities:
 - invoke the selected LLM protocol handler
 - when `mcp` is configured, resolve `MCPRoute` requests, parse MCP JSON-RPC, and invoke `pkg/mcp/service`
 - track in-flight MCP requests and progress through the shared runtime registry
-- when `acp` is configured, resolve `ACPRoute` requests, parse the gateway ACP turn request, and invoke `pkg/acp/runtime`
-- when `builtin` is configured, resolve `BuiltinRoute` requests, stamp the route's target agent id on the interaction span, and invoke the in-process ADK host (`pkg/agent/builtin`) for `POST /<builtin-route>/turn` SSE
+- when `acp` is configured, resolve `ACPRoute` requests and preserve the native permission/session/transcript paths; Agent-bound turns execute through the registered `runtimeapi` ACP adapter while unbound legacy turns remain native until route migration
+- when `builtin` is configured, resolve `BuiltinRoute` requests, stamp the route's target agent id on the interaction span, and execute `POST /<builtin-route>/turn` through the registered `runtimeapi` builtin adapter over the in-process ADK host
 
 ### Protocol handler modules
 
@@ -250,6 +250,10 @@ Scope:
 
 - supported agent types: `codex`, `opencode`
 - service config store: `acp_services`
+- Agent-bound turn execution snapshots one service record at the gateway
+  adapter boundary into identity-free `pkg/acp/runtime.RuntimeConfig` and uses
+  `agent_id` as the configured runtime owner key; unbound legacy ACP routes
+  continue using `service_id` directly until AgentRoute migration
 - dispatcher endpoints: `POST /<acp-route>/turn` with SSE events (`session`, `delta`, `reasoning`, `content`, `plan`, `tool_call`, `usage`, `available_commands`, `session_info`, `mode`, `config_options`, `permission`, `done`, `error`), `POST /<acp-route>/permission` for interactive permission decisions, `GET /<acp-route>/sessions`, and `GET /<acp-route>/sessions/{session_id}/transcript`
 - permission modes are `deny` (default, fail-closed), `auto_approve`, and `interactive`; permission replies use the nested ACP outcome shape, run off the transport read loop, and time out fail-closed
 - `interactive` surfaces `session/request_permission` as a `permission` SSE event (`request_id` + raw ACP params with exact option ids) on the active turn stream and resolves through `POST /<acp-route>/permission` (or the admin escape hatch `POST /admin/acp/runtime/permissions/{request_id}`); no streaming turn client, a decision timeout, or transient connections (session/list, transcript) all fail closed
@@ -411,6 +415,9 @@ Important files:
   optional capability interfaces, normalized errors, and backend registry.
   It may depend on the `Agent` definition but must not import ACP, LLM, MCP, or
   other runtime implementations; gateway-owned adapters sit above both sides.
+  `AgentGateway` registers the shipping ACP and builtin adapters during
+  bootstrap; Agent-bound legacy route turns share its run sequencer and
+  identity bridge, while unbound ACP remains the sole temporary native path.
 - `types.go`: the `Agent` model. Runtime is `acp` (gateway owns the lifecycle via
   an ACP `service_id`), `http` (the agent owns its own lifecycle), or `builtin`
   (no separate process — a persisted definition materialized by the in-process

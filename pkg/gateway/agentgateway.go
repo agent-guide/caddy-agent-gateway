@@ -48,7 +48,6 @@ type BootstrapOptions struct {
 	UsageStats          usage.RuntimeStats
 	UsagePrometheus     usage.PrometheusProvider
 	UsageConfig         usage.Config
-	RuntimeBackends     []runtimeapi.Backend
 	Logger              *zap.Logger
 }
 
@@ -96,9 +95,6 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if err := g.runtimeRegistry.RegisterAll(opts.RuntimeBackends...); err != nil {
-		return fmt.Errorf("register agent runtime backends: %w", err)
-	}
 	g.configureConfigStoreBackend(opts.ConfigStoreBackend)
 	staticRoutes := make([]routecore.AgentRouteConfig, 0, len(opts.StaticLLMRoutes)+len(opts.StaticMCPRoutes)+len(opts.StaticACPRoutes))
 	staticRoutes = append(staticRoutes, opts.StaticLLMRoutes...)
@@ -148,6 +144,16 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 			Tools:    g.mcpServiceManager,
 			Observer: g.usageObserver,
 		})
+	}
+	var backends []runtimeapi.Backend
+	if g.acpServiceManager != nil && g.acpRuntimeManager != nil {
+		backends = append(backends, NewACPBackend(g.acpServiceManager, g.acpRuntimeManager))
+	}
+	if g.builtinHost != nil {
+		backends = append(backends, NewBuiltinBackend(g.builtinHost))
+	}
+	if err := g.runtimeRegistry.RegisterAll(backends...); err != nil {
+		return fmt.Errorf("register agent runtime backends: %w", err)
 	}
 	g.configured = true
 	return nil
@@ -320,8 +326,8 @@ func (g *AgentGateway) AgentManager() *agentpkg.Manager {
 }
 
 // RuntimeRegistry returns the runtime-neutral Agent backend registry. Runtime
-// adapters are registered during Bootstrap; existing dispatch paths do not
-// consume it until their migration milestone.
+// adapters are registered during Bootstrap and consumed by Agent-bound ACP
+// and builtin route turns.
 func (g *AgentGateway) RuntimeRegistry() *runtimeapi.Registry {
 	g.mu.RLock()
 	defer g.mu.RUnlock()

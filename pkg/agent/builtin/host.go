@@ -109,6 +109,26 @@ func (h *Host) State(agentID string) EntryState {
 	return state
 }
 
+// StoreContinuationCursor attaches common event-ordering state to a pending
+// permission checkpoint. It fails closed if the checkpoint identity no longer
+// exists or belongs to another Agent/run.
+func (h *Host) StoreContinuationCursor(agentID, requestID string, cursor ContinuationCursor) bool {
+	if h == nil || h.permissions == nil {
+		return false
+	}
+	return h.permissions.storeCursor(agentID, requestID, cursor)
+}
+
+// LoadContinuationCursor reads, but does not consume, the cursor attached to
+// a pending permission. The Host's one-shot checkpoint take owns deletion, so
+// a request rejected before take may be corrected and retried.
+func (h *Host) LoadContinuationCursor(agentID, requestID string) (ContinuationCursor, bool) {
+	if h == nil || h.permissions == nil {
+		return ContinuationCursor{}, false
+	}
+	return h.permissions.loadCursor(agentID, requestID)
+}
+
 // ServeTurn runs one turn of a builtin agent and streams events to emit.
 // Client-correctable failures wrap ErrInvalidRequest; concurrency rejection
 // wraps ErrTurnLimitExceeded; unknown agents wrap ErrAgentNotFound.

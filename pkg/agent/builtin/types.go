@@ -63,6 +63,15 @@ type TurnPermissionDecision struct {
 	Outcome string `json:"outcome"`
 }
 
+// ContinuationCursor is opaque common event-ordering state stored beside a
+// pending Host checkpoint. The gateway adapter translates it to/from its
+// runtime-neutral cursor without exposing ADK checkpoint data.
+type ContinuationCursor struct {
+	RunID        string
+	NextSequence uint64
+	NextSegment  uint32
+}
+
 // TurnEvent is one SSE event of a builtin turn. The vocabulary is a marked
 // subset of the ACP turn vocabulary: session, delta, content, tool_call,
 // usage, permission, done, error.

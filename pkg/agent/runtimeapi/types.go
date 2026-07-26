@@ -43,8 +43,18 @@ type ExecutionOptions struct {
 	LogicalExecutionKey string
 }
 
-// TurnEvent is the common event envelope. The common event sequencer added in
-// M1 owns Sequence and SegmentIndex; backends must not allocate them.
+// ContinuationCursorBackend persists the common event cursor beside a
+// backend-owned, process-lifetime continuation. Implementations must not
+// expose native checkpoint state through this interface.
+type ContinuationCursorBackend interface {
+	LoadContinuationCursor(context.Context, agent.Agent, string) (EventCursor, error)
+	StoreContinuationCursor(context.Context, agent.Agent, string, EventCursor) error
+}
+
+// TurnEvent is the common event envelope. Event-specific fields, including
+// done/error stop_reason and message values, live in Data rather than parallel
+// envelope fields. The common event sequencer added in M1 owns Sequence and
+// SegmentIndex; backends must not allocate them.
 type TurnEvent struct {
 	Event        string          `json:"-"`
 	AgentID      string          `json:"agent_id"`
@@ -75,6 +85,11 @@ const (
 	EventSessionInfo       = "session_info"
 	EventMode              = "mode"
 	EventConfigOptions     = "config_options"
+)
+
+const (
+	StopReasonPermissionRequired = "permission_required"
+	StopReasonCancelled          = "cancelled"
 )
 
 // Capabilities is the authoritative description of one backend for one Agent

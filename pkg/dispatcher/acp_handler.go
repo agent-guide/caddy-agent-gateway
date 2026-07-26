@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -101,24 +102,64 @@ func (h *Handler) dispatchACP(w http.ResponseWriter, r *http.Request, next NextH
 		return httpjson.Error(w, http.StatusBadRequest, "input is required")
 	}
 	if dims, ok := usage.DimensionsFromContext(rewritten.Context()); ok && dims.AgentID != "" {
-		runID, generateErr := runtimeapi.NewRunID()
-		if generateErr != nil {
-			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "turn_failed")
-			return httpjson.Error(w, http.StatusInternalServerError, "failed to initialize run")
+		agentManager := h.gateway.AgentManager()
+		if agentManager == nil {
+			return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "agent manager is unavailable"))
 		}
-		dims.RuntimeType = agentpkg.RuntimeTypeACP
-		dims.RunID = runID
-		usage.SpanFromContext(rewritten.Context()).SetExtension(usage.CommonExtension{
-			AgentID: dims.AgentID, RuntimeType: dims.RuntimeType, RunID: dims.RunID,
+		a, getErr := agentManager.Get(rewritten.Context(), dims.AgentID)
+		if getErr != nil {
+			return writeRuntimePreStreamError(w, rewritten, normalizeAgentLookupError(getErr))
+		}
+		if a.Runtime.Type != agentpkg.RuntimeTypeACP {
+			return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "ACP route is bound to a non-ACP agent"))
+		}
+		if route.ServiceID != a.ACPServiceID() {
+			return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "ACP route service does not match agent runtime service"))
+		}
+		backend, resolveErr := h.gateway.RuntimeRegistry().Resolve(a.Runtime.Type)
+		if resolveErr != nil {
+			return writeRuntimePreStreamError(w, rewritten, resolveErr)
+		}
+		runtimeOptions, marshalErr := json.Marshal(map[string]any{
+			"thread_id": req.ThreadID, "cwd": req.CWD, "model": req.Model,
+			"fresh_session": req.FreshSession, "config_overrides": req.ConfigOverrides,
 		})
-		rewritten = rewritten.WithContext(usage.ContextWithDimensions(rewritten.Context(), dims))
+		if marshalErr != nil {
+			return writeRuntimePreStreamError(w, rewritten, runtimeapi.WrapError(runtimeapi.ErrorInvalidRequest, "invalid acp options", marshalErr))
+		}
+		commonReq := runtimeapi.TurnRequest{
+			Input: req.Input, SessionID: req.SessionID,
+			Options: runtimeapi.TurnOptions{Version: runtimeapi.TurnOptionsVersionV1, Runtime: runtimeOptions},
+		}
+		sequencer, sequenceErr := runtimeapi.NewTurnSequencer(rewritten.Context(), backend, a, commonReq)
+		if sequenceErr != nil {
+			return writeRuntimePreStreamError(w, rewritten, sequenceErr)
+		}
+		commonReq.RunID = sequencer.RunID()
+		rewritten = rewritten.WithContext(bindRuntimeRequestContext(rewritten.Context(), a.ID, agentpkg.RuntimeTypeACP, commonReq.RunID, commonReq.SessionID, ""))
+		usage.SpanFromContext(rewritten.Context()).SetExtension(usage.CommonExtension{AgentID: a.ID, RuntimeType: agentpkg.RuntimeTypeACP, RunID: commonReq.RunID})
 		logRequestPhase(h.logger, "dispatcher: agent run initialized", rewritten)
-	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
+		counts := map[string]int{}
+		nativeSink := wrapACPEventSinkForUsage(rewritten, newACPSSESink(w), counts)
+		commonSink := func(ev runtimeapi.TurnEvent) error { return nativeSink(nativeACPEvent(ev)) }
+		usage.SpanFromContext(rewritten.Context()).SetExtension(usage.ACPExtension{
+			ThreadID: strings.TrimSpace(req.ThreadID), SessionID: strings.TrimSpace(req.SessionID),
+			FreshSession: usage.Bool(req.FreshSession), ResultStatus: "success",
+		})
+		result, serveErr := sequencer.ServeSegment(rewritten.Context(), backend, a, commonReq, commonSink)
+		if serveErr != nil {
+			usage.SpanFromContext(rewritten.Context()).SetExtension(usage.ACPExtension{ResultStatus: "error", EventCounts: counts})
+			if !result.Started {
+				return writeRuntimePreStreamError(w, rewritten, serveErr)
+			}
+			code, _ := runtimeapi.ErrorCodeOf(serveErr)
+			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", string(code))
+			return nil
+		}
+		usage.SpanFromContext(rewritten.Context()).SetExtension(usage.ACPExtension{EventCounts: counts})
+		return nil
+	}
 
 	emit := newACPSSESink(w)
 	counts := map[string]int{}
@@ -169,7 +210,15 @@ func matchACPRouteEndpoint(path string) (endpoint string, sessionID string, matc
 // ResponseWriter so a direct http.Flusher assertion no longer succeeds.
 func newACPSSESink(w http.ResponseWriter) acpruntime.EventSink {
 	flusher := NewResponseFlusher(w)
+	started := false
 	return func(event acpruntime.TurnEvent) error {
+		if !started {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			w.WriteHeader(http.StatusOK)
+			started = true
+		}
 		name := strings.TrimSpace(event.Event)
 		if name == "" {
 			name = "delta"
@@ -184,6 +233,22 @@ func newACPSSESink(w http.ResponseWriter) acpruntime.EventSink {
 		flusher.Flush()
 		return nil
 	}
+}
+
+func nativeACPEvent(ev runtimeapi.TurnEvent) acpruntime.TurnEvent {
+	native := acpruntime.TurnEvent{Event: ev.Event, SessionID: ev.SessionID, RequestID: ev.RequestID, Text: ev.Text, Data: ev.Data}
+	if ev.Event == runtimeapi.EventDone || ev.Event == runtimeapi.EventError {
+		var terminal struct {
+			StopReason string `json:"stop_reason"`
+			Message    string `json:"message"`
+		}
+		if json.Unmarshal(ev.Data, &terminal) == nil && (terminal.StopReason != "" || terminal.Message != "") {
+			native.StopReason = terminal.StopReason
+			native.Message = terminal.Message
+			native.Data = nil
+		}
+	}
+	return native
 }
 
 func wrapACPEventSinkForUsage(r *http.Request, next acpruntime.EventSink, counts map[string]int) acpruntime.EventSink {
@@ -207,7 +272,19 @@ func wrapACPEventSinkForUsage(r *http.Request, next acpruntime.EventSink, counts
 
 // dispatchACPPermission answers one pending interactive permission request
 // surfaced to the turn client as a "permission" SSE event.
-func (h *Handler) dispatchACPPermission(w http.ResponseWriter, r *http.Request, runtimeManager *acpruntime.Manager) error {
+type acpPermissionRuntime interface {
+	ResolvePermission(acpruntime.PermissionDecision) error
+}
+
+type acpSessionRuntime interface {
+	ListSessions(context.Context, string, acpruntime.ListSessionsRequest) (acpruntime.ListSessionsResponse, error)
+}
+
+type acpTranscriptRuntime interface {
+	LoadTranscript(context.Context, string, acpruntime.TranscriptRequest) (acpruntime.TranscriptResponse, error)
+}
+
+func (h *Handler) dispatchACPPermission(w http.ResponseWriter, r *http.Request, runtimeManager acpPermissionRuntime) error {
 	var decision acpruntime.PermissionDecision
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, MaxACPRequestBodyBytes)
@@ -226,7 +303,7 @@ func (h *Handler) dispatchACPPermission(w http.ResponseWriter, r *http.Request, 
 	return httpjson.Write(w, http.StatusOK, map[string]string{"status": "resolved"})
 }
 
-func (h *Handler) dispatchACPSessions(w http.ResponseWriter, r *http.Request, runtimeManager *acpruntime.Manager, serviceID string) error {
+func (h *Handler) dispatchACPSessions(w http.ResponseWriter, r *http.Request, runtimeManager acpSessionRuntime, serviceID string) error {
 	result, err := runtimeManager.ListSessions(r.Context(), serviceID, acpruntime.ListSessionsRequest{
 		CWD:    strings.TrimSpace(r.URL.Query().Get("cwd")),
 		Cursor: strings.TrimSpace(r.URL.Query().Get("cursor")),
@@ -238,7 +315,7 @@ func (h *Handler) dispatchACPSessions(w http.ResponseWriter, r *http.Request, ru
 	return httpjson.Write(w, http.StatusOK, result)
 }
 
-func (h *Handler) dispatchACPTranscript(w http.ResponseWriter, r *http.Request, runtimeManager *acpruntime.Manager, serviceID, sessionID string) error {
+func (h *Handler) dispatchACPTranscript(w http.ResponseWriter, r *http.Request, runtimeManager acpTranscriptRuntime, serviceID, sessionID string) error {
 	result, err := runtimeManager.LoadTranscript(r.Context(), serviceID, acpruntime.TranscriptRequest{
 		SessionID: sessionID,
 		CWD:       strings.TrimSpace(r.URL.Query().Get("cwd")),

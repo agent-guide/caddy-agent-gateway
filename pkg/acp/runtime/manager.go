@@ -188,6 +188,24 @@ func (m *Manager) ServeTurn(ctx context.Context, serviceID string, req TurnReque
 	if cfg.Disabled {
 		return fmt.Errorf("acp service %q is disabled", cfg.ID)
 	}
+	return m.serveTurn(ctx, cfg, req, emit)
+}
+
+// ServeConfiguredTurn executes an Agent-owned ACP runtime from an
+// identity-free snapshot. It performs no service-store lookup; ownerID is the
+// pool/permission ownership key and is never exposed through the common SPI.
+func (m *Manager) ServeConfiguredTurn(ctx context.Context, ownerID string, runtimeCfg RuntimeConfig, req TurnRequest, emit EventSink) error {
+	if m == nil {
+		return fmt.Errorf("acp runtime manager is not configured")
+	}
+	cfg, err := runtimeCfg.serviceConfig(ownerID)
+	if err != nil {
+		return err
+	}
+	return m.serveTurn(ctx, cfg, req, emit)
+}
+
+func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequest, emit EventSink) error {
 	req.ThreadID = strings.TrimSpace(req.ThreadID)
 	req.SessionID = strings.TrimSpace(req.SessionID)
 	req.Input = strings.TrimSpace(req.Input)

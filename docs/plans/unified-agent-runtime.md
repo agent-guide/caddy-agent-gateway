@@ -1,6 +1,6 @@
 # Unified Agent Runtime and Routing Plan
 
-Status: implementation in progress — M0-M1 complete
+Status: implementation in progress — M0-M2 complete
 
 Source branch: `feature/unified-agent-runtime` working tree based on `bc4e739`
 
@@ -17,7 +17,9 @@ first introduces one Agent runtime capability layer, moves ACP and builtin
 behind that layer while their existing routes still work, then cuts ingress
 over to one AgentRoute and folds ACP service config into the owning Agent. HTTP
 execution and durable Workflow Agent Tasks build on the same contract after the
-two shipping runtimes prove it.
+two shipping runtimes prove it. M0-M2 are complete: the common contracts,
+identities/sequencer, and ACP/builtin adapters are live behind the legacy
+ingress routes. M3 and the route/control-plane cutover remain pending.
 
 The target stack is:
 
@@ -1420,6 +1422,16 @@ Verification:
   and representative run/runtime filters use the intended SQLite query plans.
 
 ### M2 — ACP and builtin backends on the unified runtime SPI
+
+Implementation status: complete.
+
+Known migration-boundary debt: legacy bound ACP and builtin dispatch currently
+call the store-backed `agent.Manager.Get` once per turn. This is intentionally
+temporary; M4 replaces it with the full Agent snapshot and makes a store-free
+lookup a hard gate. Also, the closed common error vocabulary maps builtin
+permission checkpoint capacity failures from the former
+`permission_capacity_exceeded` value to `turn_limit_exceeded`; downstream
+`error_type` filters and alerts must use the common value.
 
 The backend adapters introduced here are the permanent boundary between the
 common Agent runtime contract and each native runtime. Only their temporary

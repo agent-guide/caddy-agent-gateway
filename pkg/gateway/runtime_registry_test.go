@@ -1,12 +1,15 @@
 package gateway
 
 import (
-	"context"
 	"errors"
 	"testing"
 
+	"github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi/runtimeapitest"
+	"github.com/agent-guide/agent-gateway/pkg/configstore"
+	configschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
+	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
 )
 
 func TestAgentGatewayOwnsRuntimeRegistry(t *testing.T) {
@@ -16,37 +19,24 @@ func TestAgentGatewayOwnsRuntimeRegistry(t *testing.T) {
 	if gateway.RuntimeRegistry() == nil {
 		t.Fatal("RuntimeRegistry() = nil")
 	}
-
-	backend := runtimeapitest.NewBackend("fake")
-	if err := gateway.Bootstrap(context.Background(), BootstrapOptions{
-		RuntimeBackends: []runtimeapi.Backend{backend},
-	}); err != nil {
-		t.Fatalf("Bootstrap() error = %v", err)
-	}
-	got, err := gateway.RuntimeRegistry().Resolve("fake")
-	if err != nil {
-		t.Fatalf("Resolve(fake) error = %v", err)
-	}
-	if got != backend {
-		t.Fatal("Resolve(fake) returned a different backend")
-	}
 }
 
-func TestAgentGatewayBootstrapRejectsDuplicateRuntimeBackends(t *testing.T) {
-	t.Parallel()
-
-	gateway := NewAgentGateway()
-	err := gateway.Bootstrap(context.Background(), BootstrapOptions{
-		RuntimeBackends: []runtimeapi.Backend{
-			runtimeapitest.NewBackend("duplicate"),
-			runtimeapitest.NewBackend("duplicate"),
-		},
-	})
-	if err == nil {
-		t.Fatal("Bootstrap() = nil, want duplicate runtime backend error")
+func TestAgentGatewayBootstrapRegistersLinkedNativeBackends(t *testing.T) {
+	ctx := t.Context()
+	store, err := configstore.OpenBackend(ctx, "sqlite", configstoresqlite.Config{SQLitePath: t.TempDir() + "/config.db"}, nil)
+	if err != nil {
+		t.Fatalf("OpenBackend: %v", err)
 	}
-	if gateway.RuntimeRegistry().Has("duplicate") {
-		t.Fatal("duplicate backend batch partially modified gateway registry")
+	if err := configschema.RegisterDefaultStores(store); err != nil {
+		t.Fatalf("RegisterDefaultStores: %v", err)
+	}
+	gateway := NewAgentGateway()
+	if err := gateway.Bootstrap(ctx, BootstrapOptions{ConfigStoreBackend: store}); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	got := gateway.RuntimeRegistry().RuntimeTypes()
+	if len(got) != 2 || got[0] != agent.RuntimeTypeACP || got[1] != agent.RuntimeTypeBuiltin {
+		t.Fatalf("runtime types = %v, want [acp builtin]", got)
 	}
 }
 

@@ -18,6 +18,7 @@ This repository builds three binaries:
 - support MCP gateway routing, discovery, execution, and runtime inspection
 - expose the first native ACP control surface for codex/opencode agent routing
 - host builtin agents in-process on eino ADK: an agent defined as pure configuration (model via an LLM route, tools via MCP services, declarative topology), served as `POST /<builtin-route>/turn` with SSE; interactive tool permissions can suspend a turn on an ADK checkpoint until a human allows or denies each call — no slot, stream, or goroutine is held while waiting; operators can force-cancel or gracefully stop a running (or stuck) turn through the Admin API
+- execute Agent-bound ACP and builtin turns through one runtime-neutral backend registry with shared run ids, ordered event sequencing, normalized errors, and cross-runtime usage correlation; unbound legacy ACP routes remain native until the planned AgentRoute migration
 - run with either a Caddyfile-based runtime or a standalone daemon with a config store
 
 ## Architecture

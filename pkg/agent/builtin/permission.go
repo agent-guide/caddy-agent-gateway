@@ -143,10 +143,11 @@ type pendingCall struct {
 // request id, and the entry carries everything the resumed completion needs
 // to commit the full exchange.
 type pendingPermission struct {
-	requestID string
-	agentID   string
-	sessionID string
-	runID     string
+	requestID   string
+	agentID     string
+	sessionID   string
+	runID       string
+	eventCursor ContinuationCursor
 	// link* is the interaction span that produced this checkpoint. A resume
 	// starts a new trace and links back to this asynchronous predecessor.
 	linkTraceID   string
@@ -244,6 +245,27 @@ func (r *permissionRegistry) take(requestID string) (*pendingPermission, []*pend
 		delete(r.byRequest, requestID)
 	}
 	return p, expired, ok
+}
+
+func (r *permissionRegistry) storeCursor(agentID, requestID string, cursor ContinuationCursor) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p := r.byRequest[requestID]
+	if p == nil || p.agentID != agentID || p.runID != cursor.RunID {
+		return false
+	}
+	p.eventCursor = cursor
+	return true
+}
+
+func (r *permissionRegistry) loadCursor(agentID, requestID string) (ContinuationCursor, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p := r.byRequest[requestID]
+	if p == nil || p.agentID != agentID || p.eventCursor.RunID == "" {
+		return ContinuationCursor{}, false
+	}
+	return p.eventCursor, true
 }
 
 // liveForSession returns the live pending request id bound to a session.

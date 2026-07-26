@@ -518,12 +518,16 @@ The MCP and memory packages are structured as internal subsystem boundaries. The
 
 The agent direction is different and is intentionally **not** an internal execution mode inside `pkg/llm`. A first-class `agents` layer (`pkg/agent`) becomes an **external control plane** that composes the LLM, MCP, ACP, and metrics subsystems: it manages agent identities and their runtime-specific configuration, governs the resources they may use, and observes their sessions, usage, and call chains. It does not own an agent's internal reasoning loop. The legacy `pkg/llm/agent` orchestrator is removed rather than expanded. This supersedes the earlier "agent orchestration becomes an execution mode" direction. See [Agent Control Plane](../design/agents-control-plane.md).
 
-The target execution boundary is one turn-first `runtimeapi.Backend`
-capability layer for ACP, builtin, and HTTP agents. Current ACPRoute and
-BuiltinRoute ingress remains authoritative until a later breaking cutover to
-one `AgentRoute.agent_id` relationship. Workflow `agent` tasks call the same
-backend while the Workflow Runner exclusively owns durable run/task state,
-retry, scheduling, and DAG semantics. See
+The current execution boundary for Agent-bound ACP and builtin turns is one
+turn-first `runtimeapi.Backend` layer registered by `AgentGateway`. The
+gateway-owned adapters translate the legacy ACPRoute/BuiltinRoute request and
+event shapes, bridge common identities into usage dimensions, and execute
+through one run sequencer; unbound legacy ACP traffic deliberately remains on
+the native path until migration rejects it. ACPRoute and BuiltinRoute ingress
+remains authoritative until the breaking cutover to one
+`AgentRoute.agent_id` relationship. HTTP remains non-executable. Workflow
+`agent` tasks will call the same backend while the Workflow Runner exclusively
+owns durable run/task state, retry, scheduling, and DAG semantics. See
 [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md) and
 [Unified Workflow Runtime](../design/workflow-runtime.md).
 

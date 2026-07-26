@@ -2,7 +2,6 @@ package dispatcher
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -51,11 +50,6 @@ func (h *Handler) dispatchBuiltin(w http.ResponseWriter, r *http.Request, next N
 		return httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 
-	host := h.gateway.BuiltinHost()
-	if host == nil {
-		return WriteDispatchError(h.logger, string(route.Protocol), route.ID, "", http.StatusServiceUnavailable, w, rewritten, "dispatch builtin turn", "builtin host is not configured", fmt.Errorf("builtin host is not configured"))
-	}
-
 	var req builtinhost.TurnRequest
 	if rewritten.Body != nil {
 		rewritten.Body = http.MaxBytesReader(w, rewritten.Body, MaxACPRequestBodyBytes)
@@ -73,22 +67,36 @@ func (h *Handler) dispatchBuiltin(w http.ResponseWriter, r *http.Request, next N
 		usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "invalid_request")
 		return httpjson.Error(w, http.StatusBadRequest, "input or permission is required")
 	}
-	if req.Permission == nil {
-		req.RunID, err = runtimeapi.NewRunID()
-		if err != nil {
-			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "turn_failed")
-			return httpjson.Error(w, http.StatusInternalServerError, "failed to initialize run")
-		}
-		span := usage.SpanFromContext(rewritten.Context())
-		span.SetExtension(usage.CommonExtension{AgentID: route.AgentID, RuntimeType: agentpkg.RuntimeTypeBuiltin, RunID: req.RunID})
-		if dims, ok := usage.DimensionsFromContext(rewritten.Context()); ok {
-			dims.AgentID = route.AgentID
-			dims.RuntimeType = agentpkg.RuntimeTypeBuiltin
-			dims.RunID = req.RunID
-			rewritten = rewritten.WithContext(usage.ContextWithDimensions(rewritten.Context(), dims))
-		}
-		logRequestPhase(h.logger, "dispatcher: agent run initialized", rewritten)
+	agentManager := h.gateway.AgentManager()
+	if agentManager == nil {
+		return WriteDispatchError(h.logger, string(route.Protocol), route.ID, "", http.StatusServiceUnavailable, w, rewritten, "dispatch builtin turn", "agent manager is not configured", fmt.Errorf("agent manager is not configured"))
 	}
+	a, err := agentManager.Get(rewritten.Context(), route.AgentID)
+	if err != nil {
+		return writeRuntimePreStreamError(w, rewritten, normalizeAgentLookupError(err))
+	}
+	if a.Runtime.Type != agentpkg.RuntimeTypeBuiltin {
+		return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "builtin route is bound to a non-builtin agent"))
+	}
+	backend, err := h.gateway.RuntimeRegistry().Resolve(a.Runtime.Type)
+	if err != nil {
+		return writeRuntimePreStreamError(w, rewritten, err)
+	}
+	commonReq := runtimeapi.TurnRequest{Input: req.Input, SessionID: req.SessionID}
+	if req.Permission != nil {
+		commonReq.Permission = &runtimeapi.PermissionDecision{RequestID: req.Permission.RequestID, Outcome: req.Permission.Outcome}
+		for _, decision := range req.Permission.Decisions {
+			commonReq.Permission.Decisions = append(commonReq.Permission.Decisions, runtimeapi.PermissionActionDecision{ActionID: decision.CallID, Outcome: decision.Outcome})
+		}
+	}
+	sequencer, err := runtimeapi.NewTurnSequencer(rewritten.Context(), backend, a, commonReq)
+	if err != nil {
+		return writeRuntimePreStreamError(w, rewritten, err)
+	}
+	commonReq.RunID = sequencer.RunID()
+	rewritten = rewritten.WithContext(bindRuntimeRequestContext(rewritten.Context(), a.ID, a.Runtime.Type, commonReq.RunID, commonReq.SessionID, permissionRequestID(commonReq.Permission)))
+	usage.SpanFromContext(rewritten.Context()).SetExtension(usage.CommonExtension{AgentID: a.ID, RuntimeType: a.Runtime.Type, RunID: commonReq.RunID})
+	logRequestPhase(h.logger, "dispatcher: agent run initialized", rewritten)
 
 	// SSE headers are written lazily on the first event: everything the host
 	// validates synchronously (unknown agent, disabled agent, empty input,
@@ -96,56 +104,19 @@ func (h *Handler) dispatchBuiltin(w http.ResponseWriter, r *http.Request, next N
 	// event, so those failures return real HTTP status codes instead of a 200
 	// stream — the ErrInvalidRequest -> 400 contract, mirroring ACP.
 	sink := newBuiltinSSESink(w)
-	if err := host.ServeTurn(rewritten.Context(), route.AgentID, req, sink.emit); err != nil {
-		if !sink.started {
-			status := builtinTurnErrorStatus(err)
-			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", builtinTurnErrorType(err))
-			return httpjson.Error(w, status, err.Error())
+	result, serveErr := sequencer.ServeSegment(rewritten.Context(), backend, a, commonReq, sink.emitCommon)
+	if serveErr != nil {
+		code, _ := runtimeapi.ErrorCodeOf(serveErr)
+		if !result.Started {
+			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", string(code))
+			return writeRuntimePreStreamError(w, rewritten, serveErr)
 		}
 		// Mid-stream failures keep the 200 SSE stream (the host has already
 		// emitted a terminal error event); mark the turn on the span.
 		usage.SpanFromContext(rewritten.Context()).SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
-		usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", builtinTurnErrorType(err))
+		usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", string(code))
 	}
 	return nil
-}
-
-// builtinTurnErrorStatus maps pre-stream host errors onto HTTP status codes.
-func builtinTurnErrorStatus(err error) int {
-	switch {
-	case errors.Is(err, builtinhost.ErrAgentNotFound):
-		return http.StatusNotFound
-	case errors.Is(err, builtinhost.ErrTurnLimitExceeded),
-		errors.Is(err, builtinhost.ErrSessionBusy),
-		errors.Is(err, builtinhost.ErrSessionLimitExceeded),
-		errors.Is(err, builtinhost.ErrPermissionCapacity):
-		return http.StatusTooManyRequests
-	case errors.Is(err, builtinhost.ErrInvalidRequest):
-		return http.StatusBadRequest
-	default:
-		return http.StatusBadGateway
-	}
-}
-
-// builtinTurnErrorType maps host errors onto the normalized error_type
-// vocabulary for the turn usage event.
-func builtinTurnErrorType(err error) string {
-	switch {
-	case errors.Is(err, builtinhost.ErrAgentNotFound):
-		return "agent_not_found"
-	case errors.Is(err, builtinhost.ErrTurnLimitExceeded):
-		return "turn_limit_exceeded"
-	case errors.Is(err, builtinhost.ErrSessionBusy):
-		return "session_busy"
-	case errors.Is(err, builtinhost.ErrSessionLimitExceeded):
-		return "session_limit_exceeded"
-	case errors.Is(err, builtinhost.ErrPermissionCapacity):
-		return "permission_capacity_exceeded"
-	case errors.Is(err, builtinhost.ErrInvalidRequest):
-		return "invalid_request"
-	default:
-		return "turn_failed"
-	}
 }
 
 // builtinSSESink writes turn events as SSE frames, mirroring the ACP sink.
@@ -182,4 +153,23 @@ func (s *builtinSSESink) emit(ev builtinhost.TurnEvent) error {
 	}
 	s.flusher.Flush()
 	return nil
+}
+
+func (s *builtinSSESink) emitCommon(ev runtimeapi.TurnEvent) error {
+	native := builtinhost.TurnEvent{
+		Event: ev.Event, SessionID: ev.SessionID, RunID: ev.RunID,
+		RequestID: ev.RequestID, Text: ev.Text, Data: ev.Data,
+	}
+	if ev.Event == runtimeapi.EventDone || ev.Event == runtimeapi.EventError {
+		var terminal struct {
+			StopReason string `json:"stop_reason"`
+			Message    string `json:"message"`
+		}
+		if json.Unmarshal(ev.Data, &terminal) == nil && (terminal.StopReason != "" || terminal.Message != "") {
+			native.StopReason = terminal.StopReason
+			native.Message = terminal.Message
+			native.Data = nil
+		}
+	}
+	return s.emit(native)
 }
