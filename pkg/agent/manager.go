@@ -26,19 +26,29 @@ type BuiltinRouteAgentLookup interface {
 	BuiltinRouteAgentID(ctx context.Context, routeID string) (string, error)
 }
 
-// Manager owns agent CRUD plus the in-memory route/service -> agent index used
-// for write-time attribution. The index is rebuilt on every mutation and never
-// read from the config store on the hot path.
+// Manager owns agent CRUD, the deep-cloned definition snapshot used by
+// per-request dispatch, and the in-memory route/service -> agent index used
+// for write-time attribution. The snapshot and index are rebuilt on every
+// mutation and never read from the config store on the hot path.
 type Manager struct {
 	store       configstore.ConfigStore
 	routeLookup ACPRouteServiceLookup
 
-	// writeMu serializes the validate -> store-write -> index-refresh sequence so
-	// the P0 one-runtime-one-agent invariant holds under concurrent mutations.
-	// The List-based uniqueness check is only safe if no other create/update can
-	// interleave between the check and the write; this lock guarantees that. It is
-	// independent of mu (which guards only the in-memory index maps).
+	// writeMu serializes the validate -> prospective-generation ->
+	// store-write -> generation-commit sequence so the P0
+	// one-runtime-one-agent invariant holds under concurrent mutations and
+	// the committed generation always reflects the store write that just
+	// succeeded. It is independent of mu (index maps) and snapMu (snapshot).
 	writeMu sync.Mutex
+
+	// snapMu guards the immutable definition generation. Listener preparation
+	// and cleanup run outside it; only bounded in-memory listener commits share
+	// the write-locked publication window.
+	snapMu         sync.RWMutex
+	snapshot       map[string]Agent
+	snapshotLoaded bool
+	generation     uint64
+	listeners      []DefinitionListener
 
 	mu        sync.RWMutex
 	byService map[string]string // acp service id -> agent id
@@ -48,6 +58,7 @@ type Manager struct {
 func NewManager(store configstore.ConfigStore) *Manager {
 	return &Manager{
 		store:     store,
+		snapshot:  map[string]Agent{},
 		byService: map[string]string{},
 		byRoute:   map[string]string{},
 	}
@@ -122,10 +133,21 @@ func (m *Manager) Create(ctx context.Context, a Agent) error {
 	// server-owned value.
 	a.OwnsService = false
 	a.NormalizeTimestamps(time.Now().UTC())
+	cloned, err := cloneAgent(a)
+	if err != nil {
+		return err
+	}
+	prospective, err := m.prospectiveGeneration(ctx, func(gen map[string]Agent) {
+		gen[cloned.ID] = cloned
+	})
+	if err != nil {
+		return err
+	}
 	if err := m.store.Create(ctx, storedAgent{cfg: &a, tag: a.Runtime.Type}); err != nil {
 		return err
 	}
-	return m.Refresh(ctx)
+	m.commitGeneration(ctx, prospective)
+	return nil
 }
 
 func (m *Manager) Update(ctx context.Context, id string, a Agent) error {
@@ -158,10 +180,21 @@ func (m *Manager) Update(ctx context.Context, id string, a Agent) error {
 		return err
 	}
 	a.NormalizeTimestamps(time.Now().UTC())
+	cloned, err := cloneAgent(a)
+	if err != nil {
+		return err
+	}
+	prospective, err := m.prospectiveGeneration(ctx, func(gen map[string]Agent) {
+		gen[cloned.ID] = cloned
+	})
+	if err != nil {
+		return err
+	}
 	if err := m.store.Update(ctx, storedAgent{cfg: &a, tag: a.Runtime.Type}); err != nil {
 		return err
 	}
-	return m.Refresh(ctx)
+	m.commitGeneration(ctx, prospective)
+	return nil
 }
 
 func (m *Manager) Delete(ctx context.Context, id string) error {
@@ -173,10 +206,17 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	}
 	m.writeMu.Lock()
 	defer m.writeMu.Unlock()
+	prospective, err := m.prospectiveGeneration(ctx, func(gen map[string]Agent) {
+		delete(gen, id)
+	})
+	if err != nil {
+		return err
+	}
 	if err := m.store.Delete(ctx, id); err != nil {
 		return err
 	}
-	return m.Refresh(ctx)
+	m.commitGeneration(ctx, prospective)
+	return nil
 }
 
 // checkServiceUniqueness enforces the P0 one-runtime-one-agent rule: a given ACP
@@ -260,41 +300,62 @@ func (m *Manager) checkRouteConsistency(ctx context.Context, a Agent) error {
 	return nil
 }
 
-// Refresh rebuilds the in-memory route/service -> agent index from the store.
+// Refresh decodes and deep-clones the complete store result into a fresh
+// definition generation, then commits it atomically. The derived
+// route/service -> agent attribution index is rebuilt as part of the commit.
 func (m *Manager) Refresh(ctx context.Context) error {
 	if m == nil || m.store == nil {
 		return nil
 	}
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	return m.refreshLocked(ctx)
+}
+
+// refreshLocked replaces the current definition generation from the store.
+// The caller must hold writeMu so the List -> commit sequence cannot publish a
+// stale store view after a concurrent Create, Update, or Delete has committed.
+func (m *Manager) refreshLocked(ctx context.Context) error {
 	agents, err := m.List(ctx)
 	if err != nil {
 		return err
 	}
-	byService := make(map[string]string, len(agents))
-	ambiguousServices := map[string]struct{}{}
-	byRoute := map[string]string{}
-	ambiguousRoutes := map[string]struct{}{}
+	next := make(map[string]Agent, len(agents))
 	for _, a := range agents {
-		if svc := a.ACPServiceID(); svc != "" {
-			if owner, exists := byService[svc]; exists && owner != a.ID {
-				delete(byService, svc)
-				ambiguousServices[svc] = struct{}{}
-			} else if _, ambiguous := ambiguousServices[svc]; !ambiguous {
-				byService[svc] = a.ID
-			}
+		cloned, err := cloneAgent(a)
+		if err != nil {
+			return err
 		}
-		for routeID := range agentRouteIDs(a) {
-			if owner, exists := byRoute[routeID]; exists && owner != a.ID {
-				delete(byRoute, routeID)
-				ambiguousRoutes[routeID] = struct{}{}
-			} else if _, ambiguous := ambiguousRoutes[routeID]; !ambiguous {
-				byRoute[routeID] = a.ID
-			}
-		}
+		next[cloned.ID] = cloned
 	}
-	m.mu.Lock()
-	m.byService = byService
-	m.byRoute = byRoute
-	m.mu.Unlock()
+	m.commitGeneration(ctx, next)
+	return nil
+}
+
+// Recommit republishes the already-loaded definition generation without
+// reading the Agent store. It is used when an external runtime record changes
+// and definition listeners must rebuild derived runtime snapshots.
+func (m *Manager) Recommit(ctx context.Context) error {
+	if m == nil || m.store == nil {
+		return nil
+	}
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	m.snapMu.RLock()
+	loaded := m.snapshotLoaded
+	m.snapMu.RUnlock()
+	if !loaded {
+		// The initial store load already commits and notifies listeners; a
+		// second identical generation would add no reconciliation value.
+		return m.refreshLocked(ctx)
+	}
+	m.snapMu.RLock()
+	next := make(map[string]Agent, len(m.snapshot))
+	for id, a := range m.snapshot {
+		next[id] = a
+	}
+	m.snapMu.RUnlock()
+	m.commitGeneration(ctx, next)
 	return nil
 }
 

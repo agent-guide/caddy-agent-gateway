@@ -1,6 +1,6 @@
 # Unified Agent Runtime and Routing Plan
 
-Status: implementation in progress — M0-M3 complete
+Status: implementation in progress — M0-M4 complete
 
 Source branch: `feature/unified-agent-runtime` working tree based on `bc4e739`
 
@@ -19,7 +19,10 @@ over to one AgentRoute and folds ACP service config into the owning Agent. HTTP
 execution and durable Workflow Agent Tasks build on the same contract after the
 two shipping runtimes prove it. M0-M2 are complete: the common contracts,
 identities/sequencer, and ACP/builtin adapters are live behind the legacy
-ingress routes. M3 is complete; the route/control-plane cutover remains pending.
+ingress routes. M3 and M4 are complete: the common control plane, the internal
+AgentRoute model/dispatch, the agent.Manager definition snapshot, and the
+canonical agent-keyed ACP runtime-config snapshot are live; the M5 public
+control-plane/bundle cutover remains pending.
 
 The target stack is:
 
@@ -1594,6 +1597,8 @@ explicit unbound legacy ACP exception remains until M5.
 
 ### M4 — AgentRoute model and internal dispatch
 
+Implementation status: complete.
+
 - add `pkg/gateway/agentroute` and routecore Agent constants;
 - introduce protocol-owned `acp.RuntimeConfig` without service management
   identity fields and key the runtime manager/pool by `agent_id`;
@@ -1633,7 +1638,37 @@ Verification:
   currently non-executable targets, and dispatch returns the normalized
   `agent_disabled`/`runtime_not_executable` error without invoking a backend.
 
+Implemented M4 evidence:
+
+- `agent.Manager` owns the deep-cloned, generation-swapped definition snapshot
+  (§11 decision 3): mutations build a prospective generation before the store
+  write and commit the infallible swap after it succeeds; definition listeners
+  run under the swap lock while new snapshot reads are excluded; agent-bound
+  ACP, builtin, and AgentRoute dispatch resolve Agents exclusively through
+  `GetSnapshot` with no per-request store read; full store refreshes serialize
+  their List-to-commit window with CRUD, while external ACP service edits
+  recommit the already-loaded generation without another Agent-store read;
+- the canonical `acp.RuntimeConfig` snapshot is keyed by `agent_id`, built once
+  per definition commit by translating the legacy bound-service record, and is
+  the only ACP execution/capability config source; pooled instances record
+  their config fingerprint, a changed fingerprint is never reused, idle stale
+  instances retire immediately and active ones drain then reap; the native
+  manager records and rechecks each owner's accepted fingerprint before pool
+  insertion, and fingerprint retirement drains matching pending permissions;
+- `dispatchAgent` serves `POST /turn` with the strict common-envelope decoder
+  and common-event SSE, gates `/permission` on `resume_mode=active_stream`,
+  and gates `/sessions`/`/sessions/{id}/transcript` on backend capability
+  interfaces; the dispatcher `EnableAgent` switch remains internal until M5;
+- until the M6 observability cutover, kind=agent spans record the base
+  interaction event with common `agent_id`/`run_id`/`runtime_type` identities.
+
 ### M5 — Public control-plane and bundle cutover
+
+The M4 internal unified Agent ingress and the legacy ACP/builtin dimensions use
+independent token buckets backed by the same VirtualKey Agent policy. Enabling
+both paths during development can therefore admit twice that policy for one
+runtime. M5 must remove the legacy ingress/dimensions as part of the public
+cutover; the doubled migration-only allowance is not a supported steady state.
 
 - expose AgentRoute Admin handlers, admin client, and CLI commands;
 - remove the temporary unbound legacy ACP native dispatch exception; after this

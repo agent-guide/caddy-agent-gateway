@@ -13,6 +13,10 @@ const (
 	RouteKindMCP     RouteKind = "mcp"
 	RouteKindACP     RouteKind = "acp"
 	RouteKindBuiltin RouteKind = "builtin"
+	// RouteKindAgent is the unified Agent ingress route kind. It targets an
+	// agent_id and stays runtime-neutral: the resolved Agent's runtime.type
+	// selects the execution backend (docs/plans/unified-agent-runtime.md §6).
+	RouteKindAgent RouteKind = "agent"
 )
 
 type RouteProtocol string
@@ -24,6 +28,7 @@ const (
 	RouteProtocolMCP       RouteProtocol = "mcp"
 	RouteProtocolACP       RouteProtocol = "acp"
 	RouteProtocolBuiltin   RouteProtocol = "builtin"
+	RouteProtocolAgent     RouteProtocol = "agent"
 )
 
 type RouteTargetPolicyKind string
@@ -34,6 +39,7 @@ const (
 	RouteTargetPolicyKindMCPService     RouteTargetPolicyKind = "mcp-service"
 	RouteTargetPolicyKindACPService     RouteTargetPolicyKind = "acp-service"
 	RouteTargetPolicyKindBuiltinAgent   RouteTargetPolicyKind = "builtin-agent"
+	RouteTargetPolicyKindAgent          RouteTargetPolicyKind = "agent"
 )
 
 type AgentRouteConfig struct {

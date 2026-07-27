@@ -19,6 +19,7 @@ import (
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
 	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
+	"go.uber.org/zap"
 )
 
 type AgentView struct {
@@ -124,7 +125,9 @@ func (h *Handler) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	h.discardAgentContinuations(previous)
 	if h.runRegistry != nil && previous.Runtime.Type != "" && previous.Runtime.Type != updated.Runtime.Type {
-		h.runRegistry.CancelAgent(context.Background(), id)
+		if err := h.runRegistry.CancelAgent(context.Background(), id); err != nil && h.logger != nil {
+			h.logger.Error("cancel Agent runs after runtime change", zap.String("agent_id", id), zap.Error(err))
+		}
 	}
 	_ = httpjson.Write(w, http.StatusOK, AgentView{Agent: updated, Source: "config_store"})
 }
@@ -156,7 +159,9 @@ func (h *Handler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		h.discardAgentContinuations(current)
 	}
 	if h.runRegistry != nil {
-		h.runRegistry.CancelAgent(context.Background(), id)
+		if err := h.runRegistry.CancelAgent(context.Background(), id); err != nil && h.logger != nil {
+			h.logger.Error("cancel Agent runs after deletion", zap.String("agent_id", id), zap.Error(err))
+		}
 	}
 	unbound := map[string]any{}
 	if getErr == nil {

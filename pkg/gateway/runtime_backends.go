@@ -15,6 +15,7 @@ import (
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinhost "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
+	"go.uber.org/zap"
 )
 
 type acpRuntimeOptionsV1 struct {
@@ -29,19 +30,186 @@ type acpServiceSource interface {
 	Get(context.Context, string) (acpservice.ServiceConfig, error)
 }
 
-type acpTurnServer interface {
+// ACPTurnServer is the native ACP turn execution surface the ACP backend
+// drives. The production implementation is the process-pool runtime manager;
+// tests inject a fake through BootstrapOptions.ACPRuntime.
+type ACPTurnServer interface {
 	ServeConfiguredTurn(context.Context, string, acpruntime.RuntimeConfig, acpruntime.TurnRequest, acpruntime.EventSink) error
+}
+
+// acpAgentConfig is one canonical, identity-free ACP execution config entry
+// keyed by agent_id. It is produced once at definition refresh by translating
+// the legacy bound-service record (the only M4 config source); turn dispatch,
+// capability discovery, and session/transcript reads consume only this shape.
+type acpAgentConfig struct {
+	config      acpruntime.RuntimeConfig
+	fingerprint string
+	disabled    bool
+	configError string
 }
 
 // ACPBackend is the permanent Agent runtime adapter over the native ACP
 // manager. Legacy ACP routes decide whether to enter this boundary.
 type ACPBackend struct {
+	// services is read only during listener preparation/direct refresh;
+	// per-request paths never touch the service store.
 	services       acpServiceSource
-	runtime        acpTurnServer
+	runtime        ACPTurnServer
 	runs           *runtimeapi.RunRegistry
 	permissions    *runtimeapi.PermissionBroker
+	logger         *zap.Logger
 	continuationMu sync.Mutex
 	continuations  map[string]acpPermissionContinuation
+
+	configMu sync.RWMutex
+	configs  map[string]acpAgentConfig
+}
+
+// PrepareRuntimeConfigs builds the canonical Agent ACP config snapshot before
+// the definition swap lock is acquired. Its returned commit performs only
+// bounded in-memory publication/retirement; process, permission-continuation,
+// and cancellation I/O is deferred to the returned cleanup.
+func (b *ACPBackend) PrepareRuntimeConfigs(ctx context.Context, agents []agentpkg.Agent) agentpkg.DefinitionCommit {
+	if b == nil || b.services == nil {
+		return nil
+	}
+	next := make(map[string]acpAgentConfig, len(agents))
+	for _, a := range agents {
+		serviceID := a.ACPServiceID()
+		if serviceID == "" {
+			continue
+		}
+		cfg, err := b.services.Get(ctx, serviceID)
+		if err != nil {
+			message := "referenced ACP service config is missing"
+			next[a.ID] = acpAgentConfig{configError: message}
+			b.logConfigError(a.ID, serviceID, message, err)
+			continue
+		}
+		runtimeCfg := runtimeConfigFromService(cfg)
+		fingerprint, err := runtimeCfg.Fingerprint(a.ID)
+		if err != nil {
+			message := "ACP runtime config fingerprint is invalid"
+			next[a.ID] = acpAgentConfig{disabled: cfg.Disabled, configError: message}
+			b.logConfigError(a.ID, serviceID, message, err)
+			continue
+		}
+		next[a.ID] = acpAgentConfig{config: runtimeCfg, fingerprint: fingerprint, disabled: cfg.Disabled}
+	}
+	return func() agentpkg.DefinitionCleanup {
+		b.configMu.Lock()
+		prev := b.configs
+		var retireCleanups []func()
+		deferredRetirer, deferred := b.runtime.(interface {
+			RetireOwnerDeferred(string, string) (int, func())
+		})
+		retirer, legacy := b.runtime.(interface{ RetireOwner(string, string) int })
+		retire := func(agentID, keep string) {
+			if deferred {
+				_, cleanup := deferredRetirer.RetireOwnerDeferred(agentID, keep)
+				retireCleanups = append(retireCleanups, cleanup)
+			} else if legacy {
+				retireCleanups = append(retireCleanups, func() { retirer.RetireOwner(agentID, keep) })
+			}
+		}
+		// Establish accepted fingerprints before publishing the new Agent
+		// generation. Disabled or invalid configs accept no fingerprint.
+		for agentID, entry := range next {
+			keep := entry.fingerprint
+			if entry.disabled || entry.configError != "" {
+				keep = ""
+			}
+			retire(agentID, keep)
+		}
+		var permissionCleanups []func(context.Context) int
+		var cancelAgents []string
+		for agentID, prevEntry := range prev {
+			nextEntry, exists := next[agentID]
+			changed := !exists || nextEntry.fingerprint != prevEntry.fingerprint || nextEntry.disabled != prevEntry.disabled || nextEntry.configError != prevEntry.configError
+			if !exists {
+				retire(agentID, "")
+			}
+			if changed && b.permissions != nil {
+				permissionCleanups = append(permissionCleanups, b.permissions.ClaimAgent(agentID))
+			}
+			if !exists || (changed && (nextEntry.disabled || nextEntry.configError != "")) {
+				cancelAgents = append(cancelAgents, agentID)
+			}
+		}
+		b.configs = next
+		b.configMu.Unlock()
+
+		return func(cleanupCtx context.Context) {
+			for _, agentID := range cancelAgents {
+				if err := b.runs.CancelAgent(cleanupCtx, agentID); err != nil && b.logger != nil {
+					b.logger.Error("cancel retired Agent runs", zap.String("agent_id", agentID), zap.Error(err))
+				}
+			}
+			permissionCtx := runtimeapi.WithPermissionSource(cleanupCtx, "config_fingerprint_retirement")
+			for _, cleanup := range permissionCleanups {
+				cleanup(permissionCtx)
+			}
+			for _, cleanup := range retireCleanups {
+				cleanup()
+			}
+		}
+	}
+}
+
+// RefreshRuntimeConfigs applies a refresh directly for bootstrap and focused
+// backend tests. Definition commits use PrepareRuntimeConfigs instead.
+func (b *ACPBackend) RefreshRuntimeConfigs(ctx context.Context, agents []agentpkg.Agent) {
+	commit := b.PrepareRuntimeConfigs(ctx, agents)
+	if commit == nil {
+		return
+	}
+	if cleanup := commit(); cleanup != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		cleanup(cleanupCtx)
+	}
+}
+
+func (b *ACPBackend) logConfigError(agentID, serviceID, message string, err error) {
+	if b.logger == nil {
+		return
+	}
+	b.logger.Error(message, zap.String("agent_id", agentID), zap.String("service_id", serviceID), zap.Error(err))
+}
+
+// agentRuntimeConfig reads the canonical snapshot entry for one Agent. The
+// returned config is cloned so no turn can alias snapshot-owned maps/slices.
+func (b *ACPBackend) agentRuntimeConfig(agentID string) (acpAgentConfig, error) {
+	if b == nil {
+		return acpAgentConfig{}, runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "acp runtime is unavailable")
+	}
+	b.configMu.RLock()
+	entry, ok := b.configs[strings.TrimSpace(agentID)]
+	b.configMu.RUnlock()
+	if !ok {
+		return acpAgentConfig{}, runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "acp runtime config is not loaded for this agent")
+	}
+	if entry.configError != "" {
+		return acpAgentConfig{}, runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, entry.configError)
+	}
+	entry.config = cloneRuntimeConfig(entry.config)
+	return entry, nil
+}
+
+func runtimeConfigFromService(cfg acpservice.ServiceConfig) acpruntime.RuntimeConfig {
+	return acpruntime.RuntimeConfig{
+		AgentType: cfg.AgentType, CWD: cfg.CWD, AllowedRoots: append([]string(nil), cfg.AllowedRoots...),
+		DefaultModel: cfg.DefaultModel, Env: cloneStringMap(cfg.Env), ConfigOverrides: cloneStringMap(cfg.ConfigOverrides),
+		IdleTTL: cfg.IdleTTL, MaxInstances: cfg.MaxInstances, PermissionMode: cfg.PermissionMode, Codex: cloneCodexConfig(cfg.Codex),
+	}
+}
+
+func cloneRuntimeConfig(cfg acpruntime.RuntimeConfig) acpruntime.RuntimeConfig {
+	cfg.AllowedRoots = append([]string(nil), cfg.AllowedRoots...)
+	cfg.Env = cloneStringMap(cfg.Env)
+	cfg.ConfigOverrides = cloneStringMap(cfg.ConfigOverrides)
+	cfg.Codex = cloneCodexConfig(cfg.Codex)
+	return cfg
 }
 
 type acpPermissionContinuation struct {
@@ -117,12 +285,13 @@ func (b *ACPBackend) storeACPContinuation(token string, continuation acpPermissi
 type RuntimeControls struct {
 	Runs        *runtimeapi.RunRegistry
 	Permissions *runtimeapi.PermissionBroker
+	Logger      *zap.Logger
 }
 
-func NewACPBackend(services acpServiceSource, runtime acpTurnServer, controls ...RuntimeControls) *ACPBackend {
-	b := &ACPBackend{services: services, runtime: runtime, continuations: map[string]acpPermissionContinuation{}}
+func NewACPBackend(services acpServiceSource, runtime ACPTurnServer, controls ...RuntimeControls) *ACPBackend {
+	b := &ACPBackend{services: services, runtime: runtime, continuations: map[string]acpPermissionContinuation{}, configs: map[string]acpAgentConfig{}}
 	if len(controls) > 0 {
-		b.runs, b.permissions = controls[0].Runs, controls[0].Permissions
+		b.runs, b.permissions, b.logger = controls[0].Runs, controls[0].Permissions, controls[0].Logger
 	}
 	return b
 }
@@ -136,19 +305,18 @@ func (b *ACPBackend) Capabilities(ctx context.Context, a agentpkg.Agent) (runtim
 	if b == nil || b.services == nil || b.runtime == nil {
 		return runtimeapi.Capabilities{}, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "acp runtime is not executable")
 	}
-	cfg, err := b.services.Get(ctx, a.ACPServiceID())
+	_ = ctx
+	entry, err := b.agentRuntimeConfig(a.ID)
 	if err != nil {
-		return runtimeapi.Capabilities{}, mapACPError(err)
+		return runtimeapi.Capabilities{}, err
 	}
-	if cfg.Disabled {
+	if entry.disabled {
 		return runtimeapi.Capabilities{}, runtimeapi.NewError(runtimeapi.ErrorAgentDisabled, "acp runtime is disabled")
 	}
 	return runtimeapi.Capabilities{
 		Executable: true, Turn: runtimeapi.TurnCapabilities{Streaming: true},
-		// List/transcript remain on the legacy ACP route until M3 moves them
-		// onto the optional runtimeapi capability interfaces.
 		Sessions:     runtimeapi.SessionCapabilities{Resume: true, List: true, Transcript: true, Durable: true},
-		Permissions:  runtimeapi.PermissionCapabilities{Interactive: cfg.PermissionMode == "interactive", ResumeMode: runtimeapi.PermissionResumeActiveStream},
+		Permissions:  runtimeapi.PermissionCapabilities{Interactive: entry.config.PermissionMode == "interactive", ResumeMode: runtimeapi.PermissionResumeActiveStream},
 		Cancellation: runtimeapi.CancelCapabilities{Force: true},
 		Events:       []string{runtimeapi.EventSession, runtimeapi.EventDelta, runtimeapi.EventReasoning, runtimeapi.EventContent, runtimeapi.EventPlan, runtimeapi.EventToolCall, runtimeapi.EventUsage, runtimeapi.EventAvailableCommands, runtimeapi.EventSessionInfo, runtimeapi.EventMode, runtimeapi.EventConfigOptions, runtimeapi.EventPermission, runtimeapi.EventDone, runtimeapi.EventError},
 	}, nil
@@ -172,19 +340,15 @@ func (b *ACPBackend) ServeTurn(ctx context.Context, a agentpkg.Agent, req runtim
 	if opts.ThreadID == "" || strings.TrimSpace(req.Input) == "" {
 		return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "thread_id and input are required")
 	}
-	cfg, err := b.services.Get(ctx, a.ACPServiceID())
+	entry, err := b.agentRuntimeConfig(a.ID)
 	if err != nil {
-		return mapACPError(err)
+		return err
 	}
-	if cfg.Disabled {
+	if entry.disabled {
 		return runtimeapi.NewError(runtimeapi.ErrorAgentDisabled, "acp runtime is disabled")
 	}
 	ctx = bridgeRuntimeIdentities(ctx)
-	runtimeCfg := acpruntime.RuntimeConfig{
-		AgentType: cfg.AgentType, CWD: cfg.CWD, AllowedRoots: append([]string(nil), cfg.AllowedRoots...),
-		DefaultModel: cfg.DefaultModel, Env: cloneStringMap(cfg.Env), ConfigOverrides: cloneStringMap(cfg.ConfigOverrides),
-		IdleTTL: cfg.IdleTTL, MaxInstances: cfg.MaxInstances, PermissionMode: cfg.PermissionMode, Codex: cloneCodexConfig(cfg.Codex),
-	}
+	runtimeCfg := entry.config
 	nativeReq := acpruntime.TurnRequest{
 		RunID:    req.RunID,
 		ThreadID: opts.ThreadID, SessionID: req.SessionID, Input: req.Input, CWD: opts.CWD,
@@ -192,7 +356,7 @@ func (b *ACPBackend) ServeTurn(ctx context.Context, a agentpkg.Agent, req runtim
 	}
 	terminalState, stopReason, suspended := runtimeapi.RunStateCompleted, "", false
 	if b.runs != nil {
-		if err := b.runs.Begin(a.ID, a.Runtime.Type, req.RunID, req.SessionID, func(_ context.Context, mode runtimeapi.CancelMode) error {
+		if err := b.runs.Begin(a.ID, a.Runtime.Type, req.RunID, req.SessionID, func(cancelCtx context.Context, mode runtimeapi.CancelMode) error {
 			if mode != runtimeapi.CancelModeForce {
 				return runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "acp graceful cancellation is not supported")
 			}
@@ -203,7 +367,16 @@ func (b *ACPBackend) ServeTurn(ctx context.Context, a agentpkg.Agent, req runtim
 			if b.permissions != nil {
 				b.permissions.DrainRun(runtimeapi.WithPermissionSource(context.Background(), "run_cancel"), a.ID, req.RunID)
 			}
-			err := canceller.CancelRun(a.ID, req.RunID)
+			var err error
+			if runtimeapi.IsAgentRetirementCancellation(cancelCtx) {
+				if requester, supported := b.runtime.(interface{ RequestCancelRun(string, string) error }); supported {
+					err = requester.RequestCancelRun(a.ID, req.RunID)
+				} else {
+					err = canceller.CancelRun(a.ID, req.RunID)
+				}
+			} else {
+				err = canceller.CancelRun(a.ID, req.RunID)
+			}
 			// The common registry publishes immediately before ServeConfiguredTurn
 			// enters the native registry. A cancellation in that narrow window is
 			// known to target a live common run even though native lookup cannot see
@@ -338,6 +511,20 @@ func (b *ACPBackend) RuntimeSummary(_ context.Context, a agentpkg.Agent) (runtim
 	if b == nil || b.services == nil || b.runtime == nil {
 		return runtimeapi.RuntimeSummary{}, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "acp runtime is not executable")
 	}
+	b.configMu.RLock()
+	entry, configured := b.configs[a.ID]
+	b.configMu.RUnlock()
+	if !configured || entry.configError != "" {
+		message := entry.configError
+		if message == "" {
+			message = "ACP runtime config is not loaded"
+		}
+		details, _ := json.Marshal(map[string]string{"reason": "config_missing", "message": message})
+		return runtimeapi.RuntimeSummary{Type: a.Runtime.Type, Executable: false, Healthy: false, State: runtimeapi.RuntimeStateUnhealthy, Details: details}, nil
+	}
+	if entry.disabled {
+		return runtimeapi.RuntimeSummary{Type: a.Runtime.Type, Executable: false, Healthy: false, State: runtimeapi.RuntimeStateDisabled}, nil
+	}
 	summary := runtimeapi.RuntimeSummary{Type: a.Runtime.Type, Executable: true, Healthy: true, State: runtimeapi.RuntimeStateReady}
 	if inspector, ok := b.runtime.(interface {
 		ListActiveRuns(string) []acpruntime.ActiveRunInfo
@@ -378,6 +565,22 @@ func (b *ACPBackend) Health(_ context.Context, a agentpkg.Agent) (runtimeapi.Hea
 	if err == nil && (b == nil || b.services == nil || b.runtime == nil) {
 		err = runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "acp runtime is not executable")
 	}
+	if err == nil {
+		b.configMu.RLock()
+		entry, configured := b.configs[a.ID]
+		b.configMu.RUnlock()
+		switch {
+		case !configured || entry.configError != "":
+			message := entry.configError
+			if message == "" {
+				message = "ACP runtime config is not loaded"
+			}
+			details, _ := json.Marshal(map[string]string{"reason": "config_missing"})
+			return runtimeapi.Health{Healthy: false, State: runtimeapi.RuntimeStateUnhealthy, CheckedAt: time.Now().UTC(), Message: message, Details: details}, nil
+		case entry.disabled:
+			return runtimeapi.Health{Healthy: false, State: runtimeapi.RuntimeStateDisabled, CheckedAt: time.Now().UTC(), Message: "ACP runtime is disabled"}, nil
+		}
+	}
 	state := runtimeapi.RuntimeStateReady
 	healthy := err == nil
 	if err != nil {
@@ -386,12 +589,15 @@ func (b *ACPBackend) Health(_ context.Context, a agentpkg.Agent) (runtimeapi.Hea
 	return runtimeapi.Health{Healthy: healthy, State: state, CheckedAt: time.Now().UTC()}, err
 }
 
-func (b *ACPBackend) runtimeConfig(ctx context.Context, a agentpkg.Agent) (acpruntime.RuntimeConfig, error) {
-	cfg, err := b.services.Get(ctx, a.ACPServiceID())
+func (b *ACPBackend) runtimeConfig(_ context.Context, a agentpkg.Agent) (acpruntime.RuntimeConfig, error) {
+	entry, err := b.agentRuntimeConfig(a.ID)
 	if err != nil {
-		return acpruntime.RuntimeConfig{}, mapACPError(err)
+		return acpruntime.RuntimeConfig{}, err
 	}
-	return acpruntime.RuntimeConfig{AgentType: cfg.AgentType, CWD: cfg.CWD, AllowedRoots: append([]string(nil), cfg.AllowedRoots...), DefaultModel: cfg.DefaultModel, Env: cloneStringMap(cfg.Env), ConfigOverrides: cloneStringMap(cfg.ConfigOverrides), IdleTTL: cfg.IdleTTL, MaxInstances: cfg.MaxInstances, PermissionMode: cfg.PermissionMode, Codex: cloneCodexConfig(cfg.Codex)}, nil
+	if entry.disabled {
+		return acpruntime.RuntimeConfig{}, runtimeapi.NewError(runtimeapi.ErrorAgentDisabled, "acp runtime is disabled")
+	}
+	return entry.config, nil
 }
 
 // BuiltinBackend is the permanent Agent runtime adapter over the in-process
@@ -956,6 +1162,8 @@ func mapACPError(err error) error {
 		return runtimeapi.WrapError(runtimeapi.ErrorTurnLimitExceeded, "acp runtime capacity exceeded", err)
 	case errors.Is(err, acpruntime.ErrTurnCancelled):
 		return runtimeapi.WrapError(runtimeapi.ErrorTurnCancelled, "acp turn cancelled", err)
+	case errors.Is(err, acpruntime.ErrRuntimeConfigRetired):
+		return runtimeapi.WrapError(runtimeapi.ErrorBackendUnavailable, "acp runtime config was retired", err)
 	case strings.Contains(err.Error(), "does not advertise session/list"), strings.Contains(err.Error(), "does not advertise session/load"):
 		return runtimeapi.WrapError(runtimeapi.ErrorCapabilityNotSupported, "acp capability is not supported", err)
 	default:

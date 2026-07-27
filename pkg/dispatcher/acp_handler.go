@@ -111,9 +111,11 @@ func (h *Handler) dispatchACP(w http.ResponseWriter, r *http.Request, next NextH
 		if agentManager == nil {
 			return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "agent manager is unavailable"))
 		}
-		a, getErr := agentManager.Get(rewritten.Context(), dims.AgentID)
-		if getErr != nil {
-			return writeRuntimePreStreamError(w, rewritten, normalizeAgentLookupError(getErr))
+		// Store-free lookup: the definition comes from the manager's immutable
+		// generation snapshot (unified-agent-runtime M4 gate).
+		a, ok := agentManager.GetSnapshot(dims.AgentID)
+		if !ok {
+			return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorAgentNotFound, "agent not found"))
 		}
 		if a.Runtime.Type != agentpkg.RuntimeTypeACP {
 			return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "ACP route is bound to a non-ACP agent"))

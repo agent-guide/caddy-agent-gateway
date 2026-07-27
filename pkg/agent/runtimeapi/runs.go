@@ -2,6 +2,7 @@ package runtimeapi
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
@@ -9,8 +10,10 @@ import (
 )
 
 const (
-	defaultRunTombstoneTTL = 10 * time.Minute
-	defaultRunTombstoneCap = 1024
+	defaultRunTombstoneTTL    = 10 * time.Minute
+	defaultRunTombstoneCap    = 1024
+	defaultAgentCancelTimeout = 5 * time.Second
+	agentCancelRetryInterval  = 10 * time.Millisecond
 )
 
 // RunInfo is the process-local operator view of one Agent run.
@@ -27,9 +30,21 @@ type RunInfo struct {
 
 type runCancelFunc func(context.Context, CancelMode) error
 
+type agentRetirementCancellationKey struct{}
+
+// IsAgentRetirementCancellation reports whether a cancel callback is being
+// invoked by fail-closed Agent deletion/runtime retirement rather than an
+// operator's exact-run request. Backends may use this to durably mark a
+// pre-bind native run for cancellation while preserving retryable exact cancel.
+func IsAgentRetirementCancellation(ctx context.Context) bool {
+	requested, _ := ctx.Value(agentRetirementCancellationKey{}).(bool)
+	return requested
+}
+
 type runEntry struct {
-	info   RunInfo
-	cancel runCancelFunc
+	info            RunInfo
+	cancel          runCancelFunc
+	cancelRequested bool
 }
 
 // RunRegistry owns exact-run cancellation and bounded terminal tombstones.
@@ -84,18 +99,24 @@ func (r *RunRegistry) Rebind(agentID, runtimeType, runID, sessionID string, canc
 		return NewError(ErrorRunNotFound, "run not found")
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.sweepLocked()
 	e := r.active[strings.TrimSpace(agentID)][strings.TrimSpace(runID)]
 	if e == nil {
+		r.mu.Unlock()
 		return NewError(ErrorRunNotFound, "run not found")
 	}
 	if e.info.RuntimeType != strings.TrimSpace(runtimeType) {
+		r.mu.Unlock()
 		return NewError(ErrorRuntimeNotExecutable, "run runtime changed")
 	}
 	e.cancel = cancel
 	if strings.TrimSpace(sessionID) != "" {
 		e.info.SessionID = strings.TrimSpace(sessionID)
+	}
+	retry := e.cancelRequested
+	r.mu.Unlock()
+	if retry {
+		go r.retryCancelAgentRun(context.Background(), strings.TrimSpace(agentID), strings.TrimSpace(runID))
 	}
 	return nil
 }
@@ -209,18 +230,57 @@ func (r *RunRegistry) Cancel(ctx context.Context, agentID string, req CancelRequ
 	return CancelResult{RunID: req.RunID, State: RunStateCancelled, StopReason: StopReasonCancelled}, nil
 }
 
-func (r *RunRegistry) CancelAgent(ctx context.Context, agentID string) {
+func (r *RunRegistry) CancelAgent(ctx context.Context, agentID string) error {
 	if r == nil {
-		return
+		return nil
 	}
+	agentID = strings.TrimSpace(agentID)
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.active[agentID]))
-	for id := range r.active[agentID] {
+	for id, entry := range r.active[agentID] {
+		entry.cancelRequested = true
 		ids = append(ids, id)
 	}
 	r.mu.Unlock()
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), defaultAgentCancelTimeout)
+		defer cancel()
+	}
+	ctx = context.WithValue(ctx, agentRetirementCancellationKey{}, true)
+	var errs []error
 	for _, id := range ids {
-		_, _ = r.Cancel(ctx, agentID, CancelRequest{RunID: id, Mode: CancelModeForce})
+		if err := r.retryCancelAgentRun(ctx, agentID, id); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (r *RunRegistry) retryCancelAgentRun(ctx context.Context, agentID, runID string) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), defaultAgentCancelTimeout)
+		defer cancel()
+	}
+	for {
+		_, err := r.Cancel(ctx, agentID, CancelRequest{RunID: runID, Mode: CancelModeForce})
+		if err == nil || errors.Is(err, ErrRunNotFound) {
+			return nil
+		}
+		code, normalized := ErrorCodeOf(err)
+		if !normalized || code != ErrorBackendUnavailable {
+			return err
+		}
+		timer := time.NewTimer(agentCancelRetryInterval)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
 	}
 }
 

@@ -238,7 +238,7 @@ func TestIntegrationExactRunCancelSendsNativeSessionCancel(t *testing.T) {
 					event TurnEvent
 				}{runID: runID, event: ev}
 				return nil
-			})
+			}, false)
 			done <- turnResult{runID: runID, err: err}
 		}()
 	}
@@ -310,6 +310,29 @@ func TestExactRunCancelBeforeInstanceBindIsRetryable(t *testing.T) {
 	runs.finish(run)
 }
 
+func TestRetirementCancelBeforeBindStopsRunBeforePrompt(t *testing.T) {
+	runs := newActiveRunRegistry()
+	ctx, run := runs.begin(t.Context(), "owner", "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
+	if err := runs.requestCancel("owner", run.runID); err != nil {
+		t.Fatalf("requestCancel before bind: %v", err)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("retirement cancellation ended context before native cancel frame")
+	default:
+	}
+	inst := &instance{agent: stubAgent{}, t: &scriptedTransport{}, rawSessionID: "sess-1", sessionID: "sess-1"}
+	if err := runs.bind(run, inst); !errors.Is(err, ErrTurnCancelled) {
+		t.Fatalf("bind after retirement cancellation = %v, want ErrTurnCancelled", err)
+	}
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("bind did not finish the retirement-cancelled run context")
+	}
+	runs.finish(run)
+}
+
 type failingCancelAgent struct{ stubAgent }
 
 func (failingCancelAgent) Cancel(context.Context, acptransport.Transport, string) error {
@@ -320,7 +343,9 @@ func TestExactRunCancelWriteFailureLeavesContextRetryable(t *testing.T) {
 	runs := newActiveRunRegistry()
 	ctx, run := runs.begin(t.Context(), "owner", "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
 	inst := &instance{agent: failingCancelAgent{}, t: &scriptedTransport{}, rawSessionID: "sess-1", sessionID: "sess-1"}
-	runs.bind(run, inst)
+	if err := runs.bind(run, inst); err != nil {
+		t.Fatal(err)
+	}
 	if err := runs.cancel("owner", run.runID); !errors.Is(err, ErrRunNotReady) {
 		t.Fatalf("cancel write error=%v", err)
 	}

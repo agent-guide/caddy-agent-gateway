@@ -78,12 +78,30 @@ func (h *Handler) handleCreateACPService(w http.ResponseWriter, r *http.Request)
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := h.refreshAgentDefinitions(r.Context()); err != nil {
+		_ = httpjson.Error(w, http.StatusInternalServerError, fmt.Sprintf("refresh agent runtime configs: %v", err))
+		return
+	}
 	created, err := manager.Get(r.Context(), cfg.ID)
 	if err != nil {
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = httpjson.Write(w, http.StatusCreated, ACPServiceView{ServiceConfig: created, Source: "config_store"})
+}
+
+// refreshAgentDefinitions recommits the Agent definition generation after an
+// ACP service mutation. Definition listeners rebuild the canonical agent-keyed
+// ACP runtime-config snapshot and retire pooled instances whose config
+// fingerprint changed, so agent-bound execution never reuses a stale process.
+func (h *Handler) refreshAgentDefinitions(ctx context.Context) error {
+	if h == nil || h.agentManager == nil {
+		return nil
+	}
+	// The Agent definitions did not change, so avoid a redundant store List.
+	// Runtime reconciliation must finish even if the client disconnects after
+	// the ACP service mutation has committed.
+	return h.agentManager.Recommit(context.WithoutCancel(ctx))
 }
 
 func (h *Handler) handleGetACPService(w http.ResponseWriter, r *http.Request) {
@@ -128,6 +146,10 @@ func (h *Handler) handleUpdateACPService(w http.ResponseWriter, r *http.Request)
 	if h.acpRuntimeManager != nil {
 		h.acpRuntimeManager.CloseService(id)
 	}
+	if err := h.refreshAgentDefinitions(r.Context()); err != nil {
+		_ = httpjson.Error(w, http.StatusInternalServerError, fmt.Sprintf("refresh agent runtime configs: %v", err))
+		return
+	}
 	updated, err := manager.Get(r.Context(), id)
 	if err != nil {
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
@@ -154,6 +176,10 @@ func (h *Handler) handleDeleteACPService(w http.ResponseWriter, r *http.Request)
 	h.drainACPServicePermissions(r.Context(), id, "service_delete")
 	if h.acpRuntimeManager != nil {
 		h.acpRuntimeManager.CloseService(id)
+	}
+	if err := h.refreshAgentDefinitions(r.Context()); err != nil {
+		_ = httpjson.Error(w, http.StatusInternalServerError, fmt.Sprintf("refresh agent runtime configs: %v", err))
+		return
 	}
 	_ = httpjson.Write(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

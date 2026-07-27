@@ -401,7 +401,7 @@ func smokeExactRunCancel(t *testing.T, cfg acpservice.ServiceConfig) {
 					<-releases[runID]
 				}
 				return nil
-			})
+			}, false)
 			done <- turnResult{runID: runID, err: err}
 		}()
 	}

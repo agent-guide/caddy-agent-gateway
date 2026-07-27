@@ -13,6 +13,7 @@ type activeRun struct {
 	startedAt                 time.Time
 	cancel                    context.CancelFunc
 	instance                  *instance
+	cancelRequested           bool
 }
 
 type activeRunRegistry struct {
@@ -37,7 +38,7 @@ func (r *activeRunRegistry) begin(parent context.Context, ownerID, runID, sessio
 	r.runs[key] = run
 	return ctx, run
 }
-func (r *activeRunRegistry) bind(run *activeRun, inst *instance) {
+func (r *activeRunRegistry) bind(run *activeRun, inst *instance) error {
 	r.mu.Lock()
 	if r.runs[activeRunKey(run.ownerID, run.runID)] == run {
 		run.instance = inst
@@ -45,7 +46,38 @@ func (r *activeRunRegistry) bind(run *activeRun, inst *instance) {
 			run.sessionID = inst.sessionID
 		}
 	}
+	cancelRequested := run.cancelRequested
 	r.mu.Unlock()
+	if !cancelRequested {
+		return nil
+	}
+	if inst == nil || inst.protocolSessionID() == "" {
+		return ErrRunNotReady
+	}
+	if err := inst.cancel(); err != nil {
+		return fmt.Errorf("%w: session/cancel: %v", ErrRunNotReady, err)
+	}
+	run.cancel()
+	return ErrTurnCancelled
+}
+
+// requestCancel marks a run fail-closed even when its native instance/session
+// is not bound yet. bind observes the mark and sends session/cancel before the
+// prompt loop is allowed to start.
+func (r *activeRunRegistry) requestCancel(ownerID, runID string) error {
+	r.mu.Lock()
+	run := r.runs[activeRunKey(ownerID, runID)]
+	if run == nil {
+		r.mu.Unlock()
+		return ErrRunNotFound
+	}
+	run.cancelRequested = true
+	ready := run.instance != nil && run.instance.protocolSessionID() != ""
+	r.mu.Unlock()
+	if !ready {
+		return nil
+	}
+	return r.cancel(ownerID, runID)
 }
 func (r *activeRunRegistry) finish(run *activeRun) {
 	r.mu.Lock()

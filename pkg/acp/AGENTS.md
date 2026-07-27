@@ -15,6 +15,16 @@ status belong in `docs/architecture/acp-architecture.md`.
   identity-free `pkg/acp/runtime.RuntimeConfig` and use `agent_id` as the
   runtime owner key. Keep Agent identity and control-plane dependencies out of
   `pkg/acp`.
+- Pooled instances record the config content fingerprint they were created
+  under (`RuntimeConfig.Fingerprint` / the internal `configFingerprint`). A
+  turn never reuses an instance whose fingerprint differs from the current
+  config, and `Manager.RetireOwner(ownerID, keepFingerprint)` closes idle
+  stale instances immediately while active ones drain their in-flight turn
+  and are reaped by the janitor once idle. The manager also records the current
+  accepted owner fingerprint and rechecks it before inserting a newly created
+  process, so a pre-retirement request cannot repopulate the pool afterward.
+  Never bypass the fingerprint check when adding pool creation, reuse, or
+  adoption paths.
 
 ## Protocol invariants
 
@@ -50,6 +60,11 @@ status belong in `docs/architecture/acp-architecture.md`.
   closing a scope, thread, service, or pooled process. Before the live instance
   and protocol session id are bound, cancellation must return a retryable error
   and leave the run context alive; it must never silently skip the native frame.
+  Agent deletion/runtime retirement is distinct from an operator exact-run
+  cancel: it records a fail-closed cancellation request even in the pre-bind
+  window, and native bind must send `session/cancel` before allowing the prompt
+  loop to start. The common bulk-cancel path uses bounded retry for backends
+  that cannot persist this pending state.
 - Agent-bound permission decisions are claimed by the common Agent permission
   broker before the ACP waiter is resolved. The native waiter is continuation
   state only. Unbound legacy ACP route and Admin decisions remain on the native

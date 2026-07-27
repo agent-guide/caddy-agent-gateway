@@ -1,6 +1,9 @@
 package runtime
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -46,6 +49,30 @@ func (c RuntimeConfig) serviceConfig(ownerID string) (acpservice.ServiceConfig, 
 		return acpservice.ServiceConfig{}, err
 	}
 	return cfg, nil
+}
+
+// Fingerprint returns the canonical content fingerprint of this runtime
+// config for one owner. Pooled instances record the fingerprint they were
+// created under; a changed fingerprint prevents stale instances from
+// accepting new turns and drives RetireOwner cleanup.
+func (c RuntimeConfig) Fingerprint(ownerID string) (string, error) {
+	cfg, err := c.serviceConfig(ownerID)
+	if err != nil {
+		return "", err
+	}
+	return configFingerprint(cfg), nil
+}
+
+// configFingerprint hashes the canonical execution config. Management-only
+// fields and timestamps are deliberately absent from RuntimeConfig, so only a
+// change that can affect process behavior or policy retires Agent-owned pools.
+func configFingerprint(cfg acpservice.ServiceConfig) string {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func cloneStrings(in map[string]string) map[string]string {

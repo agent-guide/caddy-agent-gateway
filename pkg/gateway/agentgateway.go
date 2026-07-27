@@ -17,6 +17,7 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	acproutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	agentroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	builtinroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
@@ -49,6 +50,11 @@ type BootstrapOptions struct {
 	UsagePrometheus     usage.PrometheusProvider
 	UsageConfig         usage.Config
 	Logger              *zap.Logger
+	// ACPRuntime overrides the native ACP turn server the registered ACP
+	// backend drives. Nil uses the process-pool runtime manager. Tests inject
+	// a fake to exercise Agent-dispatched ACP execution without spawning
+	// processes.
+	ACPRuntime ACPTurnServer
 }
 
 type AgentGateway struct {
@@ -61,6 +67,7 @@ type AgentGateway struct {
 	mcpRouteResolver     *mcproutepkg.MCPRouteResolver
 	acpRouteResolver     *acproutepkg.ACPRouteResolver
 	builtinRouteResolver *builtinroutepkg.BuiltinRouteResolver
+	agentRouteResolver   *agentroutepkg.AgentRouteResolver
 	builtinHost          *builtinpkg.Host
 	virtualKeyManager    *virtualkeypkg.VirtualKeyManager
 	providerManager      *ProviderManager
@@ -150,15 +157,29 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 		})
 	}
 	var backends []runtimeapi.Backend
-	controls := RuntimeControls{Runs: g.runRegistry, Permissions: g.permissionBroker}
+	controls := RuntimeControls{Runs: g.runRegistry, Permissions: g.permissionBroker, Logger: opts.Logger}
+	var acpBackend *ACPBackend
 	if g.acpServiceManager != nil && g.acpRuntimeManager != nil {
-		backends = append(backends, NewACPBackend(g.acpServiceManager, g.acpRuntimeManager, controls))
+		turnServer := ACPTurnServer(g.acpRuntimeManager)
+		if opts.ACPRuntime != nil {
+			turnServer = opts.ACPRuntime
+		}
+		acpBackend = NewACPBackend(g.acpServiceManager, turnServer, controls)
+		backends = append(backends, acpBackend)
 	}
 	if g.builtinHost != nil {
 		backends = append(backends, NewBuiltinBackend(g.builtinHost, controls))
 	}
 	if err := g.runtimeRegistry.RegisterAll(backends...); err != nil {
 		return fmt.Errorf("register agent runtime backends: %w", err)
+	}
+	// The canonical ACP runtime-config snapshot follows the Agent definition
+	// generation: it preloads at bootstrap and rebuilds (with fingerprint
+	// retirement) on every definition commit, so turn dispatch never reads the
+	// service store (docs/plans/unified-agent-runtime.md M4).
+	if acpBackend != nil && g.agentManager != nil {
+		g.agentManager.AddDefinitionListener(acpBackend.PrepareRuntimeConfigs)
+		acpBackend.RefreshRuntimeConfigs(ctx, g.agentManager.Snapshot())
 	}
 	g.configured = true
 	return nil
@@ -189,6 +210,7 @@ func (g *AgentGateway) Reset() {
 	g.mcpRouteResolver = nil
 	g.acpRouteResolver = nil
 	g.builtinRouteResolver = nil
+	g.agentRouteResolver = nil
 	g.builtinHost = nil
 	g.virtualKeyManager = nil
 	g.providerManager = nil
@@ -289,6 +311,14 @@ func (g *AgentGateway) BuiltinRouteResolver() *builtinroutepkg.BuiltinRouteResol
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.builtinRouteResolver
+}
+
+// AgentRouteResolver resolves the unified kind=agent ingress routes. The
+// route surface stays internal (tests/fixtures) until the M5 public cutover.
+func (g *AgentGateway) AgentRouteResolver() *agentroutepkg.AgentRouteResolver {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.agentRouteResolver
 }
 
 // BuiltinHost returns the in-process ADK host serving builtin-runtime agents.
@@ -527,6 +557,7 @@ func (g *AgentGateway) configureRouteResolver(ctx context.Context, configStoreBa
 	g.mcpRouteResolver = mcproutepkg.NewMCPRouteResolver(g.routeConfigManager)
 	g.acpRouteResolver = acproutepkg.NewACPRouteResolver(g.routeConfigManager)
 	g.builtinRouteResolver = builtinroutepkg.NewBuiltinRouteResolver(g.routeConfigManager)
+	g.agentRouteResolver = agentroutepkg.NewAgentRouteResolver(g.routeConfigManager)
 
 	return nil
 }
@@ -582,6 +613,9 @@ func (g *AgentGateway) configureAgentManager(ctx context.Context, configStoreBac
 		return fmt.Errorf("load agents: %w", err)
 	}
 	g.agentManager = manager
+	if g.agentRouteResolver != nil {
+		g.agentRouteResolver.SetAgentLookup(manager)
+	}
 	return nil
 }
 

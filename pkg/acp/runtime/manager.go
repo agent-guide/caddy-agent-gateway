@@ -26,6 +26,7 @@ var ErrCapacityExceeded = errors.New("acp instance capacity exceeded")
 var ErrRunNotFound = errors.New("acp run not found")
 var ErrRunNotReady = errors.New("acp run cancellation is not ready")
 var ErrTurnCancelled = errors.New("acp turn cancelled")
+var ErrRuntimeConfigRetired = errors.New("acp runtime config is retired")
 
 type Manager struct {
 	services    *acpservice.Manager
@@ -36,8 +37,9 @@ type Manager struct {
 	janitorInterval time.Duration
 	notifyObserver  func(string, json.RawMessage)
 
-	mu        sync.Mutex
-	instances map[string]*managedInstance
+	mu                sync.Mutex
+	instances         map[string]*managedInstance
+	ownerFingerprints map[string]string
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -47,17 +49,26 @@ type managedInstance struct {
 	instance *instance
 	idleTTL  time.Duration
 	lastUsed time.Time
+	// fingerprint is the config content hash the instance was created under.
+	// A turn only reuses an instance whose fingerprint matches the current
+	// config, so a config update can never execute on a stale process.
+	fingerprint string
+	// retired marks an instance whose config fingerprint was retired while a
+	// turn was still active. It accepts no new turns and is reaped by the
+	// janitor as soon as the in-flight turn drains.
+	retired bool
 }
 
 func NewManager(services *acpservice.Manager) *Manager {
 	m := &Manager{
-		services:        services,
-		active:          NewActivityTracker(),
-		permissions:     newPermissionBroker(),
-		runs:            newActiveRunRegistry(),
-		janitorInterval: defaultJanitorInterval,
-		instances:       map[string]*managedInstance{},
-		done:            make(chan struct{}),
+		services:          services,
+		active:            NewActivityTracker(),
+		permissions:       newPermissionBroker(),
+		runs:              newActiveRunRegistry(),
+		janitorInterval:   defaultJanitorInterval,
+		instances:         map[string]*managedInstance{},
+		ownerFingerprints: map[string]string{},
+		done:              make(chan struct{}),
 	}
 	go m.janitor()
 	return m
@@ -184,6 +195,70 @@ func (m *Manager) CloseService(serviceID string) int {
 	return len(victims)
 }
 
+// RetireOwner retires every pooled instance owned by ownerID whose config
+// fingerprint differs from keepFingerprint (an empty keep retires all). Idle
+// instances close immediately; an instance with an active turn is marked
+// retired so the in-flight turn drains, accepts no further reuse, and is
+// reaped by the janitor once idle. It returns the number of instances
+// closed or marked.
+func (m *Manager) RetireOwner(ownerID, keepFingerprint string) int {
+	marked, cleanup := m.RetireOwnerDeferred(ownerID, keepFingerprint)
+	cleanup()
+	return marked
+}
+
+// RetireOwnerDeferred performs the bounded, in-memory part of RetireOwner and
+// returns cleanup that closes idle victims outside a caller's coordination
+// lock. The state transition takes effect before this method returns.
+func (m *Manager) RetireOwnerDeferred(ownerID, keepFingerprint string) (int, func()) {
+	if m == nil {
+		return 0, func() {}
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	var victims []*instance
+	marked := 0
+	m.mu.Lock()
+	if m.ownerFingerprints == nil {
+		m.ownerFingerprints = map[string]string{}
+	}
+	// Persist the currently allowed configured-runtime fingerprint. This closes
+	// the gap where a request cloned an old config before retirement and would
+	// otherwise create and insert a stale instance after this scan completes.
+	if keepFingerprint == "" {
+		delete(m.ownerFingerprints, ownerID)
+	} else {
+		m.ownerFingerprints[ownerID] = keepFingerprint
+	}
+	for scope, item := range m.instances {
+		if item == nil || item.instance == nil {
+			delete(m.instances, scope)
+			continue
+		}
+		if ScopeServiceID(scope) != ownerID {
+			continue
+		}
+		if keepFingerprint != "" && item.fingerprint == keepFingerprint && !item.retired {
+			continue
+		}
+		if m.active.IsActive(scope) {
+			if !item.retired {
+				item.retired = true
+				marked++
+			}
+			continue
+		}
+		victims = append(victims, item.instance)
+		delete(m.instances, scope)
+	}
+	m.mu.Unlock()
+	cleanup := func() {
+		for _, inst := range victims {
+			_ = inst.close()
+		}
+	}
+	return len(victims) + marked, cleanup
+}
+
 func (m *Manager) ServeTurn(ctx context.Context, serviceID string, req TurnRequest, emit EventSink) error {
 	if m == nil || m.services == nil {
 		return fmt.Errorf("acp runtime manager is not configured")
@@ -195,7 +270,7 @@ func (m *Manager) ServeTurn(ctx context.Context, serviceID string, req TurnReque
 	if cfg.Disabled {
 		return fmt.Errorf("acp service %q is disabled", cfg.ID)
 	}
-	return m.serveTurn(ctx, cfg, req, emit)
+	return m.serveTurn(ctx, cfg, req, emit, false)
 }
 
 // ServeConfiguredTurn executes an Agent-owned ACP runtime from an
@@ -209,10 +284,10 @@ func (m *Manager) ServeConfiguredTurn(ctx context.Context, ownerID string, runti
 	if err != nil {
 		return err
 	}
-	return m.serveTurn(ctx, cfg, req, emit)
+	return m.serveTurn(ctx, cfg, req, emit, true)
 }
 
-func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequest, emit EventSink) error {
+func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequest, emit EventSink, enforceOwnerFingerprint bool) error {
 	req.ThreadID = strings.TrimSpace(req.ThreadID)
 	req.SessionID = strings.TrimSpace(req.SessionID)
 	req.Input = strings.TrimSpace(req.Input)
@@ -251,12 +326,14 @@ func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, r
 	}
 	defer release()
 
-	inst, err := m.resolveInstance(ctx, scope, cfg, req)
+	inst, err := m.resolveInstanceForOwner(ctx, scope, cfg, req, enforceOwnerFingerprint)
 	if err != nil {
 		return err
 	}
 	if run != nil {
-		m.runs.bind(run, inst)
+		if err := m.runs.bind(run, inst); err != nil {
+			return err
+		}
 	}
 	stopReason, err := inst.prompt(ctx, req, emit)
 	if err != nil {
@@ -278,6 +355,16 @@ func (m *Manager) CancelRun(ownerID, runID string) error {
 		return ErrRunNotFound
 	}
 	return m.runs.cancel(strings.TrimSpace(ownerID), strings.TrimSpace(runID))
+}
+
+// RequestCancelRun records fail-closed lifecycle cancellation. Unlike the
+// exact CancelRun operation, a pre-bind run accepts the request and is stopped
+// by bind before its prompt starts.
+func (m *Manager) RequestCancelRun(ownerID, runID string) error {
+	if m == nil || m.runs == nil {
+		return ErrRunNotFound
+	}
+	return m.runs.requestCancel(strings.TrimSpace(ownerID), strings.TrimSpace(runID))
 }
 
 func (m *Manager) ListActiveRuns(ownerID string) []ActiveRunInfo {
@@ -432,14 +519,24 @@ func (m *Manager) ListOwnerInstances(ownerID string) []PooledInstanceInfo {
 }
 
 func (m *Manager) resolveInstance(ctx context.Context, scope string, cfg acpservice.ServiceConfig, req TurnRequest) (*instance, error) {
+	return m.resolveInstanceForOwner(ctx, scope, cfg, req, false)
+}
+
+func (m *Manager) resolveInstanceForOwner(ctx context.Context, scope string, cfg acpservice.ServiceConfig, req TurnRequest, enforceOwnerFingerprint bool) (*instance, error) {
+	fingerprint := configFingerprint(cfg)
 	// ServeTurn holds the per-scope activity lock for the whole turn, so only one
 	// turn resolves a given scope at a time and the janitor skips active scopes;
 	// no other goroutine mutates this scope's pool entry while we are here.
 	m.mu.Lock()
+	if enforceOwnerFingerprint && !m.ownerFingerprintCurrentLocked(cfg.ID, fingerprint) {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("%w: owner %q", ErrRuntimeConfigRetired, cfg.ID)
+	}
 	if item := m.instances[scope]; item != nil && item.instance != nil {
-		// Reuse only a live instance, and never when the caller asked for a fresh
-		// session. Otherwise evict and tear down the stale/dead instance.
-		if !req.FreshSession && item.instance.alive() {
+		// Reuse only a live instance created under the current config
+		// fingerprint, and never when the caller asked for a fresh session.
+		// Otherwise evict and tear down the stale/dead/retired instance.
+		if !req.FreshSession && item.instance.alive() && !item.retired && item.fingerprint == fingerprint {
 			item.lastUsed = time.Now().UTC()
 			inst := item.instance
 			m.mu.Unlock()
@@ -449,7 +546,7 @@ func (m *Manager) resolveInstance(ctx context.Context, scope string, cfg acpserv
 		stale := item.instance
 		m.mu.Unlock()
 		_ = stale.close()
-	} else if inst := m.adoptSessionInstanceLocked(scope, cfg, req); inst != nil {
+	} else if inst := m.adoptSessionInstanceLocked(scope, fingerprint, cfg, req); inst != nil {
 		m.mu.Unlock()
 		return inst, nil
 	} else {
@@ -466,14 +563,24 @@ func (m *Manager) resolveInstance(ctx context.Context, scope string, cfg acpserv
 	}
 
 	m.mu.Lock()
+	if enforceOwnerFingerprint && !m.ownerFingerprintCurrentLocked(cfg.ID, fingerprint) {
+		m.mu.Unlock()
+		_ = inst.close()
+		return nil, fmt.Errorf("%w: owner %q", ErrRuntimeConfigRetired, cfg.ID)
+	}
 	if cfg.MaxInstances > 0 && m.serviceInstanceCountLocked(cfg.ID) >= cfg.MaxInstances {
 		m.mu.Unlock()
 		_ = inst.close()
 		return nil, fmt.Errorf("%w: service %q reached max_instances %d", ErrCapacityExceeded, cfg.ID, cfg.MaxInstances)
 	}
-	m.instances[scope] = &managedInstance{instance: inst, idleTTL: cfg.IdleTTL, lastUsed: time.Now().UTC()}
+	m.instances[scope] = &managedInstance{instance: inst, idleTTL: cfg.IdleTTL, lastUsed: time.Now().UTC(), fingerprint: fingerprint}
 	m.mu.Unlock()
 	return inst, nil
+}
+
+func (m *Manager) ownerFingerprintCurrentLocked(ownerID, fingerprint string) bool {
+	current, ok := m.ownerFingerprints[strings.TrimSpace(ownerID)]
+	return ok && current != "" && current == fingerprint
 }
 
 func (m *Manager) serviceInstanceCountLocked(serviceID string) int {
@@ -497,7 +604,7 @@ func (m *Manager) serviceInstanceCountLocked(serviceID string) int {
 // session_id) to explicit session addressing (later turns echo back the
 // session id from the session event), instead of spawning a second process and
 // replaying session/load. The caller must hold m.mu.
-func (m *Manager) adoptSessionInstanceLocked(scope string, cfg acpservice.ServiceConfig, req TurnRequest) *instance {
+func (m *Manager) adoptSessionInstanceLocked(scope string, fingerprint string, cfg acpservice.ServiceConfig, req TurnRequest) *instance {
 	if req.FreshSession || req.SessionID == "" {
 		return nil
 	}
@@ -512,6 +619,10 @@ func (m *Manager) adoptSessionInstanceLocked(scope string, cfg acpservice.Servic
 	from := buildScope(cfg.ID, cwd, req.ThreadID, "", model)
 	item := m.instances[from]
 	if item == nil || item.instance == nil || item.instance.sessionID != req.SessionID {
+		return nil
+	}
+	// Never adopt an instance created under a retired config fingerprint.
+	if item.retired || item.fingerprint != fingerprint {
 		return nil
 	}
 	// Never steal an instance from a turn that is still running on the
@@ -569,7 +680,7 @@ func (m *Manager) reapIdle(now time.Time) {
 			delete(m.instances, scope)
 			continue
 		}
-		if !shouldReap(now, item.lastUsed, item.idleTTL, item.instance.alive(), m.active.IsActive(scope)) {
+		if !shouldReap(now, item.lastUsed, item.idleTTL, item.instance.alive(), m.active.IsActive(scope), item.retired) {
 			continue
 		}
 		victims = append(victims, item.instance)
@@ -582,14 +693,15 @@ func (m *Manager) reapIdle(now time.Time) {
 }
 
 // shouldReap reports whether a pooled instance can be torn down. An instance
-// with an active turn is never reaped. A dead transport is always reaped. A
-// live, idle instance is reaped only when idleTTL > 0 and it has been idle for
-// longer than idleTTL.
-func shouldReap(now, lastUsed time.Time, idleTTL time.Duration, alive, active bool) bool {
+// with an active turn is never reaped. A dead transport is always reaped, and
+// so is an instance retired by a config-fingerprint change once its in-flight
+// turn has drained. A live, idle instance is otherwise reaped only when
+// idleTTL > 0 and it has been idle for longer than idleTTL.
+func shouldReap(now, lastUsed time.Time, idleTTL time.Duration, alive, active, retired bool) bool {
 	if active {
 		return false
 	}
-	if !alive {
+	if !alive || retired {
 		return true
 	}
 	if idleTTL <= 0 {

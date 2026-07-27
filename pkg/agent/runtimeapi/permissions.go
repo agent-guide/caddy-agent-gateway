@@ -307,8 +307,17 @@ func (b *PermissionBroker) DrainRun(ctx context.Context, agentID, runID string) 
 }
 
 func (b *PermissionBroker) DrainAgent(ctx context.Context, agentID string) int {
+	return b.ClaimAgent(agentID)(ctx)
+}
+
+// ClaimAgent atomically removes an Agent's pending permissions from the
+// claimable set and returns their external continuation cleanup. Claiming is
+// bounded and in-memory, so definition commits can make permission retirement
+// visible before publishing a new generation without holding the snapshot lock
+// across backend I/O.
+func (b *PermissionBroker) ClaimAgent(agentID string) func(context.Context) int {
 	if b == nil {
-		return 0
+		return func(context.Context) int { return 0 }
 	}
 	var claimed []*permissionEntry
 	b.mu.Lock()
@@ -320,15 +329,17 @@ func (b *PermissionBroker) DrainAgent(ctx context.Context, agentID string) int {
 		}
 	}
 	b.mu.Unlock()
-	for _, e := range claimed {
-		err := b.expireContinuation(ctx, e)
-		result := "cancelled"
-		if err != nil {
-			result = continuationFailureResult(err)
+	return func(ctx context.Context) int {
+		for _, e := range claimed {
+			err := b.expireContinuation(ctx, e)
+			result := "cancelled"
+			if err != nil {
+				result = continuationFailureResult(err)
+			}
+			b.audit(e.info.AgentID, e.info.RequestID, permissionSource(ctx), result)
 		}
-		b.audit(e.info.AgentID, e.info.RequestID, permissionSource(ctx), result)
+		return len(claimed)
 	}
-	return len(claimed)
 }
 
 // DrainAll claims every pending permission and invokes its backend cleanup.

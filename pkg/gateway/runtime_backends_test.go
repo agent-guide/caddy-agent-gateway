@@ -77,8 +77,11 @@ func TestACPBackendTranslatesLegacyOptionsIntoIdentityFreeRuntime(t *testing.T) 
 		ConfigOverrides: map[string]string{"base": "true"}, PermissionMode: "interactive",
 	}
 	native := &captureACPRuntime{t: t}
-	backend := NewACPBackend(staticACPServices{cfg: service}, native)
+	services := &countingACPServiceSource{source: staticACPServices{cfg: service}}
+	backend := NewACPBackend(services, native)
 	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{ServiceID: service.ID}}}
+	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
+	refreshReads := services.gets
 	raw := json.RawMessage(`{"thread_id":"thread-1","cwd":"/workspace/repo","model":"model-b","fresh_session":true,"config_overrides":{"turn":"yes"}}`)
 	req := runtimeapi.TurnRequest{Input: "hello", SessionID: "session-1", Options: runtimeapi.TurnOptions{Version: runtimeapi.TurnOptionsVersionV1, Runtime: raw}}
 	run, err := runtimeapi.NewTurnSequencer(t.Context(), backend, a, req)
@@ -110,6 +113,27 @@ func TestACPBackendTranslatesLegacyOptionsIntoIdentityFreeRuntime(t *testing.T) 
 	if native.cfg.Env["A"] != "B" {
 		t.Fatal("runtime config aliases service map")
 	}
+	if services.gets != refreshReads {
+		t.Fatalf("turn dispatch read the service store: gets=%d, want %d (refresh only)", services.gets, refreshReads)
+	}
+	if _, err := backend.Capabilities(t.Context(), a); err != nil {
+		t.Fatalf("Capabilities: %v", err)
+	}
+	if services.gets != refreshReads {
+		t.Fatalf("capability discovery read the service store: gets=%d, want %d", services.gets, refreshReads)
+	}
+}
+
+// countingACPServiceSource wraps a service source and counts reads so tests
+// can pin that only RefreshRuntimeConfigs touches the store.
+type countingACPServiceSource struct {
+	source acpServiceSource
+	gets   int
+}
+
+func (s *countingACPServiceSource) Get(ctx context.Context, id string) (acpservice.ServiceConfig, error) {
+	s.gets++
+	return s.source.Get(ctx, id)
 }
 
 func TestACPBackendCancelBeforeNativeRegistrationIsRetryable(t *testing.T) {
@@ -117,6 +141,7 @@ func TestACPBackendCancelBeforeNativeRegistrationIsRetryable(t *testing.T) {
 	native := &preNativeRegistrationACPRuntime{entered: make(chan struct{}), release: make(chan struct{})}
 	backend := NewACPBackend(staticACPServices{cfg: service}, native, RuntimeControls{Runs: runtimeapi.NewRunRegistry()})
 	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{ServiceID: service.ID}}}
+	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	done := make(chan error, 1)
 	go func() {
@@ -753,5 +778,155 @@ func TestBuiltinBackendRealCheckpointResumePreservesCommonSequenceAndSpanLink(t 
 	}
 	if !inner["llm"] || !inner["mcp"] {
 		t.Fatalf("resumed inner usage = %v", inner)
+	}
+}
+
+// mutableACPServices lets a test change the "persisted" service record between
+// snapshot refreshes without touching the backend's loaded snapshot.
+type mutableACPServices struct {
+	mu  sync.Mutex
+	cfg acpservice.ServiceConfig
+}
+
+func (s *mutableACPServices) Get(_ context.Context, id string) (acpservice.ServiceConfig, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id != s.cfg.ID {
+		return acpservice.ServiceConfig{}, acpservice.ErrServiceNotConfigured
+	}
+	return s.cfg, nil
+}
+
+func (s *mutableACPServices) set(cfg acpservice.ServiceConfig) {
+	s.mu.Lock()
+	s.cfg = cfg
+	s.mu.Unlock()
+}
+
+type retireRecordingACPRuntime struct {
+	captureACPRuntime
+	retirements []string
+}
+
+type expiryRecordingResolver struct {
+	mu      sync.Mutex
+	expired int
+}
+
+func (*expiryRecordingResolver) ValidateContinuationDecision(string, runtimeapi.PendingPermission, runtimeapi.PermissionDecision) error {
+	return nil
+}
+
+func (*expiryRecordingResolver) ResolveContinuation(context.Context, string, runtimeapi.PermissionDecision, time.Time) error {
+	return nil
+}
+
+func (r *expiryRecordingResolver) ExpireContinuation(context.Context, string) error {
+	r.mu.Lock()
+	r.expired++
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *expiryRecordingResolver) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.expired
+}
+
+func (r *retireRecordingACPRuntime) RetireOwner(ownerID, keep string) int {
+	r.retirements = append(r.retirements, ownerID+"|"+keep)
+	return 0
+}
+
+func (r *retireRecordingACPRuntime) RetireOwnerDeferred(ownerID, keep string) (int, func()) {
+	r.retirements = append(r.retirements, ownerID+"|"+keep)
+	return 0, func() {}
+}
+
+func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
+	service := acpservice.ServiceConfig{
+		ID: "svc-1", Name: "Service", AgentType: "opencode", CWD: "/workspace",
+		AllowedRoots: []string{"/workspace"}, DefaultModel: "model-a",
+	}
+	services := &mutableACPServices{cfg: service}
+	native := &retireRecordingACPRuntime{captureACPRuntime: captureACPRuntime{t: t}}
+	permissions := runtimeapi.NewPermissionBroker()
+	defer permissions.Close(context.Background())
+	backend := NewACPBackend(services, native, RuntimeControls{Permissions: permissions})
+	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{ServiceID: service.ID}}}
+
+	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
+	if len(native.retirements) != 1 {
+		t.Fatalf("initial refresh did not establish the accepted owner fingerprint: %v", native.retirements)
+	}
+	entry, err := backend.agentRuntimeConfig(a.ID)
+	if err != nil || entry.config.DefaultModel != "model-a" {
+		t.Fatalf("snapshot entry = %+v, err=%v", entry, err)
+	}
+
+	// Mutating the service record without a definition refresh must not
+	// change execution config: there is exactly one config source.
+	changed := service
+	changed.DefaultModel = "model-b"
+	services.set(changed)
+	permissionResolver := &expiryRecordingResolver{}
+	if _, err := permissions.Register(runtimeapi.PendingPermission{
+		RequestID: "perm-1", AgentID: a.ID, RuntimeType: agent.RuntimeTypeACP,
+		RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TTL: time.Minute,
+	}, "cont-1", permissionResolver); err != nil {
+		t.Fatalf("register permission: %v", err)
+	}
+	stale, err := backend.agentRuntimeConfig(a.ID)
+	if err != nil || stale.config.DefaultModel != "model-a" {
+		t.Fatalf("snapshot changed without refresh: %+v, err=%v", stale, err)
+	}
+
+	// One refresh atomically replaces the snapshot and retires the prior
+	// fingerprint, keeping only the new one.
+	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
+	fresh, err := backend.agentRuntimeConfig(a.ID)
+	if err != nil || fresh.config.DefaultModel != "model-b" {
+		t.Fatalf("snapshot after refresh = %+v, err=%v", fresh, err)
+	}
+	if len(native.retirements) != 2 || native.retirements[1] != "agent-1|"+fresh.fingerprint {
+		t.Fatalf("retirements = %v, want refreshed keep=%s", native.retirements, fresh.fingerprint)
+	}
+	if got := permissions.List(a.ID); len(got) != 0 || permissionResolver.count() != 1 {
+		t.Fatalf("retired fingerprint left permission claimable: pending=%v expired=%d", got, permissionResolver.count())
+	}
+
+	// Disabled is management state rather than part of RuntimeConfig, but its
+	// transition still retires every Agent-owned instance and rejects execution.
+	disabled := changed
+	disabled.Disabled = true
+	services.set(disabled)
+	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
+	if _, err := backend.Capabilities(t.Context(), a); !errors.Is(err, runtimeapi.ErrAgentDisabled) {
+		t.Fatalf("disabled capabilities error = %v", err)
+	}
+	if len(native.retirements) != 3 || native.retirements[2] != "agent-1|" {
+		t.Fatalf("disabled retirements = %v, want retire-all", native.retirements)
+	}
+
+	// A dangling service remains diagnosable in runtime health while accepting
+	// no owner fingerprint.
+	services.set(acpservice.ServiceConfig{ID: "different-service"})
+	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
+	summary, err := backend.RuntimeSummary(t.Context(), a)
+	if err != nil || summary.Healthy || summary.State != runtimeapi.RuntimeStateUnhealthy || !strings.Contains(string(summary.Details), "config_missing") {
+		t.Fatalf("missing-config summary = %+v, err=%v", summary, err)
+	}
+	if len(native.retirements) != 4 || native.retirements[3] != "agent-1|" {
+		t.Fatalf("missing-config retirements = %v, want retire-all", native.retirements)
+	}
+
+	// Removing the agent retires every owner instance and drops the entry.
+	backend.RefreshRuntimeConfigs(t.Context(), nil)
+	if _, err := backend.agentRuntimeConfig(a.ID); !errors.Is(err, runtimeapi.ErrBackendUnavailable) {
+		t.Fatalf("removed agent config error = %v, want backend_unavailable", err)
+	}
+	if len(native.retirements) != 5 || native.retirements[4] != "agent-1|" {
+		t.Fatalf("retirements = %v, want trailing retire-all", native.retirements)
 	}
 }

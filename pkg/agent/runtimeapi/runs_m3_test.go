@@ -40,6 +40,32 @@ func TestRunRegistryExactCancelAndTerminalIdempotency(t *testing.T) {
 	}
 }
 
+func TestRunRegistryCancelAgentRetriesPreBindCancellation(t *testing.T) {
+	r := NewRunRegistry()
+	var calls atomic.Int32
+	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if err := r.Begin("agent", "acp", runID, "", func(context.Context, CancelMode) error {
+		if calls.Add(1) < 3 {
+			return NewError(ErrorBackendUnavailable, "run cancellation is not ready; retry")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := r.CancelAgent(ctx, "agent"); err != nil {
+		t.Fatalf("CancelAgent: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("cancel calls = %d, want 3", calls.Load())
+	}
+	items := r.List("agent")
+	if len(items) != 1 || items[0].State != RunStateCancelled {
+		t.Fatalf("runs after cancellation = %+v", items)
+	}
+}
+
 func TestRunRegistryTombstoneTTLAndCap(t *testing.T) {
 	now := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
 	r := newRunRegistry(10*time.Minute, 2, func() time.Time { return now })

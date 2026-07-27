@@ -73,10 +73,29 @@ Important files:
   by at most one agent, so the route → agent attribution mapping stays
   unambiguous), `acp_route_ids` → runtime-service and `builtin_route_ids` →
   target-agent consistency, and implements `ResolveAgentID` (the
-  `usage.AgentAttributor` seam). `Refresh` rebuilds the index defensively: a
-  `service_id` or `route_id` that resolves to more than one agent is dropped
-  from the map (and `ResolveAgentID` returns `ok=false`) rather than silently
-  picking a last writer.
+  `usage.AgentAttributor` seam). The index is derived from the definition
+  generation on every commit, defensively: a `service_id` or `route_id` that
+  resolves to more than one agent is dropped from the map (and
+  `ResolveAgentID` returns `ok=false`) rather than silently picking a last
+  writer.
+- `snapshot.go`: the deep-cloned, generation-swapped definition snapshot
+  (unified-agent-runtime plan §11 decision 3). `GetSnapshot(id)`, `Snapshot()`,
+  and `HasAgent(id)` read only the immutable current generation and never
+  touch the config store — they are the required lookups for per-request
+  dispatch. Create/Update/Delete build and validate a complete prospective
+  generation before the store write, then commit the infallible swap after
+  the store operation succeeds; `Refresh` decodes and deep-clones the complete
+  store result before its swap and is serialized with CRUD across the complete
+  List-to-commit window. `Recommit` republishes the loaded generation without a
+  store read when external runtime records change. Returned values are deep clones (no pointer,
+  slice, map, or topology field aliases the generation). Definition listeners
+  (`AddDefinitionListener`) are three-stage: prepare runs before the snapshot
+  write lock, commit runs under it, and cleanup runs afterward with a detached
+  bounded context. Commit callbacks must be bounded and in-memory only and
+  must never call `GetSnapshot`, `Snapshot`, `HasAgent`, or
+  `SnapshotGeneration` (the snapshot mutex is not reentrant). Safety-sensitive
+  state publication/retirement marks belong in commit so they precede new
+  dispatch; store/process/transport I/O belongs in prepare or cleanup.
 
 Agents are a first-class gateway-bundle object (apply/export/validate) and have
 an `agwctl gateway agent` read surface; create/update flow through the bundle.

@@ -13,6 +13,7 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
+	agentroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	builtinroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
@@ -33,12 +34,17 @@ type Handler struct {
 	mcpEnabled     bool
 	acpEnabled     bool
 	builtinEnabled bool
+	agentEnabled   bool
 }
 
 type HandlerOptions struct {
 	EnableMCP     bool
 	EnableACP     bool
 	EnableBuiltin bool
+	// EnableAgent turns on the unified kind=agent ingress dispatch. It is
+	// internal during M4 (tests/fixtures only); the Caddyfile/standalone
+	// enablement switch arrives with the M5 public cutover.
+	EnableAgent bool
 }
 
 // NewHandler constructs a runtime dispatcher handler.
@@ -56,14 +62,15 @@ func NewHandler(agentGateway *gateway.AgentGateway, apiHandlers map[string]LLMAp
 		mcpEnabled:     opts.EnableMCP,
 		acpEnabled:     opts.EnableACP,
 		builtinEnabled: opts.EnableBuiltin,
+		agentEnabled:   opts.EnableAgent,
 	}
 	return handler
 }
 
 // Validate verifies the dispatcher has at least one configured ingress protocol handler.
 func (h *Handler) Validate() error {
-	if h == nil || (len(h.apiHandlers) == 0 && !h.mcpEnabled && !h.acpEnabled && !h.builtinEnabled) {
-		return fmt.Errorf("agent_route_dispatcher requires at least one llm_api, mcp, acp, or builtin")
+	if h == nil || (len(h.apiHandlers) == 0 && !h.mcpEnabled && !h.acpEnabled && !h.builtinEnabled && !h.agentEnabled) {
+		return fmt.Errorf("agent_route_dispatcher requires at least one llm_api, mcp, acp, builtin, or agent")
 	}
 	return nil
 }
@@ -151,11 +158,16 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 		TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID, ParentSpanID: traceCtx.ParentSpanID, AgentDepth: traceCtx.AgentDepth,
 		RouteID: cfg.ID, RouteKind: string(cfg.Kind), RouteProtocol: string(cfg.Protocol), VirtualKeyID: virtualKeyID,
 	}
-	// Builtin routes carry their target agent in the route config; stamp it
-	// explicitly so builtin attribution never depends on the route -> agent
-	// index (§5.7.6).
+	// Builtin and agent routes carry their target agent in the route config;
+	// stamp it explicitly so their attribution never depends on the
+	// route -> agent index (§5.7.6, unified-agent-runtime §6.4).
 	if cfg.Kind == routecore.RouteKindBuiltin {
 		if agentID, err := builtinroutepkg.DecodeTargetAgentID(cfg.TargetPolicy); err == nil && agentID != "" {
+			dims.AgentID = agentID
+		}
+	}
+	if cfg.Kind == routecore.RouteKindAgent {
+		if agentID, err := agentroutepkg.DecodeTargetAgentID(cfg.TargetPolicy); err == nil && agentID != "" {
 			dims.AgentID = agentID
 		}
 	}
@@ -202,6 +214,8 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 		return h.dispatchACP(rec, r, next, cfg)
 	case routecore.RouteKindBuiltin:
 		return h.dispatchBuiltin(rec, r, next, cfg)
+	case routecore.RouteKindAgent:
+		return h.dispatchAgent(rec, r, next, cfg)
 	default:
 		return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusServiceUnavailable, rec, r, "dispatch route", "route kind is not configured", fmt.Errorf("route %q kind %q is not configured", cfg.ID, cfg.Kind))
 	}
@@ -237,6 +251,8 @@ func rateLimitDimension(kind routecore.RouteKind) (virtualkeypkg.RateLimitDimens
 		return virtualkeypkg.RateLimitDimensionACP, nil
 	case routecore.RouteKindBuiltin:
 		return virtualkeypkg.RateLimitDimensionBuiltin, nil
+	case routecore.RouteKindAgent:
+		return virtualkeypkg.RateLimitDimensionAgent, nil
 	default:
 		return "", fmt.Errorf("unsupported route kind %q", kind)
 	}

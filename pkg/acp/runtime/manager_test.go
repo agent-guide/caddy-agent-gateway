@@ -528,20 +528,156 @@ func TestShouldReap(t *testing.T) {
 		idleTTL  time.Duration
 		alive    bool
 		active   bool
+		retired  bool
 		want     bool
 	}{
-		{"active is never reaped", now.Add(-time.Hour), time.Millisecond, true, true, false},
-		{"dead is always reaped", now, 0, false, false, true},
-		{"dead but active stays", now, 0, false, true, false},
-		{"live idle disabled stays", now.Add(-time.Hour), 0, true, false, false},
-		{"live within ttl stays", now, time.Hour, true, false, false},
-		{"live beyond ttl reaped", now.Add(-2 * time.Hour), time.Hour, true, false, true},
+		{"active is never reaped", now.Add(-time.Hour), time.Millisecond, true, true, false, false},
+		{"dead is always reaped", now, 0, false, false, false, true},
+		{"dead but active stays", now, 0, false, true, false, false},
+		{"live idle disabled stays", now.Add(-time.Hour), 0, true, false, false, false},
+		{"live within ttl stays", now, time.Hour, true, false, false, false},
+		{"live beyond ttl reaped", now.Add(-2 * time.Hour), time.Hour, true, false, false, true},
+		{"retired idle is reaped immediately", now, time.Hour, true, false, true, true},
+		{"retired but active drains first", now, time.Hour, true, true, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldReap(now, tc.lastUsed, tc.idleTTL, tc.alive, tc.active); got != tc.want {
+			if got := shouldReap(now, tc.lastUsed, tc.idleTTL, tc.alive, tc.active, tc.retired); got != tc.want {
 				t.Fatalf("shouldReap = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveInstanceEvictsStaleConfigFingerprint(t *testing.T) {
+	m := newTestManager()
+	cfg := testServiceConfig(t)
+	ctx := context.Background()
+	scope := buildScope(cfg.ID, cfg.CWD, "t1", "", "")
+	first, err := m.resolveInstance(ctx, scope, cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
+	if err != nil {
+		t.Fatalf("first resolveInstance: %v", err)
+	}
+	changed := cfg
+	changed.DefaultModel = "model-b"
+	second, err := m.resolveInstance(ctx, scope, changed, TurnRequest{ThreadID: "t1", Input: "hi"})
+	if err != nil {
+		t.Fatalf("second resolveInstance: %v", err)
+	}
+	if second == first {
+		t.Fatal("stale-fingerprint instance was reused for a changed config")
+	}
+	if transportOf(t, first).Alive() {
+		t.Fatal("stale instance was not torn down")
+	}
+	// Same config keeps reusing the fresh instance.
+	third, err := m.resolveInstance(ctx, scope, changed, TurnRequest{ThreadID: "t1", Input: "hi"})
+	if err != nil {
+		t.Fatalf("third resolveInstance: %v", err)
+	}
+	if third != second {
+		t.Fatal("same-fingerprint instance was not reused")
+	}
+}
+
+func TestConfiguredResolveRejectsRetiredOwnerFingerprint(t *testing.T) {
+	m := newTestManager()
+	cfg := testServiceConfig(t)
+	oldFingerprint := configFingerprint(cfg)
+	m.RetireOwner(cfg.ID, oldFingerprint)
+	oldScope := buildScope(cfg.ID, cfg.CWD, "old", "", "")
+	old, err := m.resolveInstanceForOwner(context.Background(), oldScope, cfg, TurnRequest{ThreadID: "old", Input: "hi"}, true)
+	if err != nil {
+		t.Fatalf("resolve current fingerprint: %v", err)
+	}
+
+	changed := cfg
+	changed.DefaultModel = "model-b"
+	newFingerprint := configFingerprint(changed)
+	m.RetireOwner(cfg.ID, newFingerprint)
+	if transportOf(t, old).Alive() {
+		t.Fatal("old idle instance survived owner fingerprint retirement")
+	}
+	staleScope := buildScope(cfg.ID, cfg.CWD, "stale-after-retire", "", "")
+	if _, err := m.resolveInstanceForOwner(context.Background(), staleScope, cfg, TurnRequest{ThreadID: "stale-after-retire", Input: "hi"}, true); !errors.Is(err, ErrRuntimeConfigRetired) {
+		t.Fatalf("stale configured resolve error = %v, want ErrRuntimeConfigRetired", err)
+	}
+	freshScope := buildScope(cfg.ID, cfg.CWD, "fresh", "", "")
+	if _, err := m.resolveInstanceForOwner(context.Background(), freshScope, changed, TurnRequest{ThreadID: "fresh", Input: "hi"}, true); err != nil {
+		t.Fatalf("resolve replacement fingerprint: %v", err)
+	}
+
+	m.RetireOwner(cfg.ID, "")
+	m.mu.Lock()
+	_, retained := m.ownerFingerprints[cfg.ID]
+	m.mu.Unlock()
+	if retained {
+		t.Fatal("retire-all retained an empty owner fingerprint entry")
+	}
+	removedScope := buildScope(cfg.ID, cfg.CWD, "removed", "", "")
+	if _, err := m.resolveInstanceForOwner(context.Background(), removedScope, changed, TurnRequest{ThreadID: "removed", Input: "hi"}, true); !errors.Is(err, ErrRuntimeConfigRetired) {
+		t.Fatalf("removed owner resolve error = %v, want ErrRuntimeConfigRetired", err)
+	}
+}
+
+func TestRetireOwnerClosesIdleAndDrainsActive(t *testing.T) {
+	m := newTestManager()
+	cfg := testServiceConfig(t)
+	ctx := context.Background()
+	idleScope := buildScope(cfg.ID, cfg.CWD, "idle", "", "")
+	activeScope := buildScope(cfg.ID, cfg.CWD, "active", "", "")
+	otherCfg := testServiceConfig(t)
+	otherCfg.ID = "other"
+	otherScope := buildScope(otherCfg.ID, otherCfg.CWD, "t1", "", "")
+
+	idle, err := m.resolveInstance(ctx, idleScope, cfg, TurnRequest{ThreadID: "idle", Input: "hi"})
+	if err != nil {
+		t.Fatalf("resolveInstance idle: %v", err)
+	}
+	active, err := m.resolveInstance(ctx, activeScope, cfg, TurnRequest{ThreadID: "active", Input: "hi"})
+	if err != nil {
+		t.Fatalf("resolveInstance active: %v", err)
+	}
+	other, err := m.resolveInstance(ctx, otherScope, otherCfg, TurnRequest{ThreadID: "t1", Input: "hi"})
+	if err != nil {
+		t.Fatalf("resolveInstance other: %v", err)
+	}
+	release, err := m.active.Begin(activeScope)
+	if err != nil {
+		t.Fatalf("Begin active scope: %v", err)
+	}
+
+	changed := cfg
+	changed.DefaultModel = "model-b"
+	keep := configFingerprint(changed)
+	if n := m.RetireOwner(cfg.ID, keep); n != 2 {
+		t.Fatalf("RetireOwner = %d, want 2 (one closed, one marked)", n)
+	}
+	if transportOf(t, idle).Alive() {
+		t.Fatal("idle stale instance was not closed")
+	}
+	if !transportOf(t, active).Alive() {
+		t.Fatal("active instance was killed instead of draining")
+	}
+	if !transportOf(t, other).Alive() {
+		t.Fatal("unrelated owner instance was retired")
+	}
+	// The retired active instance accepts no new turns even on its own scope.
+	replacement, err := m.resolveInstance(ctx, idleScope, cfg, TurnRequest{ThreadID: "idle", Input: "hi"})
+	if err != nil {
+		t.Fatalf("resolveInstance replacement: %v", err)
+	}
+	if replacement == idle {
+		t.Fatal("retired instance was reused")
+	}
+	// Once the in-flight turn drains, the janitor reaps the retired instance
+	// immediately, ignoring idle TTL.
+	release()
+	m.reapIdle(time.Now().UTC())
+	if transportOf(t, active).Alive() {
+		t.Fatal("drained retired instance was not reaped")
+	}
+	if !transportOf(t, other).Alive() {
+		t.Fatal("reap touched an unrelated owner instance")
 	}
 }

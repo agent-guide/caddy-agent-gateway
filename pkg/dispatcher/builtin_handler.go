@@ -71,9 +71,11 @@ func (h *Handler) dispatchBuiltin(w http.ResponseWriter, r *http.Request, next N
 	if agentManager == nil {
 		return WriteDispatchError(h.logger, string(route.Protocol), route.ID, "", http.StatusServiceUnavailable, w, rewritten, "dispatch builtin turn", "agent manager is not configured", fmt.Errorf("agent manager is not configured"))
 	}
-	a, err := agentManager.Get(rewritten.Context(), route.AgentID)
-	if err != nil {
-		return writeRuntimePreStreamError(w, rewritten, normalizeAgentLookupError(err))
+	// Store-free lookup: the definition comes from the manager's immutable
+	// generation snapshot (unified-agent-runtime M4 gate).
+	a, ok := agentManager.GetSnapshot(route.AgentID)
+	if !ok {
+		return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorAgentNotFound, "agent not found"))
 	}
 	if a.Runtime.Type != agentpkg.RuntimeTypeBuiltin {
 		return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "builtin route is bound to a non-builtin agent"))
