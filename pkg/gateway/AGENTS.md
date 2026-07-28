@@ -86,7 +86,7 @@ Current shape:
 - prefer `*MCPRoute` at runtime rather than copying `MCPRoute` values
 - route ids follow the shared convention above with the `mcp:<service_id>:<path-slug>` shape
 
-## `acproute/`
+## `acproute/` (legacy source pending M7 deletion)
 
 Defines the ACP route config expansion and runtime route model.
 
@@ -104,12 +104,12 @@ Current shape:
 - `ACPRoute` is the runtime object created by `ACPRouteResolver` and used by dispatcher/runtime code
 - route ids follow the shared convention above with the `acp:<service_id>:<path-slug>` shape
 
-## `builtinroute/`
+## `builtinroute/` (legacy source pending M7 deletion)
 
 Defines the builtin route config expansion and runtime route model, mirroring
 `acproute` with an `agent_id` target instead of a service. Route ids follow
 the shared convention above with the `builtin:<agent_id>:<path-slug>` shape.
-The dispatcher serves `POST /<builtin-route>/turn` when `builtin` is enabled.
+The public dispatcher does not enable this route family after the M5 cutover.
 
 ## `agentroute/`
 
@@ -122,25 +122,17 @@ allowlist. Route ids follow the shared convention with the
 `UpdateConfig` validate target existence through the optional `AgentLookup`
 (wired to `agent.Manager.HasAgent`); disabled or currently non-executable
 Agents remain valid targets and fail at dispatch with their normalized runtime
-error. M4 status: the route is dispatched internally behind the dispatcher's
-`EnableAgent` option (tests/fixtures only); the Admin/bundle/Caddyfile surface
-arrives with the M5 public cutover.
+error. Its public surfaces are `/admin/agents/routes`, bundle `agentRoutes`,
+CLI `agent-route`, and dispatcher `EnableAgent`/`agent`.
 
 ## ACP runtime-config snapshot (`runtime_backends.go`)
 
-`ACPBackend` never reads the ACP service store on a request path. It holds the
-canonical `agent_id -> acpruntime.RuntimeConfig` snapshot, rebuilt by the
-three-stage `PrepareRuntimeConfigs` definition listener (and once at
-bootstrap). During M4 the legacy bound-service record is the only snapshot
-source. Store reads happen in prepare before the Agent snapshot write lock;
-the commit stage only publishes configs, records accepted fingerprints, marks
-stale pools retired, and claims pending permissions; process/transport cleanup
-runs after the lock with a deadline. Missing service configs remain explicit
-`config_missing` entries for logs and runtime health instead of disappearing.
-A changed fingerprint or disabled state retires the owner as appropriate and
-drains matching pending permissions before the new generation becomes
-dispatchable. Admin ACP service mutations recommit the already-loaded Agent
-definition generation without rereading the Agent store.
+`ACPBackend` builds the canonical `agent_id -> acpruntime.RuntimeConfig`
+snapshot solely from `Agent.runtime.acp` during the three-stage Agent
+definition commit. A changed fingerprint, disabled state, runtime switch, or
+deletion retires stale pools and drains pending permissions before the
+replacement generation becomes dispatchable. There is no ACP service store or
+fallback configuration source.
 
 ## `virtualkey/`
 

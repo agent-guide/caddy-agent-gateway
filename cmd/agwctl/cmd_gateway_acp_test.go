@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +10,7 @@ import (
 )
 
 func TestGatewayACPServiceCommands(t *testing.T) {
+	t.Skip("M5 removes the ACP service command surface")
 	var deleteCalled atomic.Bool
 	var gotSessionsQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +126,17 @@ func TestGatewayACPServiceCommands(t *testing.T) {
 	}
 }
 
+func TestLegacyRuntimeCommandsAreNotRegistered(t *testing.T) {
+	for _, command := range []string{"acp-service", "acp-route", "builtin-route"} {
+		_, _, err := executeAGWCTL(t, "gateway", command)
+		if err == nil || !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("gateway %s error=%v, want unknown command", command, err)
+		}
+	}
+}
+
 func TestGatewayACPRouteCommands(t *testing.T) {
+	t.Skip("M5 replaces ACP routes with agent-route")
 	var deleteCalled atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -206,7 +216,6 @@ func TestGatewayACPRouteCommands(t *testing.T) {
 
 func TestGatewayACPRuntimeCommands(t *testing.T) {
 	var closeCalled atomic.Bool
-	var permissionBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/admin/auth/login":
@@ -233,18 +242,12 @@ func TestGatewayACPRuntimeCommands(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"items": []map[string]any{{"scope": "codex-main\x00/tmp\x00t1\x00\x00"}},
 			})
-		case "/admin/acp/runtime/threads/codex-main/t1":
+		case "/admin/acp/runtime/agents/codex-main/threads/t1":
 			if r.Method != http.MethodDelete {
 				t.Fatalf("unexpected method: %s", r.Method)
 			}
 			closeCalled.Store(true)
 			_ = json.NewEncoder(w).Encode(map[string]any{"closed": 1})
-		case "/admin/acp/runtime/permissions/perm-1":
-			if r.Method != http.MethodPost {
-				t.Fatalf("unexpected method: %s", r.Method)
-			}
-			permissionBody, _ = io.ReadAll(r.Body)
-			_ = json.NewEncoder(w).Encode(map[string]any{"status": "resolved"})
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
@@ -286,31 +289,4 @@ func TestGatewayACPRuntimeCommands(t *testing.T) {
 		t.Fatalf("stdout missing closed status:\n%s", stdout)
 	}
 
-	_, stderr, err = executeAGWCTL(t, append([]string{"--output", "json"}, gatewayArgs(
-		"acp-runtime", "resolve-permission", "perm-1",
-		"--outcome", "selected",
-		"--option-id", "allow-once",
-	)...)...)
-	if err != nil {
-		t.Fatalf("gateway acp-runtime resolve-permission: %v\nstderr=%s", err, stderr)
-	}
-	var decision struct {
-		RequestID string `json:"request_id"`
-		Outcome   string `json:"outcome"`
-		OptionID  string `json:"option_id"`
-	}
-	if err := json.Unmarshal(permissionBody, &decision); err != nil {
-		t.Fatalf("decode permission body: %v\nbody=%s", err, permissionBody)
-	}
-	if decision.RequestID != "perm-1" || decision.Outcome != "selected" || decision.OptionID != "allow-once" {
-		t.Fatalf("permission decision = %+v, want perm-1/selected/allow-once", decision)
-	}
-
-	// Package-level flag vars persist across executeAGWCTL calls in one test
-	// process; reset to simulate a fresh invocation without --outcome.
-	gatewayACPPermissionOutcome = ""
-	_, _, err = executeAGWCTL(t, gatewayArgs("acp-runtime", "resolve-permission", "perm-1")...)
-	if err == nil || !strings.Contains(err.Error(), "--outcome is required") {
-		t.Fatalf("resolve-permission without outcome: err = %v, want --outcome required", err)
-	}
 }

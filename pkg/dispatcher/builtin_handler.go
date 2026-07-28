@@ -21,9 +21,12 @@ import (
 // error). A permission-carrying request resumes a suspended turn on this
 // request's stream (§5.7.7).
 func (h *Handler) dispatchBuiltin(w http.ResponseWriter, r *http.Request, next NextHandler, cfg routecore.AgentRouteConfig) error {
-	if !h.builtinEnabled {
-		return serveNextOrNotFound(next, w, r)
-	}
+	return serveNextOrNotFound(next, w, r)
+}
+
+// dispatchBuiltinRemoved is retained as dead source until the M7 physical
+// cleanup. No dispatcher or public configuration path can call it after M5.
+func (h *Handler) dispatchBuiltinRemoved(w http.ResponseWriter, r *http.Request, next NextHandler, cfg routecore.AgentRouteConfig) error {
 	routeResolver := h.gateway.BuiltinRouteResolver()
 	if routeResolver == nil {
 		return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusServiceUnavailable, w, r, "resolve builtin route", "builtin route resolver is not configured", fmt.Errorf("builtin route resolver is not configured"))

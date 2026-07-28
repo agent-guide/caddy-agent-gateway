@@ -13,7 +13,6 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	baseacp "github.com/agent-guide/agent-gateway/pkg/acp"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi/runtimeapitest"
@@ -238,10 +237,8 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	}
 
 	// Changing runtime.type keeps the route id, URL, and VirtualKey allowlist:
-	// the same request now selects the ACP backend. The bound service is not
-	// present in the store, so the canonical snapshot has no entry and dispatch
-	// fails with the ACP backend's backend_unavailable — proving backend
-	// selection switched without touching the route or key.
+	// the same request now selects the ACP backend using inline runtime config,
+	// without touching the route or key.
 	if err := gw.AgentManager().Update(ctx, "unified", agentpkg.Agent{
 		ID:      "unified",
 		Name:    "Unified",
@@ -249,8 +246,8 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("switch runtime type: %v", err)
 	}
-	if rec := turn(`{"input":"hello","options":{"version":"v1","runtime":{"thread_id":"t1"}}}`); rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("acp-runtime turn status = %d body = %q, want 503 backend_unavailable", rec.Code, rec.Body.String())
+	if rec := turn(`{"input":"hello","options":{"version":"v1","runtime":{"thread_id":"t1"}}}`); rec.Code != http.StatusBadGateway {
+		t.Fatalf("acp-runtime turn status = %d body = %q, want 502 from unavailable test adapter", rec.Code, rec.Body.String())
 	}
 
 	// An identity-only runtime (http) persists and routes, but dispatch fails
@@ -279,16 +276,13 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 		t.Fatalf("disabled turn status = %d, want 400 agent_disabled", rec.Code)
 	}
 
-	// Deleting the Agent leaves the route persisted; dispatch reports 404.
-	if err := gw.AgentManager().Delete(ctx, "unified"); err != nil {
-		t.Fatalf("delete agent: %v", err)
-	}
-	if rec := turn(`{"input":"hello"}`); rec.Code != http.StatusNotFound {
-		t.Fatalf("deleted-target turn status = %d, want 404 agent_not_found", rec.Code)
+	// An Agent targeted by an AgentRoute cannot be deleted.
+	if err := gw.AgentManager().Delete(ctx, "unified"); err == nil {
+		t.Fatal("delete targeted agent succeeded, want conflict")
 	}
 
 	// With agent dispatch disabled, kind=agent routes pass through untouched.
-	disabledHandler := NewHandler(gw, nil, zap.NewNop(), HandlerOptions{EnableBuiltin: true})
+	disabledHandler := NewHandler(gw, nil, zap.NewNop(), HandlerOptions{})
 	reqDisabled := httptest.NewRequest(http.MethodPost, "/agents/unified/turn", strings.NewReader(`{"input":"hello"}`))
 	reqDisabled.Header.Set("Authorization", "Bearer vk-secret")
 	recDisabled := httptest.NewRecorder()
@@ -354,16 +348,12 @@ func TestDispatchAgentRouteACPTurnSuccess(t *testing.T) {
 	}
 
 	cwd := t.TempDir()
-	service := acpservice.ServiceConfig{
-		ID: "svc-acp", Name: "ACP", AgentType: baseacp.AgentTypeOpencode,
-		CWD: cwd, AllowedRoots: []string{cwd}, DefaultModel: "model-a",
-	}
-	if err := gw.ACPServiceManager().Create(ctx, service); err != nil {
-		t.Fatalf("create service: %v", err)
-	}
 	if err := gw.AgentManager().Create(ctx, agentpkg.Agent{
 		ID: "acp-agent", Name: "ACP Agent",
-		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{ServiceID: service.ID}},
+		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
+			AgentType: baseacp.AgentTypeOpencode, CWD: cwd,
+			AllowedRoots: []string{cwd}, DefaultModel: "model-a",
+		}},
 	}); err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
@@ -420,7 +410,7 @@ func TestDispatchAgentRouteACPTurnSuccess(t *testing.T) {
 	}
 
 	// The native runtime received the agent_id owner key, the canonical config
-	// translated from the bound service record, and the decoded v1 options.
+	// translated from inline Agent.runtime.acp, and the decoded v1 options.
 	if native.owner != "acp-agent" {
 		t.Fatalf("native owner = %q, want the agent_id owner key", native.owner)
 	}
@@ -480,7 +470,7 @@ func TestDispatchAgentOptionalCapabilitiesAndPreBackendRejections(t *testing.T) 
 	if err := gw.AgentManager().Create(ctx, a); err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
-	createAgentRoute(t, gw, a.ID, "/agents/capable", false)
+	routeID := createAgentRoute(t, gw, a.ID, "/agents/capable", false)
 	handler := NewHandler(gw, nil, zap.NewNop(), HandlerOptions{EnableAgent: true})
 
 	permission := httptest.NewRequest(http.MethodPost, "/agents/capable/permission", strings.NewReader(`{"request_id":" perm-1 ","outcome":" selected ","option_id":" allow "}`))
@@ -538,6 +528,9 @@ func TestDispatchAgentOptionalCapabilitiesAndPreBackendRejections(t *testing.T) 
 		t.Fatalf("disabled status/ServeTurn calls = %d/%d, body = %q", recDisabled.Code, len(fake.TurnCalls()), recDisabled.Body.String())
 	}
 
+	if err := gw.AgentRouteResolver().DeleteConfig(ctx, routeID); err != nil {
+		t.Fatalf("delete targeting route: %v", err)
+	}
 	if err := gw.AgentManager().Delete(ctx, a.ID); err != nil {
 		t.Fatalf("delete agent: %v", err)
 	}

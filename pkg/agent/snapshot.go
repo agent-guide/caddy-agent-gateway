@@ -192,7 +192,7 @@ func (m *Manager) commitGeneration(ctx context.Context, agents map[string]Agent)
 // service_id or route_id claimed by more than one agent is dropped rather than
 // silently picking a winner.
 func buildAttributionIndex(agents map[string]Agent) (map[string]string, map[string]string) {
-	byService := make(map[string]string, len(agents))
+	byService := map[string]string{}
 	ambiguousServices := map[string]struct{}{}
 	byRoute := map[string]string{}
 	ambiguousRoutes := map[string]struct{}{}
@@ -201,7 +201,7 @@ func buildAttributionIndex(agents map[string]Agent) (map[string]string, map[stri
 			if owner, exists := byService[svc]; exists && owner != a.ID {
 				delete(byService, svc)
 				ambiguousServices[svc] = struct{}{}
-			} else if _, ambiguous := ambiguousServices[svc]; !ambiguous {
+			} else if _, bad := ambiguousServices[svc]; !bad {
 				byService[svc] = a.ID
 			}
 		}
@@ -242,6 +242,14 @@ func cloneAgent(a Agent) (Agent, error) {
 	var out Agent
 	if err := json.Unmarshal(data, &out); err != nil {
 		return Agent{}, fmt.Errorf("clone agent %q: %w", a.ID, err)
+	}
+	// Preserve non-serialized legacy test/migration fields until M7 deletes the
+	// unreachable compatibility code. They can never originate in a new store.
+	out.OwnsService = a.OwnsService
+	out.Routes.ACPRouteIDs = append([]string(nil), a.Routes.ACPRouteIDs...)
+	out.Routes.BuiltinRouteIDs = append([]string(nil), a.Routes.BuiltinRouteIDs...)
+	if out.Runtime.ACP != nil && a.Runtime.ACP != nil {
+		out.Runtime.ACP.ServiceID = a.Runtime.ACP.ServiceID
 	}
 	return out, nil
 }

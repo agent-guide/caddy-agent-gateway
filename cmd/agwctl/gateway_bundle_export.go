@@ -41,15 +41,7 @@ func runGatewayExport(ctx context.Context, path string) error {
 	if err != nil {
 		return err
 	}
-	acpServices, err := client.ListACPServices(ctx)
-	if err != nil {
-		return err
-	}
-	acpRoutes, err := client.ListACPRoutes(ctx)
-	if err != nil {
-		return err
-	}
-	builtinRoutes, err := client.ListBuiltinRoutes(ctx)
+	agentRoutes, err := client.ListAgentRoutes(ctx)
 	if err != nil {
 		return err
 	}
@@ -95,14 +87,8 @@ func runGatewayExport(ctx context.Context, path string) error {
 	for _, item := range mcpRoutes {
 		bundle.MCPRoutes = append(bundle.MCPRoutes, item.MCPRouteConfig)
 	}
-	for _, item := range acpServices {
-		bundle.ACPServices = append(bundle.ACPServices, item.ServiceConfig)
-	}
-	for _, item := range acpRoutes {
-		bundle.ACPRoutes = append(bundle.ACPRoutes, item.ACPRouteConfig)
-	}
-	for _, item := range builtinRoutes {
-		bundle.BuiltinRoutes = append(bundle.BuiltinRoutes, item.BuiltinRouteConfig)
+	for _, item := range agentRoutes {
+		bundle.AgentRoutes = append(bundle.AgentRoutes, item.AgentRouteConfig)
 	}
 	for _, item := range agents {
 		bundle.Agents = append(bundle.Agents, item.Agent)
@@ -155,14 +141,8 @@ func sortGatewayBundle(bundle *gatewaybundle.GatewayBundle) {
 	sort.Slice(bundle.MCPRoutes, func(i, j int) bool {
 		return bundle.MCPRoutes[i].ID < bundle.MCPRoutes[j].ID
 	})
-	sort.Slice(bundle.ACPServices, func(i, j int) bool {
-		return bundle.ACPServices[i].ID < bundle.ACPServices[j].ID
-	})
-	sort.Slice(bundle.ACPRoutes, func(i, j int) bool {
-		return bundle.ACPRoutes[i].ID < bundle.ACPRoutes[j].ID
-	})
-	sort.Slice(bundle.BuiltinRoutes, func(i, j int) bool {
-		return bundle.BuiltinRoutes[i].ID < bundle.BuiltinRoutes[j].ID
+	sort.Slice(bundle.AgentRoutes, func(i, j int) bool {
+		return bundle.AgentRoutes[i].ID < bundle.AgentRoutes[j].ID
 	})
 	sort.Slice(bundle.Agents, func(i, j int) bool {
 		return bundle.Agents[i].ID < bundle.Agents[j].ID

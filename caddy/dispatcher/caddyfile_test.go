@@ -20,6 +20,7 @@ func TestParseAgentRouteDispatcher(t *testing.T) {
 		llm_api anthropic
 		llm_api cc
 		mcp
+		agent
 	}
 	`)
 
@@ -47,6 +48,9 @@ func TestParseAgentRouteDispatcher(t *testing.T) {
 	if !dispatcherHandler.EnableMCP {
 		t.Fatal("expected mcp to be enabled")
 	}
+	if !dispatcherHandler.EnableAgent {
+		t.Fatal("expected agent to be enabled")
+	}
 }
 
 func TestAgentRouteDispatcherAdaptUsesHandlerType(t *testing.T) {
@@ -57,6 +61,7 @@ func TestAgentRouteDispatcherAdaptUsesHandlerType(t *testing.T) {
 				llm_api anthropic
 				llm_api cc
 				mcp
+				agent
 			}
 		}
 	`)
@@ -76,6 +81,9 @@ func TestAgentRouteDispatcherAdaptUsesHandlerType(t *testing.T) {
 	}
 	if !strings.Contains(json, `"mcp":true`) {
 		t.Fatalf("adapted config missing mcp flag: %s", json)
+	}
+	if !strings.Contains(json, `"agent":true`) {
+		t.Fatalf("adapted config missing agent flag: %s", json)
 	}
 }
 
@@ -100,5 +108,41 @@ func TestParseAgentRouteDispatcherAllowsMCPOnly(t *testing.T) {
 	}
 	if len(dispatcherHandler.APIHandlersRaw) != 0 {
 		t.Fatalf("api handler count = %d, want 0", len(dispatcherHandler.APIHandlersRaw))
+	}
+}
+
+func TestParseAgentRouteDispatcherAllowsAgentOnly(t *testing.T) {
+	d := caddyfile.NewTestDispenser(`
+	agent_route_dispatcher {
+		agent
+	}
+	`)
+
+	handler, err := parseAgentRouteDispatcher(httpcaddyfile.Helper{Dispenser: d})
+	if err != nil {
+		t.Fatalf("parseAgentRouteDispatcher() error = %v", err)
+	}
+
+	dispatcherHandler, ok := handler.(*AgentRouteDispatcher)
+	if !ok {
+		t.Fatalf("handler type = %T, want *AgentRouteDispatcher", handler)
+	}
+	if !dispatcherHandler.EnableAgent {
+		t.Fatal("expected agent to be enabled")
+	}
+	if dispatcherHandler.EnableMCP || len(dispatcherHandler.APIHandlersRaw) != 0 {
+		t.Fatalf("unexpected non-agent enablement: %#v", dispatcherHandler)
+	}
+}
+
+func TestParseAgentRouteDispatcherRejectsLegacyRuntimeDirectives(t *testing.T) {
+	for _, directive := range []string{"acp", "builtin"} {
+		t.Run(directive, func(t *testing.T) {
+			d := caddyfile.NewTestDispenser("agent_route_dispatcher {\n" + directive + "\n}")
+			_, err := parseAgentRouteDispatcher(httpcaddyfile.Helper{Dispenser: d})
+			if err == nil || !strings.Contains(err.Error(), "unknown subdirective: "+directive) {
+				t.Fatalf("parseAgentRouteDispatcher() error = %v, want unknown legacy subdirective", err)
+			}
+		})
 	}
 }

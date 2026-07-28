@@ -163,8 +163,8 @@ func (c *Client) ListACPRuntimeInFlight(ctx context.Context) ([]ACPInFlightTurn,
 	return resp.Items, nil
 }
 
-func (c *Client) CloseACPThread(ctx context.Context, serviceID, threadID string) (*ACPCloseThreadResponse, error) {
-	path := "/admin/acp/runtime/threads/" + url.PathEscape(serviceID) + "/" + url.PathEscape(threadID)
+func (c *Client) CloseACPThread(ctx context.Context, agentID, threadID string) (*ACPCloseThreadResponse, error) {
+	path := "/admin/acp/runtime/agents/" + url.PathEscape(agentID) + "/threads/" + url.PathEscape(threadID)
 	var resp ACPCloseThreadResponse
 	if err := c.do(ctx, http.MethodDelete, path, nil, &resp, true, http.StatusOK); err != nil {
 		return nil, err

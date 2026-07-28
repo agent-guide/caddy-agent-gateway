@@ -35,20 +35,19 @@ Dispatcher / protocol modules
   - agent_route_dispatcher.llm_apis.anthropic
   - agent_route_dispatcher.llm_apis.cc
   - agent_route_dispatcher with MCP enabled
-  - agent_route_dispatcher with ACP enabled
-  - agent_route_dispatcher with builtin enabled
+  - agent_route_dispatcher with unified Agent ingress enabled
   |
   v
 Shared gateway runtime
   - provider loading and resolution
   - authenticator loading
   - config store loading
-  - llmroute, mcproute, acproute, and builtinroute registries
+  - llmroute, mcproute, and agentroute registries
   - virtual key lookup
   - credential and auth managers
   - MCP runtime registry
-  - ACP service and runtime managers
-  - agent manager (agent CRUD + route/service → agent attribution index)
+  - Agent-owned ACP runtime/process manager
+  - agent manager (Agent CRUD + immutable definition snapshot)
   - builtin ADK host (in-process materialization of builtin-runtime agents)
   - usage event pipeline (typed llm/mcp/acp/builtin events, spans, optional OTLP export)
   |
@@ -140,8 +139,7 @@ Today it exposes working endpoints for:
 - LLM route CRUD
 - MCP service CRUD
 - MCP route CRUD
-- ACP service CRUD
-- ACP route CRUD
+- unified Agent route CRUD
 - virtual key CRUD
 - credential list/get/delete
 - async CLI login and login status
@@ -222,8 +220,8 @@ It persists:
 - managed model overlays
 - MCP service definitions
 - MCP route definitions
-- ACP service definitions
-- ACP route definitions
+- Agent definitions (including inline ACP runtime config)
+- unified Agent route definitions
 
 SQLite is the only storage backend that is provisioned end-to-end today.
 
@@ -244,18 +242,18 @@ Current status:
   - `streamable_http` is the active upstream transport path today
   - `stdio` and `sse` code exist but are not yet equally integrated
 - `pkg/acp/`
-  - service config, runtime turn request/event types, agent SPI, stdio JSON-RPC transport, activity tracking, and Admin/dispatcher integration are active
+  - Agent-owned runtime config, turn request/event types, agent SPI, stdio JSON-RPC transport, activity tracking, and Admin/dispatcher integration are active
   - first-version service config allows only `codex` and `opencode`
   - `opencode` uses the fixed `opencode acp --cwd <cwd>` stdio process shape
   - `codex` uses the fixed external ACP adapter binary `codex-acp` by default; it does not launch `codex acp`
   - the runtime driver handles `initialize`, `session/new`, `session/load`, `session/prompt`, full `session/update` parsing (`pkg/acp/runtime/acpupdate`: text, reasoning, tool calls, plan, usage, available commands, session info, mode, config options), route-scoped and Admin `session/list` and transcript replay (`session/load` over a transient connection) after ACP capability checking, model selection and `config_overrides` via `session/set_config_option`, and spec-correct fail-closed permission replies with an off-loop timeout
   - each pooled instance caches the latest session metadata (config options, slash commands, title, mode, usage) from a lifetime updates subscription; the cache is replayed as snapshot events at every turn start and exposed through the runtime Admin inspection
   - runtime hardening: `PATH` preflight, stderr capture, a setup-handshake timeout, an idle janitor, dead-instance eviction, `fresh_session`, scope rebind (a session-addressed turn adopts the thread's live instance instead of spawning a second process), and `CloseScope`/`CloseThread` teardown
-  - permission modes `deny`/`auto_approve`/`interactive`: interactive requests stream as `permission` SSE events and resolve through `POST /<acp-route>/permission` or `POST /admin/acp/runtime/permissions/{request_id}`, failing closed on timeout
+  - permission modes `deny`/`auto_approve`/`interactive`: interactive requests follow the runtime capability's advertised continuation mode and common Agent permission controls
   - verified end to end against the real `opencode acp` and `codex-acp` binaries (deterministic full-lifecycle and interactive-permission integration tests plus gated real-agent handshake, session-lifecycle, and prompt-level real-model smokes); crash retry and the codex app-server bridge (v2) are deferred, and codex stable-session id resolution is a verified non-gap for v1 (the driver seams for v2 are wired)
 - `pkg/agent/`
-  - the external agent control plane (P0 + P1 implemented): the `Agent` model, the `agents` config store, a manager with CRUD, the one-runtime-one-agent and route-consistency rules, and the in-memory route/service → agent attribution index
-  - `pkg/agent/builtin/` is the in-process eino ADK host for `runtime.type = "builtin"` agents (PB1): it materializes a definition into an ADK object graph, serves `POST /<builtin-route>/turn` with SSE, gates MCP tools behind interactive permissions via ADK checkpoint interrupt/resume, and supports operator force/graceful cancel of in-flight (or stuck) turns via the ADK Runner cancel primitive (`/admin/builtin/runtime` in-flight list + turn cancel); see [../design/builtin-agent-runtime.md](../design/builtin-agent-runtime.md)
+  - the external agent control plane: the `Agent` model, `agents` store, unified `AgentRoute.agent_id` ingress, and runtime-neutral capability APIs
+  - `pkg/agent/builtin/` is the in-process eino ADK host for `runtime.type = "builtin"` agents and executes behind the same AgentRoute contract as ACP
   - composes the protocol subsystems and observes them; the protocol packages do not depend on it
   - the legacy `pkg/llm/agent` LLM-native orchestrator has been removed, per the external-control-plane direction; see [../design/agents-control-plane.md](../design/agents-control-plane.md)
 - `pkg/llm/memory/`
@@ -518,25 +516,21 @@ The MCP and memory packages are structured as internal subsystem boundaries. The
 
 The agent direction is different and is intentionally **not** an internal execution mode inside `pkg/llm`. A first-class `agents` layer (`pkg/agent`) becomes an **external control plane** that composes the LLM, MCP, ACP, and metrics subsystems: it manages agent identities and their runtime-specific configuration, governs the resources they may use, and observes their sessions, usage, and call chains. It does not own an agent's internal reasoning loop. The legacy `pkg/llm/agent` orchestrator is removed rather than expanded. This supersedes the earlier "agent orchestration becomes an execution mode" direction. See [Agent Control Plane](../design/agents-control-plane.md).
 
-The current execution boundary for Agent-bound ACP and builtin turns is one
+The execution boundary for ACP and builtin turns is one
 turn-first `runtimeapi.Backend` layer registered by `AgentGateway`. The
-gateway-owned adapters translate the legacy ACPRoute/BuiltinRoute request and
-event shapes, bridge common identities into usage dimensions, and execute
-through one run sequencer; unbound legacy ACP traffic deliberately remains on
-the native path until migration rejects it. ACPRoute and BuiltinRoute ingress
-remains authoritative until the breaking cutover to one
-`AgentRoute.agent_id` relationship. HTTP remains non-executable. Workflow
+gateway-owned adapters execute through one run sequencer behind a unified
+`AgentRoute.agent_id` relationship. There is no unbound ACP ingress or
+runtime-specific public route family. HTTP remains non-executable. Workflow
 `agent` tasks will call the same backend while the Workflow Runner exclusively
 owns durable run/task state, retry, scheduling, and DAG semantics. See
 [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md) and
 [Unified Workflow Runtime](../design/workflow-runtime.md).
 
-That cutover also removes ACP service as a first-class product/config object.
+ACP service is no longer a first-class product/config object.
 An ACP Agent owns its execution config under `Agent.runtime.acp`, and
 `agent_id` directly owns the ACP process pool, sessions, permissions, runtime
-diagnostics, and attribution. The current `acp_services` store and
-`/admin/acp/services` APIs remain current behavior only until that milestone;
-native `/admin/acp/runtime` diagnostics remain but become Agent-keyed.
+diagnostics, and attribution. Native `/admin/acp/runtime` diagnostics remain
+Agent-keyed.
 
 Those boundaries are already visible in code, but they should still be treated as evolving.
 
@@ -577,11 +571,8 @@ The most coherent next steps for the architecture are:
 - extend MCP runtime beyond the current Streamable HTTP and request-scoped cancellation model
 - include MCP objects in bundle/export/apply flows
 - finish the missing admin handlers for memory
-- implement the turn-first
-  [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md)
-  capability foundation, then replace runtime-specific Agent ingress with one
-  AgentRoute and fold ACP service config into `Agent.runtime.acp` in a breaking
-  cutover
+- complete the observability and source-deletion follow-ups after the unified
+  AgentRoute/Agent-owned ACP configuration cutover
 - implement the [Unified Workflow Runtime](../design/workflow-runtime.md) for
   request-bound LLM/MCP composition, durable Agent Tasks, scheduling, and
   multi-agent DAGs, integrated with the implemented P0 + P1

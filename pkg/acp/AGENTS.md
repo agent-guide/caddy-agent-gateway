@@ -65,10 +65,7 @@ status belong in `docs/architecture/acp-architecture.md`.
   window, and native bind must send `session/cancel` before allowing the prompt
   loop to start. The common bulk-cancel path uses bounded retry for backends
   that cannot persist this pending state.
-- Agent-bound permission decisions are claimed by the common Agent permission
+- ACP Agent permission decisions are claimed by the common Agent permission
   broker before the ACP waiter is resolved. The native waiter is continuation
-  state only. Unbound legacy ACP route and Admin decisions remain on the native
-  permission registry and are outside the common broker's atomic-winner/audit
-  guarantee; this is the temporary exception until route cutover removes it.
-  Agent-bound common records retain only an opaque continuation token; raw ACP
+  state only. Common records retain only an opaque continuation token; raw ACP
   permission params and the native request id remain in the ACP-owned store.

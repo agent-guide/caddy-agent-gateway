@@ -2,8 +2,8 @@
 // (docs/plans/unified-agent-runtime.md §6). An AgentRoute targets a stable
 // agent_id; the resolved Agent's runtime.type selects the execution backend,
 // so changing an Agent's runtime never changes its route, URL, or VirtualKey
-// allowlist. During M4 the route is exercised internally (tests/fixtures)
-// before its Admin/bundle surface is exposed in M5.
+// allowlist. M5 exposes this model through Admin, CLI, bundles, Caddy, and the
+// standalone dispatcher.
 package agentroute
 
 import (

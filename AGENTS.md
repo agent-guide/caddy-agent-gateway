@@ -12,7 +12,7 @@ The current primary LLM path is:
 5. in logical-model routes, the model catalog resolves the logical model to one concrete `(provider_id, upstream_model)` binding
 6. the selected provider executes `Generate` or `Stream`
 
-MCP is also active now through `agent_route_dispatcher` with MCP enabled, `pkg/gateway/mcproute`, `pkg/mcp/service`, and MCP Admin APIs. ACP is being implemented natively through `pkg/acp`, `pkg/gateway/acproute`, dispatcher turn handling, and ACP Admin APIs. The builtin agent runtime is active: agents with `runtime.type = "builtin"` are persisted definitions materialized by the in-process eino ADK host (`pkg/agent/builtin`) and exposed through builtin routes (`pkg/gateway/builtinroute`, dispatcher `builtin` enablement, `POST /<builtin-route>/turn` SSE). Metrics now persist LLM/MCP/ACP/builtin usage events (with optional `agent_id` attribution) and expose Admin summaries/events. The agent control plane is active through `pkg/agent`, the `agents` config store, and `/admin/agents` Admin APIs (P0 + P1 + PB1). Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
+MCP is active through `agent_route_dispatcher` with MCP enabled. ACP and builtin execution now enter through unified `kind=agent` routes (`pkg/gateway/agentroute`, dispatcher `agent` enablement, `POST /<agent-route>/turn` SSE); the target Agent's `runtime.type` selects the registered backend. ACP execution config is owned inline by `Agent.runtime.acp`, while builtin definitions are materialized by the in-process eino ADK host. The agent control plane is exposed through `/admin/agents` and `/admin/agents/routes`. Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
 
 ## Product Site
 
@@ -88,7 +88,7 @@ Resolves the matching route, selects the route `protocol`, rewrites the path
 by removing the route `path_prefix`, validates the VirtualKey, prepares the
 provider payload, resolves the logical model or direct provider target
 (rewriting the provider-facing model for logical-model routes), and invokes
-the LLM protocol handler. With `mcp`, `acp`, or `builtin` enabled it also
+the LLM protocol handler. With `mcp` or `agent` enabled it also
 resolves those route kinds and dispatches to `pkg/mcp/service` or the
 registered `runtimeapi` ACP/builtin adapters, tracks in-flight turns, and
 stamps Agent identity on the interaction span. Subsystem detail:
@@ -133,12 +133,12 @@ Read the applicable subsystem file before changing either its runtime package
 or a cross-cutting adapter for it (for example `caddy/admin`,
 `caddy/dispatcher`, `standalone/server`, `pkg/gatewaybundle`, or `cmd/agwctl`):
 
-- `pkg/gateway/` — runtime route/VirtualKey/provider resolution (`AgentGateway`) and the route-model packages (`llmroute`, `modelcatalog`, `mcproute`, `acproute`, `builtinroute`, `agentroute` (unified `kind=agent` ingress, internal until the unified-agent-runtime M5 cutover), `virtualkey`) → `pkg/gateway/AGENTS.md`
+- `pkg/gateway/` — runtime route/VirtualKey/provider resolution (`AgentGateway`) and the public route-model packages (`llmroute`, `modelcatalog`, `mcproute`, `agentroute`; `acproute`/`builtinroute` remain only as legacy source pending M7 deletion, `virtualkey`) → `pkg/gateway/AGENTS.md`
 - `pkg/acp/` — native ACP runtime (`codex`, `opencode`): pooling, sessions, permissions, transcripts → `pkg/acp/AGENTS.md`
 - `pkg/llm/` — provider interface/registry, built-in providers, the `einomodel` eino bridge, `credentialmgr` → `pkg/llm/AGENTS.md`
 - `pkg/mcp/` — MCP service runtime and the `einotool` eino bridge → `pkg/mcp/AGENTS.md`
 - `pkg/cliauth/` — CLI auth authenticators and refresh → `pkg/cliauth/AGENTS.md`
-- `pkg/configstore/` — generic config store/backends (persisted backend: `sqlite`; stores `providers`, `credentials`, `routes`, `mcp_services`, `acp_services`, `agents`, `virtual_keys`, `managed_models`) → `pkg/configstore/AGENTS.md`
+- `pkg/configstore/` — generic config store/backends (persisted backend: `sqlite`; stores `providers`, `credentials`, `routes`, `mcp_services`, `agents`, `virtual_keys`, `managed_models`) → `pkg/configstore/AGENTS.md`
 - `pkg/agent/` — agent control plane (`runtimeapi` contracts, `Agent` model, route/service → agent index) → `pkg/agent/AGENTS.md`; builtin eino ADK host → `pkg/agent/builtin/AGENTS.md`
 - `internal/observability/` — usage events, event pipeline, OTLP export, `einotap` → `internal/observability/AGENTS.md`
 - `pkg/dispatcher/llmapi/` — LLM protocol handler runtimes; see "Protocol handler modules" above
@@ -178,8 +178,8 @@ Important current directives:
 
 - `provider_types` is startup-only provider type availability; when omitted all registered provider types are enabled
 - providers use `provider_type <name>`
-- LLM routes use `protocol <openai|anthropic|cc>`, MCP routes use `protocol mcp`, ACP routes use `protocol acp`, and builtin routes use `protocol builtin`
-- `agent_route_dispatcher` uses `llm_api <name>` for LLM protocol handlers, `mcp` to enable MCP protocol handling, `acp` to enable ACP turn handling, and `builtin` to enable builtin-agent turn handling
+- LLM routes use `protocol <openai|anthropic|cc>`, MCP routes use `protocol mcp`, and Agent ingress routes use `protocol agent`
+- `agent_route_dispatcher` uses `llm_api <name>`, `mcp`, and `agent`
 - auth uses `virtualkey`, not `local_api_key`
 
 ## Admin API Notes
@@ -190,9 +190,9 @@ Implemented families:
 - `/admin/virtual_keys/...`, `/admin/credentials/...`
 - CLI auth: `/admin/cliauth/authenticators/...`, `/admin/cliauth/refresher/...`, `/admin/cliauth/logins/...` (configure and trigger authenticators; logins bind one `provider_id` plus an optional credential scope)
 - MCP: `/admin/mcp/services/...`, `/admin/mcp/routes/...`, `/admin/mcp/runtime/...` (discovery, execution, dispatcher runtime inspection)
-- ACP: `/admin/acp/services/...`, `/admin/acp/routes/...`, `/admin/acp/runtime/...`
-- builtin: `/admin/builtin/routes/...`; `/admin/builtin/runtime` (host materializations, pending interactive tool permissions, and in-flight turns; permission decisions flow through the data-plane resume); `/admin/builtin/runtime/inflight`; `DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}?mode=force|graceful` (operator force/graceful cancel, `docs/design/builtin-agent-runtime.md` §10)
-- agents: `/admin/agents/...` (CRUD; `/{id}/workspace`, activity/usage/interactions/resources/health; `/{id}/capabilities`; exact-run list/cancel; one-shot permission list/decision; capability-gated session/transcript reads; the workspace includes the common runtime summary/capabilities plus intact ACP/builtin detail)
+- ACP: `/admin/acp/runtime/...` (native diagnostics keyed by `agent_id`)
+- builtin: `/admin/builtin/runtime/...`
+- agents: `/admin/agents/...` plus unified route CRUD under `/admin/agents/routes`
 - metrics: summaries (with pipeline health counters), per-protocol LLM/MCP/ACP timeseries and breakdowns, recent interaction events, and the Prometheus exposition endpoint `GET /admin/metrics/prometheus`
 
 Stubbed families currently return `501 Not Implemented`:

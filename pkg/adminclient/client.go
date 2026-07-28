@@ -153,6 +153,20 @@ func (c *Client) do(ctx context.Context, method, path string, reqBody any, out a
 	return nil
 }
 
+func withoutManagedTimestamps(value any) (map[string]any, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal config write request: %w", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return nil, fmt.Errorf("decode config write request: %w", err)
+	}
+	delete(body, "created_at")
+	delete(body, "updated_at")
+	return body, nil
+}
+
 func (c *Client) applyAuth(req *http.Request) error {
 	if c == nil {
 		return fmt.Errorf("admin client is nil")

@@ -10,20 +10,10 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 )
 
-// ACPRouteServiceLookup resolves an ACP route id to its backing service id. The
-// agent manager uses it to enforce that an agent's acp_route_ids all point at
-// the agent's runtime service. It is optional; when nil the consistency check
-// is skipped (the manager still enforces service_id uniqueness).
-type ACPRouteServiceLookup interface {
-	ACPRouteServiceID(ctx context.Context, routeID string) (string, error)
-}
-
-// BuiltinRouteAgentLookup resolves a builtin route id to the agent id the route
-// targets. Optional companion to ACPRouteServiceLookup: when the wired route
-// lookup also implements it, the manager enforces that an agent's
-// builtin_route_ids all target that agent.
-type BuiltinRouteAgentLookup interface {
-	BuiltinRouteAgentID(ctx context.Context, routeID string) (string, error)
+// AgentRouteLookup resolves unified ingress routes that target an Agent. It is
+// used to prevent deleting a definition while a route still references it.
+type AgentRouteLookup interface {
+	AgentRouteIDsForAgent(ctx context.Context, agentID string) ([]string, error)
 }
 
 // Manager owns agent CRUD, the deep-cloned definition snapshot used by
@@ -32,7 +22,7 @@ type BuiltinRouteAgentLookup interface {
 // mutation and never read from the config store on the hot path.
 type Manager struct {
 	store       configstore.ConfigStore
-	routeLookup ACPRouteServiceLookup
+	routeLookup AgentRouteLookup
 
 	// writeMu serializes the validate -> prospective-generation ->
 	// store-write -> generation-commit sequence so the P0
@@ -50,8 +40,10 @@ type Manager struct {
 	generation     uint64
 	listeners      []DefinitionListener
 
-	mu        sync.RWMutex
-	byService map[string]string // acp service id -> agent id
+	mu sync.RWMutex
+	// byService is the legacy ACP service id -> Agent id attribution index
+	// retained only until the M7 source cleanup.
+	byService map[string]string
 	byRoute   map[string]string // route id -> agent id
 }
 
@@ -64,9 +56,8 @@ func NewManager(store configstore.ConfigStore) *Manager {
 	}
 }
 
-// SetRouteLookup wires the optional ACP route -> service resolver used for the
-// acp_route_ids consistency check.
-func (m *Manager) SetRouteLookup(lookup ACPRouteServiceLookup) {
+// SetRouteLookup wires the optional unified AgentRoute reference lookup.
+func (m *Manager) SetRouteLookup(lookup AgentRouteLookup) {
 	if m == nil {
 		return
 	}
@@ -125,12 +116,6 @@ func (m *Manager) Create(ctx context.Context, a Agent) error {
 	if err := m.checkRouteUniqueness(ctx, a, ""); err != nil {
 		return err
 	}
-	if err := m.checkRouteConsistency(ctx, a); err != nil {
-		return err
-	}
-	// No auto-created service write path ships yet, so clients cannot assert
-	// provenance on create. Preserve this only through update of an existing
-	// server-owned value.
 	a.OwnsService = false
 	a.NormalizeTimestamps(time.Now().UTC())
 	cloned, err := cloneAgent(a)
@@ -176,9 +161,6 @@ func (m *Manager) Update(ctx context.Context, id string, a Agent) error {
 	if err := m.checkRouteUniqueness(ctx, a, id); err != nil {
 		return err
 	}
-	if err := m.checkRouteConsistency(ctx, a); err != nil {
-		return err
-	}
 	a.NormalizeTimestamps(time.Now().UTC())
 	cloned, err := cloneAgent(a)
 	if err != nil {
@@ -197,31 +179,8 @@ func (m *Manager) Update(ctx context.Context, id string, a Agent) error {
 	return nil
 }
 
-func (m *Manager) Delete(ctx context.Context, id string) error {
-	if id == "" {
-		return fmt.Errorf("id is required")
-	}
-	if m == nil || m.store == nil {
-		return ErrAgentNotConfigured
-	}
-	m.writeMu.Lock()
-	defer m.writeMu.Unlock()
-	prospective, err := m.prospectiveGeneration(ctx, func(gen map[string]Agent) {
-		delete(gen, id)
-	})
-	if err != nil {
-		return err
-	}
-	if err := m.store.Delete(ctx, id); err != nil {
-		return err
-	}
-	m.commitGeneration(ctx, prospective)
-	return nil
-}
-
-// checkServiceUniqueness enforces the P0 one-runtime-one-agent rule: a given ACP
-// service_id is bound by at most one agent. excludeID is the agent being updated
-// (so it does not collide with itself).
+// checkServiceUniqueness is retained for the unreachable pre-M5 service_id
+// adapter source and will be deleted with that source in M7.
 func (m *Manager) checkServiceUniqueness(ctx context.Context, a Agent, excludeID string) error {
 	serviceID := a.ACPServiceID()
 	if serviceID == "" {
@@ -232,13 +191,41 @@ func (m *Manager) checkServiceUniqueness(ctx context.Context, a Agent, excludeID
 		return err
 	}
 	for _, other := range existing {
-		if other.ID == excludeID || other.ID == a.ID {
-			continue
-		}
-		if other.ACPServiceID() == serviceID {
+		if other.ID != excludeID && other.ID != a.ID && other.ACPServiceID() == serviceID {
 			return fmt.Errorf("acp service %q is already bound by agent %q", serviceID, other.ID)
 		}
 	}
+	return nil
+}
+
+func (m *Manager) Delete(ctx context.Context, id string) error {
+	if id == "" {
+		return fmt.Errorf("id is required")
+	}
+	if m == nil || m.store == nil {
+		return ErrAgentNotConfigured
+	}
+	m.writeMu.Lock()
+	defer m.writeMu.Unlock()
+	if m.routeLookup != nil {
+		routeIDs, err := m.routeLookup.AgentRouteIDsForAgent(ctx, id)
+		if err != nil {
+			return fmt.Errorf("check agent route references: %w", err)
+		}
+		if len(routeIDs) > 0 {
+			return fmt.Errorf("%w: agent %q is targeted by agent route %q", ErrAgentRouteTarget, id, routeIDs[0])
+		}
+	}
+	prospective, err := m.prospectiveGeneration(ctx, func(gen map[string]Agent) {
+		delete(gen, id)
+	})
+	if err != nil {
+		return err
+	}
+	if err := m.store.Delete(ctx, id); err != nil {
+		return err
+	}
+	m.commitGeneration(ctx, prospective)
 	return nil
 }
 
@@ -270,36 +257,6 @@ func (m *Manager) checkRouteUniqueness(ctx context.Context, a Agent, excludeID s
 // checkRouteConsistency enforces that every acp_route_id resolves to the agent's
 // runtime service, and that every builtin_route_id targets this agent. Each
 // check is skipped when the corresponding lookup is not wired.
-func (m *Manager) checkRouteConsistency(ctx context.Context, a Agent) error {
-	if serviceID := a.ACPServiceID(); serviceID != "" && m.routeLookup != nil {
-		for _, routeID := range a.Routes.ACPRouteIDs {
-			routeService, err := m.routeLookup.ACPRouteServiceID(ctx, routeID)
-			if err != nil {
-				return fmt.Errorf("resolve acp route %q: %w", routeID, err)
-			}
-			if routeService != serviceID {
-				return fmt.Errorf("acp route %q targets service %q, not the agent runtime service %q", routeID, routeService, serviceID)
-			}
-		}
-	}
-	if a.Runtime.Type == RuntimeTypeBuiltin && len(a.Routes.BuiltinRouteIDs) > 0 {
-		lookup, ok := m.routeLookup.(BuiltinRouteAgentLookup)
-		if !ok {
-			return nil
-		}
-		for _, routeID := range a.Routes.BuiltinRouteIDs {
-			routeAgent, err := lookup.BuiltinRouteAgentID(ctx, routeID)
-			if err != nil {
-				return fmt.Errorf("resolve builtin route %q: %w", routeID, err)
-			}
-			if routeAgent != a.ID {
-				return fmt.Errorf("builtin route %q targets agent %q, not this agent %q", routeID, routeAgent, a.ID)
-			}
-		}
-	}
-	return nil
-}
-
 // Refresh decodes and deep-clones the complete store result into a fresh
 // definition generation, then commits it atomically. The derived
 // route/service -> agent attribution index is rebuilt as part of the commit.

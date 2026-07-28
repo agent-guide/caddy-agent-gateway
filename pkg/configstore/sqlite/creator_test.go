@@ -58,3 +58,17 @@ func TestBackendForwardsUsageDB(t *testing.T) {
 		t.Fatalf("forwarded UsageDB returned nil")
 	}
 }
+
+func TestOpenEnablesWALJournalMode(t *testing.T) {
+	creator, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/configstore.db"}, nil)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	var mode string
+	if err := creator.db.Raw("PRAGMA journal_mode").Scan(&mode).Error; err != nil {
+		t.Fatalf("query journal mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", mode)
+	}
+}

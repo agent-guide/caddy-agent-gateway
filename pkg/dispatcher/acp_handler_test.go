@@ -253,6 +253,7 @@ func TestACPControlSubrouteContractInventory(t *testing.T) {
 }
 
 func TestDispatchACPBoundAndUnboundMigrationPaths(t *testing.T) {
+	t.Skip("legacy ACP ingress removed by unified Agent runtime M5")
 	ctx := t.Context()
 	backend, err := configstore.OpenBackend(ctx, "sqlite", configstoresqlite.Config{SQLitePath: t.TempDir() + "/config.db"}, nil)
 	if err != nil {
@@ -292,7 +293,7 @@ func TestDispatchACPBoundAndUnboundMigrationPaths(t *testing.T) {
 	if err := gw.ACPRouteResolver().CreateConfig(ctx, routeConfig, "test"); err != nil {
 		t.Fatalf("create route: %v", err)
 	}
-	handler := NewHandler(gw, nil, zap.NewNop(), HandlerOptions{EnableACP: true})
+	handler := NewHandler(gw, nil, zap.NewNop(), HandlerOptions{})
 	body := `{"thread_id":"thread-1","input":"hello"}`
 
 	// Before an Agent owns the route, the sole M2 exception remains native:

@@ -1,6 +1,7 @@
 # Route Schema Reference
 
-This page summarizes the current LLM route shape used by static config, Admin API objects, and runtime resolution.
+This page summarizes the current LLM, MCP, and unified Agent route shapes used
+by static config, Admin API objects, and runtime resolution.
 
 ## Core Route Fields
 
@@ -14,14 +15,13 @@ The current route object includes:
 - `match_policy`
 - `auth_policy`
 - `target_policy`
-- `created_at`
-- `updated_at`
+- `created_at` and `updated_at` (server-managed response fields)
 
 Current route kinds:
 
 - `llm`
 - `mcp`
-- `acp`
+- `agent`
 
 Current route protocols:
 
@@ -29,7 +29,7 @@ Current route protocols:
 - `anthropic`
 - `cc`
 - `mcp`
-- `acp`
+- `agent`
 
 ## `match_policy`
 
@@ -107,24 +107,20 @@ Behavior:
 - supported through dynamic route management and bundle workflows
 - rejected in Caddyfile routes and `agwd --static-config`
 
-### ACP-Service Mode
+### Agent Mode
 
-ACP routes use an ACP service target. The stored route target policy is:
-
-```json
-{
-  "kind": "acp-service",
-  "service_id": "codex-main"
-}
-```
-
-ACP Admin API and bundle objects expose this as top-level `service_id`:
+An AgentRoute targets a stable Agent identity. The Agent's `runtime.type`
+selects ACP, builtin, or a future executable backend without changing the
+route URL, ID, or VirtualKey allowlist:
 
 ```json
 {
-  "service_id": "codex-main",
+  "id": "agent:codex-main:agents-codex",
+  "kind": "agent",
+  "protocol": "agent",
+  "agent_id": "codex-main",
   "match_policy": {
-    "path_prefix": "/acp/codex"
+    "path_prefix": "/agents/codex"
   },
   "auth_policy": {
     "require_virtual_key": true
@@ -132,11 +128,12 @@ ACP Admin API and bundle objects expose this as top-level `service_id`:
 }
 ```
 
-ACP routes normalize to `kind: "acp"` and `protocol: "acp"`. When `id` is
-omitted, it defaults to the deterministic, slash-free `acp:<service_id>:<path-slug>`
+When `id` is omitted, it defaults to the deterministic, slash-free
+`agent:<agent_id>:<path-slug>`
 (the path prefix lowercased, non-alphanumeric runs collapsed to `-`, `/` →
 `root`). Route ids must be slash-free so they are addressable as a single Admin
-API path segment; a slash-bearing id is rejected with `400` on create/update.
+API path segment. Manage these routes through bundle `agentRoutes`,
+`/admin/agents/routes`, or `agwctl gateway agent-route`.
 
 ## Static Config Restrictions
 
@@ -145,6 +142,7 @@ Current static restrictions:
 - Caddyfile LLM routes only support direct-provider mode
 - `agwd --static-config` `llmRoutes` only support direct-provider mode
 - `agwd --static-config` does not support `managedModels`
+- Caddyfile and standalone static bundles accept AgentRoutes targeting Agents
 
 ## Related Docs
 

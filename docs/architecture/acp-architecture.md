@@ -1,229 +1,152 @@
-# ACP Architecture
-
-This document describes the implemented ACP architecture in `agent-gateway`.
-ACP is a first-class gateway route kind beside LLM and MCP. The implementation
-is native to this repository: the gateway owns route resolution, service config,
-VirtualKey auth, the HTTP turn API, Admin CRUD, runtime pooling, event
-normalization, and permission handling. It does not import or vendor ngent code.
-
-The service/route model below is the **current pre-unification implementation**.
-The target breaking architecture is defined by
-[Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md):
-
-```text
-AgentRoute.agent_id
-  -> Agent.runtime.acp
-  -> runtimeapi ACP adapter
-  -> pkg/acp/runtime.Manager(owner=agent_id, config=acp.RuntimeConfig)
-  -> pooled ACP process/session
-```
-
-In that target:
-
-- ACP execution config is stored directly on `Agent.runtime.acp`;
-- `agent_id` keys pools, scopes, sessions, permissions, diagnostics, and usage;
-- `pkg/acp` receives an identity-free runtime config and does not import
-  `pkg/agent`;
-- `acp_services`, `service_id`, ACPRoute, `/admin/acp/services`,
-  `/admin/acp/routes`, and their CLI/bundle surfaces are removed;
-- AgentRoute and Agent capability APIs own ingress, sessions, transcripts,
-  permissions, and logical-run cancellation;
-- `/admin/acp/runtime` remains only for native process/pool diagnosis and
-  recovery, with owner fields expressed as `agent_id`.
-
-The remainder of this document stays in present tense so it remains an accurate
-reference for the code before M4-M7 land.
+# ACP Runtime Architecture
 
 ## Scope
 
-Implemented agent types:
+ACP is the gateway-owned process runtime for Agents such as Codex and
+OpenCode. Since the unified Agent runtime cutover, ACP has no public service or
+route object: process configuration lives inline in `Agent.runtime.acp`, and a
+unified AgentRoute targets the Agent's stable `agent_id`.
 
-- `codex`: launched through the fixed external ACP adapter command `codex-acp`
-  by default.
-- `opencode`: launched as `opencode acp --cwd <cwd>`.
+The removed surfaces include `acp_services`, `service_id`, ACPRoute,
+`/admin/acp/services`, `/admin/acp/routes`, `acpServices`, `acpRoutes`, and the
+matching CLI commands. Legacy source packages remain only until the planned M7
+cleanup and are not registered publicly.
 
-The gateway launches allowlisted per-agent process shapes. ACP service config
-does not expose arbitrary stdio command execution.
+## Components
 
-Deferred work:
+- `pkg/agent.Manager` owns persisted Agent definitions and the immutable
+  in-memory definition snapshot.
+- `pkg/gateway/agentroute` owns unified ingress matching and `agent_id`
+  targeting.
+- `pkg/gateway.ACPBackend` adapts common Agent execution to the native ACP
+  runtime and maintains the canonical `agent_id -> RuntimeConfig` snapshot.
+- `pkg/acp/runtime.Manager` owns process pools, native sessions, permissions,
+  transcripts, and exact-run cancellation.
+- `pkg/agent/runtimeapi` owns common run IDs, event envelopes, capabilities,
+  permission brokering, and normalized errors.
 
-- in-repository Codex app-server bridge (`codex` mode `app_server`)
-- crash retry for failed agent turns
+The dependency direction remains one-way: gateway adapters compose Agent and
+ACP; `pkg/acp` does not depend on `pkg/agent`.
 
-## Runtime Layers
+## Configuration And Publication
 
-ACP is split into three runtime layers:
+Agent create/update/refresh uses the three-stage definition listener protocol:
 
-```text
-HTTP dispatcher/admin
-  -> pkg/gateway/acproute        route config expansion and runtime route model
-  -> pkg/acp/runtime             Manager pool, Instance driver, permissions, transcript replay
-  -> pkg/acp/agentspi            agent SPI and optional capabilities
-  -> pkg/acp/agent/{codex,opencode}
-  -> pkg/acp/transport           JSON-RPC over stdio transport
-```
+1. prepare validates and builds prospective runtime state outside the snapshot
+   lock;
+2. commit atomically publishes the Agent generation and accepted ACP
+   fingerprint;
+3. cleanup retires stale pools and drains obsolete continuation state with a
+   bounded detached context.
 
-The core driver lives in `pkg/acp/runtime` and depends only on the agent SPI.
-Agent packages register factories with `pkg/acp/agentspi` and are linked by the
-main binaries through blank imports. This keeps the dependency direction one-way:
-
-```text
-runtime -> agentspi <- agent/*
-runtime -> transport
-agent/* -> transport
-```
+Any change to `runtime.acp`, disablement, runtime switch, or deletion retires
+instances whose fingerprint no longer matches. Active instances drain; idle
+ones close immediately. The native manager rechecks the accepted owner
+fingerprint before inserting a newly created process, preventing an old
+request from repopulating retired state.
 
 ## Request Flow
 
 ```text
-POST /<acp-route>/turn
-  -> http.handlers.agent_route_dispatcher
-  -> match AgentRouteConfig with protocol acp
-  -> resolve ACPRoute and service_id
-  -> validate VirtualKey when auth_policy.require_virtual_key is true
-  -> rewrite route prefix; accept /turn
-  -> pkg/acp/runtime.Manager.ServeTurn
-  -> select or create a pooled Instance for service/thread/session scope
-  -> Instance initialize/session/new or session/load
-  -> apply model and config overrides through session/set_config_option
-  -> call session/prompt
-  -> normalize session/update notifications into SSE events
+POST /<agent-route>/turn
+  -> dispatcher matches kind=agent route
+  -> validate VirtualKey and Agent rate limit
+  -> resolve AgentRoute.agent_id from memory
+  -> resolve Agent definition from immutable snapshot
+  -> runtime registry selects ACPBackend
+  -> ACPBackend reads the agent_id keyed RuntimeConfig snapshot
+  -> native manager reuses or creates a fingerprint-matching process
+  -> native ACP session/new or session/load + session/prompt
+  -> common Agent SSE envelope
 ```
 
-Permission decisions use the same route prefix:
-
-```text
-POST /<acp-route>/permission
-  -> resolve pending interactive permission request by request_id
-  -> answer the waiting ACP session/request_permission callback
-```
-
-The Admin API has an operator escape hatch at
-`POST /admin/acp/runtime/permissions/{request_id}`.
-
-## Config Model
-
-ACP configuration is split into services and routes.
-
-An ACP service describes one agent backend:
-
-- stable management `id`
-- `agent_type` (`codex` or `opencode`)
-- absolute `cwd`
-- optional `allowed_roots`
-- optional `default_model`
-- optional `config_overrides`
-- optional `idle_ttl`
-- optional `max_instances`
-- `permission_mode` (`deny`, `auto_approve`, or `interactive`)
-- optional `codex` adapter settings
-
-An ACP route exposes one service through the dispatcher:
-
-- `kind: acp`
-- `protocol: acp`
-- `match_policy.path_prefix`
-- `auth_policy.require_virtual_key`
-- target policy kind `acp-service`, expanded as top-level `service_id` in
-  ACP route API and bundle objects
-
-When omitted, ACP route IDs normalize to the deterministic, slash-free form
-(the path prefix lowercased, non-alphanumeric runs collapsed to `-`, `/` → `root`):
-
-```text
-acp:<service_id>:<path-slug>
-```
+The route is independent of the runtime backend. Switching an Agent between
+ACP and builtin does not change its route ID, URL, or VirtualKey allowlist.
 
 ## Pooling And Sessions
 
-The runtime manager keeps an in-memory pool of agent instances keyed by service,
-thread, and session scope.
+Pools are keyed by Agent owner, thread/session scope, adapter, and accepted
+configuration fingerprint. The manager preserves:
 
-Important behavior:
+- dead-instance eviction and idle cleanup;
+- per-Agent instance caps;
+- session rebind to the already-live instance;
+- setup handshake timeouts and stderr capture;
+- `fresh_session` isolation;
+- bounded retirement of stale generations.
 
-- one active turn is allowed per scope
-- `fresh_session: true` forces a new backend session
-- `idle_ttl` reaps idle instances
-- dead instances are evicted before reuse
-- `DELETE /admin/acp/runtime/threads/{service_id}/{thread_id}` closes pooled
-  instances for one thread
-- when a later turn supplies the `session_id` emitted by the first turn, the
-  manager can rebind the thread's live instance instead of spawning a second
-  process
+The common `run_id` is bound to the native ACP instance and protocol session.
+Exact cancellation sends `session/cancel` to only that run. ACP thread close is
+a separate destructive recovery action and must not substitute for ordinary
+run cancellation.
 
-Session metadata is cached per pooled instance and replayed at turn start:
+## Permissions
 
-- config options
-- available commands
-- session info
-- current mode
-- usage
+Interactive permissions are fail-closed. Agent-bound requests are registered
+with the common permission broker before being exposed publicly; the ACP
+runtime retains native payloads and waiter state behind an opaque continuation
+token. Decisions preserve the exact ACP option IDs and are claimed atomically
+before the native waiter is resolved.
 
-The same metadata is visible through `GET /admin/acp/runtime`.
+Public operations are Agent-scoped:
 
-## Events
+```text
+GET  /admin/agents/{agent_id}/permissions
+POST /admin/agents/{agent_id}/permissions/{request_id}
+```
 
-ACP `session/update` notifications are parsed in
-`pkg/acp/runtime/acpupdate` and emitted as SSE events. Implemented event names:
+## Sessions And Transcripts
 
-- `session`
-- `delta`
-- `reasoning`
-- `content`
-- `plan`
-- `tool_call`
-- `usage`
-- `available_commands`
-- `session_info`
-- `mode`
-- `config_options`
-- `permission`
-- `done`
-- `error`
+Consumer reads resolve through the AgentRoute and use its VirtualKey policy:
 
-Structured updates carry the raw ACP update object in `data`. Text updates use
-`text`. Prompt completion emits `done` with `stop_reason` when available.
+```text
+GET /<agent-route>/sessions
+GET /<agent-route>/sessions/{session_id}/transcript
+```
 
-The prompt loop drains briefly after the `session/prompt` result because real
-agents can deliver final message chunks after the result frame.
+Operator reads resolve through the Agent capability layer:
 
-## Permission Model
+```text
+GET /admin/agents/{agent_id}/sessions
+GET /admin/agents/{agent_id}/sessions/{session_id}/transcript
+```
 
-ACP permission behavior is fail-closed.
+The gateway checks advertised native capabilities before list/load and applies
+the optional `cwd` filter only after symlink-canonicalizing both sides.
 
-Modes:
+## Runtime Diagnostics
 
-- `deny`: default; permission requests are cancelled.
-- `auto_approve`: the runtime selects an allow-style option when available.
-- `interactive`: the active turn stream receives a `permission` SSE event with
-  `request_id` and raw ACP params. The client answers through
-  `POST /<acp-route>/permission`, or an operator answers through the Admin API.
+ACP-specific diagnostics and pool recovery remain available without restoring
+a separate config object:
 
-Permission decisions use ACP's nested outcome shape internally:
+```text
+GET    /admin/acp/runtime
+GET    /admin/acp/runtime/inflight
+DELETE /admin/acp/runtime/agents/{agent_id}/threads/{thread_id}
+```
 
-- `outcome: "selected"` with `option_id`
-- `outcome: "cancelled"`
+Common run inspection and cancellation use:
 
-If the stream is gone, no decision arrives before timeout, or the request is
-unknown, the runtime cancels the permission.
+```text
+GET    /admin/agents/{agent_id}/runs
+DELETE /admin/agents/{agent_id}/runs/{run_id}
+```
 
-## Admin And Operations
+## Observability
 
-Admin families:
+The dispatcher opens one interaction span after route and Agent resolution.
+Usage records include the unified route ID/kind, `agent_id`, `runtime_type`,
+common `run_id`, native thread/session dimensions when available, latency,
+outcome, and token/event counts. Provider and MCP activity nested inside a
+builtin Agent follows the same Agent attribution rules.
 
-- `/admin/acp/services`
-- `/admin/acp/routes`
-- `/admin/acp/runtime`
+## Migration Boundary
 
-Operational capabilities:
-
-- service and route CRUD
-- list agent-side sessions
-- replay a transcript through `session/load`
-- inspect in-flight turns
-- inspect pooled instances and pending permissions
-- close all pooled instances for one service/thread
-- resolve an interactive permission request
-
-`agwctl gateway acp-service`, `agwctl gateway acp-route`, and
-`agwctl gateway acp-runtime` wrap these Admin APIs.
+New binaries run a read-only SQLite preflight before normal open. Legacy ACP
+service rows, `kind=acp|builtin` routes, and Agent JSON containing service
+ownership fields fail with `legacy_agent_runtime_config`. Operators export
+with the old binary, run `scripts/migrate-unified-agent-runtime`, apply the
+converted bundle to a clean store, and then switch binaries. The helper embeds
+ACP service config into Agents, converts runtime-specific routes to
+AgentRoutes, rewrites VirtualKey references, removes server timestamps, and
+checks route-ID collisions across all families.

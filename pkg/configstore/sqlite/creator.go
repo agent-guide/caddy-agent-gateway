@@ -37,6 +37,9 @@ func init() {
 }
 
 func Open(ctx context.Context, cfg Config, logger *zap.Logger) (*SQLiteConfigStoreCreator, error) {
+	if err := PreflightLegacyAgentRuntime(ctx, cfg.SQLitePath); err != nil {
+		return nil, err
+	}
 	configstoreBackend := &SQLiteConfigStoreCreator{
 		SQLitePath: cfg.SQLitePath,
 		logger:     logger,
@@ -66,7 +69,7 @@ func (s *SQLiteConfigStoreCreator) Open(_ context.Context) error {
 		_ = f.Close()
 	}
 
-	dsn := fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=60000&_wal_autocheckpoint=1000&_foreign_keys=1", s.SQLitePath)
+	dsn := fmt.Sprintf("%s?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=cache_size(10000)&_pragma=busy_timeout(60000)&_pragma=wal_autocheckpoint(1000)&_pragma=foreign_keys(1)", s.SQLitePath)
 	s.logger.Debug("opening DB with dsn", zap.String("dsn", dsn))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: newGormLogger(*s.logger),

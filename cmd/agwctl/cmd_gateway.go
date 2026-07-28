@@ -47,6 +47,12 @@ var (
 var gatewayCmd = &cobra.Command{
 	Use:   "gateway",
 	Short: "Manage the remote agent-gateway via its admin API",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+		}
+		return cmd.Help()
+	},
 }
 
 var gatewayValidateCmd = &cobra.Command{
@@ -75,9 +81,7 @@ var gatewayValidateCmd = &cobra.Command{
 					"cliauth_authenticators": len(bundle.CLIAuthAuthenticators),
 					"mcp_services":           len(bundle.MCPServices),
 					"mcp_routes":             len(bundle.MCPRoutes),
-					"acp_services":           len(bundle.ACPServices),
-					"acp_routes":             len(bundle.ACPRoutes),
-					"builtin_routes":         len(bundle.BuiltinRoutes),
+					"agent_routes":           len(bundle.AgentRoutes),
 					"agents":                 len(bundle.Agents),
 				},
 			})

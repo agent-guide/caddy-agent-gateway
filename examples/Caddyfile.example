@@ -68,14 +68,9 @@ http://127.0.0.1:8080 {
 		llm_api openai
 		llm_api anthropic
 		llm_api cc
-		# Enable MCP and ACP handling. MCP/ACP services and routes are created
-		# through the Admin API (acp_services store), not in this Caddyfile;
-		# `acp` exposes POST /<acp-route>/turn with SSE for codex/opencode.
+		# Enable MCP and unified Agent handling. Agents and AgentRoutes are created
+		# through the Admin API or gateway bundles.
 		mcp
-		acp
-		# Enable builtin-agent turn ingress: agents with runtime.type = "builtin"
-		# (hosted by the in-process ADK host) are exposed through builtin routes
-		# as POST /<builtin-route>/turn with SSE.
-		builtin
+		agent
 	}
 }

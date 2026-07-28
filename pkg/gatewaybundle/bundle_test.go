@@ -5,9 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	_ "github.com/agent-guide/agent-gateway/pkg/cliauth/authenticator"
 	_ "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/openai"
+	"github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
@@ -304,6 +307,49 @@ func TestEncodeYAMLRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEncodeYAMLOmitsServerManagedTimestamps(t *testing.T) {
+	now := time.Now().UTC()
+	bundle := &GatewayBundle{
+		APIVersion: APIVersionV1Alpha1,
+		Kind:       KindGatewayBundle,
+		AgentRoutes: []agentroute.AgentRouteConfig{{
+			AgentRouteBaseConfig: agentroute.AgentRouteBaseConfig{
+				ID: "agent:a:a", MatchPolicy: agentroute.RouteMatch{PathPrefix: "/a"},
+				CreatedAt: now, UpdatedAt: now,
+			},
+			AgentID: "a",
+		}},
+	}
+	data, err := EncodeYAML(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "created_at") || strings.Contains(string(data), "updated_at") {
+		t.Fatalf("encoded declarative bundle retained managed timestamps:\n%s", data)
+	}
+}
+
+func TestEncodeYAMLPreservesNestedTimestampNamedConfig(t *testing.T) {
+	bundle := &GatewayBundle{
+		APIVersion: APIVersionV1Alpha1,
+		Kind:       KindGatewayBundle,
+		Agents: []agentpkg.Agent{{
+			ID: "a", Name: "A",
+			Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
+				AgentType: "codex", CWD: "/work",
+				ConfigOverrides: map[string]string{"updated_at": "runtime-value"},
+			}},
+		}},
+	}
+	data, err := EncodeYAML(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "updated_at: runtime-value") {
+		t.Fatalf("nested runtime config was stripped:\n%s", data)
+	}
+}
+
 func TestDecodeYAMLRejectsProviderTypes(t *testing.T) {
 	_, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
@@ -357,6 +403,7 @@ cliAuthAuthenticators:
 }
 
 func TestValidateAgentsRejectsDuplicateServiceBinding(t *testing.T) {
+	t.Skip("legacy ACP service bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -390,6 +437,7 @@ agents:
 }
 
 func TestValidateAgentsRejectsDanglingService(t *testing.T) {
+	t.Skip("legacy ACP service bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -484,6 +532,7 @@ agents:
 }
 
 func TestValidateAgentsRejectsACPRouteServiceMismatch(t *testing.T) {
+	t.Skip("legacy ACP route bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -531,6 +580,7 @@ agents:
 }
 
 func TestValidateBuiltinRouteRequiresAgentID(t *testing.T) {
+	t.Skip("legacy builtin route bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -553,6 +603,7 @@ builtinRoutes:
 }
 
 func TestValidateVirtualKeyAllowsBuiltinRouteIDs(t *testing.T) {
+	t.Skip("legacy builtin route bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -576,6 +627,7 @@ virtualKeys:
 }
 
 func TestValidateRejectsCrossFamilyDuplicateRouteIDs(t *testing.T) {
+	t.Skip("legacy builtin route bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -604,6 +656,7 @@ builtinRoutes:
 }
 
 func TestValidateAgentsRejectsBuiltinRouteIDsOnNonBuiltinRuntime(t *testing.T) {
+	t.Skip("legacy builtin route bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -633,6 +686,7 @@ agents:
 }
 
 func TestValidateAgentsRejectsBuiltinRouteAgentMismatch(t *testing.T) {
+	t.Skip("legacy builtin route bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -974,6 +1028,7 @@ llmRoutes:
 }
 
 func TestDecodeYAMLWithACPServicesAndRoutes(t *testing.T) {
+	t.Skip("legacy ACP bundle schema is rejected by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -1017,6 +1072,7 @@ acpRoutes:
 }
 
 func TestValidateACPServiceRequiresValidConfig(t *testing.T) {
+	t.Skip("legacy ACP service bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -1039,6 +1095,7 @@ acpServices:
 }
 
 func TestValidateACPRouteRequiresServiceID(t *testing.T) {
+	t.Skip("legacy ACP route bundle schema removed by M5")
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
@@ -1057,5 +1114,49 @@ acpRoutes:
 	}
 	if !strings.Contains(err.Error(), `acpRoutes["acp-codex"]: service_id is required`) {
 		t.Fatalf("ValidateForConfigStore() error = %v, want service_id required", err)
+	}
+}
+
+func TestValidateUnifiedAgentRouteAndInlineACPConfig(t *testing.T) {
+	bundle, err := DecodeYAML([]byte(`
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+agents:
+  - id: reviewer
+    name: Reviewer
+    runtime:
+      type: acp
+      acp:
+        agent_type: codex
+        cwd: /workspace
+        allowed_roots: [/workspace]
+        permission_mode: deny
+    routes: {}
+    resources: {}
+    policy: {}
+    disabled: false
+agentRoutes:
+  - agent_id: reviewer
+    match_policy: {path_prefix: /agents/reviewer}
+    auth_policy: {require_virtual_key: true}
+virtualKeys:
+  - id: reviewer-key
+    allowed_route_ids: [agent:reviewer:agents-reviewer]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bundle.ValidateForConfigStore(); err != nil {
+		t.Fatal(err)
+	}
+	if got := bundle.AgentRoutes[0].ID; got != "agent:reviewer:agents-reviewer" {
+		t.Fatalf("route id = %q", got)
+	}
+}
+
+func TestDecodeRejectsLegacyAgentRuntimeBundle(t *testing.T) {
+	_, err := DecodeYAML([]byte("apiVersion: gateway.agw/v1alpha1\nkind: GatewayBundle\nacpServices: []\n"))
+	if err == nil || !strings.Contains(err.Error(), "legacy_agent_runtime_config") {
+		t.Fatalf("error = %v", err)
 	}
 }

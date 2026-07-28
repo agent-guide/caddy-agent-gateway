@@ -28,22 +28,15 @@ type NextHandler interface {
 
 // Handler dispatches gateway requests to the route-selected LLM API handler.
 type Handler struct {
-	apiHandlers    map[string]LLMApiHandler
-	gateway        *gateway.AgentGateway
-	logger         *zap.Logger
-	mcpEnabled     bool
-	acpEnabled     bool
-	builtinEnabled bool
-	agentEnabled   bool
+	apiHandlers  map[string]LLMApiHandler
+	gateway      *gateway.AgentGateway
+	logger       *zap.Logger
+	mcpEnabled   bool
+	agentEnabled bool
 }
 
 type HandlerOptions struct {
-	EnableMCP     bool
-	EnableACP     bool
-	EnableBuiltin bool
-	// EnableAgent turns on the unified kind=agent ingress dispatch. It is
-	// internal during M4 (tests/fixtures only); the Caddyfile/standalone
-	// enablement switch arrives with the M5 public cutover.
+	EnableMCP   bool
 	EnableAgent bool
 }
 
@@ -56,21 +49,19 @@ func NewHandler(agentGateway *gateway.AgentGateway, apiHandlers map[string]LLMAp
 		apiHandlers = map[string]LLMApiHandler{}
 	}
 	handler := &Handler{
-		apiHandlers:    apiHandlers,
-		gateway:        agentGateway,
-		logger:         logger,
-		mcpEnabled:     opts.EnableMCP,
-		acpEnabled:     opts.EnableACP,
-		builtinEnabled: opts.EnableBuiltin,
-		agentEnabled:   opts.EnableAgent,
+		apiHandlers:  apiHandlers,
+		gateway:      agentGateway,
+		logger:       logger,
+		mcpEnabled:   opts.EnableMCP,
+		agentEnabled: opts.EnableAgent,
 	}
 	return handler
 }
 
 // Validate verifies the dispatcher has at least one configured ingress protocol handler.
 func (h *Handler) Validate() error {
-	if h == nil || (len(h.apiHandlers) == 0 && !h.mcpEnabled && !h.acpEnabled && !h.builtinEnabled && !h.agentEnabled) {
-		return fmt.Errorf("agent_route_dispatcher requires at least one llm_api, mcp, acp, builtin, or agent")
+	if h == nil || (len(h.apiHandlers) == 0 && !h.mcpEnabled && !h.agentEnabled) {
+		return fmt.Errorf("agent_route_dispatcher requires at least one llm_api, mcp, or agent")
 	}
 	return nil
 }
@@ -210,10 +201,6 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 		return h.dispatchLLM(rec, r, next, cfg)
 	case routecore.RouteKindMCP:
 		return h.dispatchMCP(rec, r, next, cfg)
-	case routecore.RouteKindACP:
-		return h.dispatchACP(rec, r, next, cfg)
-	case routecore.RouteKindBuiltin:
-		return h.dispatchBuiltin(rec, r, next, cfg)
 	case routecore.RouteKindAgent:
 		return h.dispatchAgent(rec, r, next, cfg)
 	default:

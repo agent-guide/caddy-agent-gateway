@@ -25,6 +25,14 @@ import (
 
 type staticACPServices struct{ cfg acpservice.ServiceConfig }
 
+func inlineACPRuntime(cfg acpservice.ServiceConfig) *agent.ACPRuntime {
+	return &agent.ACPRuntime{
+		AgentType: cfg.AgentType, CWD: cfg.CWD, AllowedRoots: append([]string(nil), cfg.AllowedRoots...),
+		DefaultModel: cfg.DefaultModel, Env: cloneStringMap(cfg.Env), ConfigOverrides: cloneStringMap(cfg.ConfigOverrides),
+		IdleTTL: cfg.IdleTTL, MaxInstances: cfg.MaxInstances, PermissionMode: cfg.PermissionMode, Codex: cloneCodexConfig(cfg.Codex),
+	}
+}
+
 func (s staticACPServices) Get(_ context.Context, id string) (acpservice.ServiceConfig, error) {
 	if id != s.cfg.ID {
 		return acpservice.ServiceConfig{}, acpservice.ErrServiceNotConfigured
@@ -78,8 +86,8 @@ func TestACPBackendTranslatesLegacyOptionsIntoIdentityFreeRuntime(t *testing.T) 
 	}
 	native := &captureACPRuntime{t: t}
 	services := &countingACPServiceSource{source: staticACPServices{cfg: service}}
-	backend := NewACPBackend(services, native)
-	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{ServiceID: service.ID}}}
+	backend := NewACPBackend(native)
+	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(service)}}
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	refreshReads := services.gets
 	raw := json.RawMessage(`{"thread_id":"thread-1","cwd":"/workspace/repo","model":"model-b","fresh_session":true,"config_overrides":{"turn":"yes"}}`)
@@ -124,11 +132,12 @@ func TestACPBackendTranslatesLegacyOptionsIntoIdentityFreeRuntime(t *testing.T) 
 	}
 }
 
-// countingACPServiceSource wraps a service source and counts reads so tests
-// can pin that only RefreshRuntimeConfigs touches the store.
+// countingACPServiceSource is a legacy source probe: M5 must never consult it.
 type countingACPServiceSource struct {
-	source acpServiceSource
-	gets   int
+	source interface {
+		Get(context.Context, string) (acpservice.ServiceConfig, error)
+	}
+	gets int
 }
 
 func (s *countingACPServiceSource) Get(ctx context.Context, id string) (acpservice.ServiceConfig, error) {
@@ -139,8 +148,8 @@ func (s *countingACPServiceSource) Get(ctx context.Context, id string) (acpservi
 func TestACPBackendCancelBeforeNativeRegistrationIsRetryable(t *testing.T) {
 	service := acpservice.ServiceConfig{ID: "svc-1", Name: "Service", AgentType: "opencode", CWD: "/workspace", AllowedRoots: []string{"/workspace"}}
 	native := &preNativeRegistrationACPRuntime{entered: make(chan struct{}), release: make(chan struct{})}
-	backend := NewACPBackend(staticACPServices{cfg: service}, native, RuntimeControls{Runs: runtimeapi.NewRunRegistry()})
-	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{ServiceID: service.ID}}}
+	backend := NewACPBackend(native, RuntimeControls{Runs: runtimeapi.NewRunRegistry()})
+	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(service)}}
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	done := make(chan error, 1)
@@ -423,8 +432,8 @@ func (s *countingACPServices) Get(context.Context, string) (acpservice.ServiceCo
 
 func TestACPSummaryAndHealthDoNotReadServiceStore(t *testing.T) {
 	services := &countingACPServices{}
-	backend := NewACPBackend(services, &captureACPRuntime{})
-	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{ServiceID: "svc-1"}}}
+	backend := NewACPBackend(&captureACPRuntime{})
+	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{AgentType: "codex", CWD: "/workspace"}}}
 	if _, err := backend.RuntimeSummary(t.Context(), a); err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +478,7 @@ func TestACPLostContinuationUsesSpecificAuditResult(t *testing.T) {
 	broker := runtimeapi.NewPermissionBroker()
 	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
 	native := &permissionResolverStub{err: acpruntime.ErrPermissionNotFound}
-	backend := NewACPBackend(nil, nil)
+	backend := NewACPBackend(nil)
 	info := runtimeapi.PendingPermission{RequestID: "perm-lost", AgentID: "a1", RuntimeType: agent.RuntimeTypeACP, RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ExpiresAt: time.Now().Add(time.Minute)}
 	backend.storeACPContinuation("cont-lost", acpPermissionContinuation{runtime: native, requestID: info.RequestID})
 	if _, err := broker.Register(info, "cont-lost", backend); err != nil {
@@ -566,7 +575,7 @@ func TestACPPermissionShapeIsValidatedBeforeBrokerClaim(t *testing.T) {
 	broker := runtimeapi.NewPermissionBroker()
 	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
 	native := &permissionResolverStub{}
-	backend := NewACPBackend(nil, nil)
+	backend := NewACPBackend(nil)
 	info := runtimeapi.PendingPermission{
 		RequestID: "perm-acp", AgentID: "a1", RuntimeType: agent.RuntimeTypeACP,
 		RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ExpiresAt: time.Now().Add(time.Minute),
@@ -849,12 +858,11 @@ func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
 		ID: "svc-1", Name: "Service", AgentType: "opencode", CWD: "/workspace",
 		AllowedRoots: []string{"/workspace"}, DefaultModel: "model-a",
 	}
-	services := &mutableACPServices{cfg: service}
 	native := &retireRecordingACPRuntime{captureACPRuntime: captureACPRuntime{t: t}}
 	permissions := runtimeapi.NewPermissionBroker()
 	defer permissions.Close(context.Background())
-	backend := NewACPBackend(services, native, RuntimeControls{Permissions: permissions})
-	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{ServiceID: service.ID}}}
+	backend := NewACPBackend(native, RuntimeControls{Permissions: permissions})
+	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(service)}}
 
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	if len(native.retirements) != 1 {
@@ -865,11 +873,9 @@ func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
 		t.Fatalf("snapshot entry = %+v, err=%v", entry, err)
 	}
 
-	// Mutating the service record without a definition refresh must not
-	// change execution config: there is exactly one config source.
-	changed := service
-	changed.DefaultModel = "model-b"
-	services.set(changed)
+	// Mutating the caller-owned Agent object without a definition refresh must
+	// not alias or change the published snapshot.
+	a.Runtime.ACP.DefaultModel = "model-b"
 	permissionResolver := &expiryRecordingResolver{}
 	if _, err := permissions.Register(runtimeapi.PendingPermission{
 		RequestID: "perm-1", AgentID: a.ID, RuntimeType: agent.RuntimeTypeACP,
@@ -898,9 +904,7 @@ func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
 
 	// Disabled is management state rather than part of RuntimeConfig, but its
 	// transition still retires every Agent-owned instance and rejects execution.
-	disabled := changed
-	disabled.Disabled = true
-	services.set(disabled)
+	a.Disabled = true
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	if _, err := backend.Capabilities(t.Context(), a); !errors.Is(err, runtimeapi.ErrAgentDisabled) {
 		t.Fatalf("disabled capabilities error = %v", err)
@@ -909,9 +913,9 @@ func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
 		t.Fatalf("disabled retirements = %v, want retire-all", native.retirements)
 	}
 
-	// A dangling service remains diagnosable in runtime health while accepting
-	// no owner fingerprint.
-	services.set(acpservice.ServiceConfig{ID: "different-service"})
+	// Invalid inline config remains diagnosable while accepting no fingerprint.
+	a.Disabled = false
+	a.Runtime.ACP = &agent.ACPRuntime{}
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	summary, err := backend.RuntimeSummary(t.Context(), a)
 	if err != nil || summary.Healthy || summary.State != runtimeapi.RuntimeStateUnhealthy || !strings.Contains(string(summary.Details), "config_missing") {

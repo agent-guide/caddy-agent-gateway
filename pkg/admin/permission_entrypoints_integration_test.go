@@ -35,6 +35,7 @@ func (b *countingPermissionBinding) ResolveContinuation(context.Context, string,
 func (*countingPermissionBinding) ExpireContinuation(context.Context, string) error { return nil }
 
 func TestAgentBoundACPPermissionEntryPointsHaveOneAtomicWinner(t *testing.T) {
+	t.Skip("legacy ACP permission entrypoint removed by M5; common Agent permission tests cover the winner contract")
 	ctx := t.Context()
 	backend, err := configstore.OpenBackend(ctx, "sqlite", configstoresqlite.Config{SQLitePath: t.TempDir() + "/config.db"}, nil)
 	if err != nil {
@@ -81,7 +82,7 @@ func TestAgentBoundACPPermissionEntryPointsHaveOneAtomicWinner(t *testing.T) {
 	}
 
 	adminHandler := adminpkg.NewHandler(gw, nil)
-	dispatcherHandler := dispatcherpkg.NewHandler(gw, nil, nil, dispatcherpkg.HandlerOptions{EnableACP: true})
+	dispatcherHandler := dispatcherpkg.NewHandler(gw, nil, nil, dispatcherpkg.HandlerOptions{})
 	type entrypoint struct {
 		name string
 		h    http.Handler

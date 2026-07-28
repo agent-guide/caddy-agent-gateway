@@ -63,6 +63,7 @@ func (s *builtinCaptureSink) Enqueue(v any) bool {
 }
 
 func TestDispatchBuiltinTurnEndToEnd(t *testing.T) {
+	t.Skip("legacy builtin ingress removed by unified Agent runtime M5")
 	ctx := t.Context()
 	backend, err := configstore.OpenBackend(ctx, "sqlite", configstoresqlite.Config{SQLitePath: t.TempDir() + "/config.db"}, nil)
 	if err != nil {
@@ -130,7 +131,7 @@ func TestDispatchBuiltinTurnEndToEnd(t *testing.T) {
 		t.Fatalf("create builtin route: %v", err)
 	}
 
-	handler := NewHandler(gw, nil, zap.NewNop(), HandlerOptions{EnableBuiltin: true})
+	handler := NewHandler(gw, nil, zap.NewNop(), HandlerOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/agents/triage/turn", strings.NewReader(`{"input":"hello"}`))
 	rec := httptest.NewRecorder()
 	if err := handler.Dispatch(rec, req, nil); err != nil {

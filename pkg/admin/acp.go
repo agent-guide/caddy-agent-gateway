@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
@@ -446,9 +447,9 @@ func (h *Handler) handleGetACPRuntime(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = httpjson.Write(w, http.StatusOK, map[string]any{
-		"in_flight":           h.acpRuntimeManager.ListInFlight(),
-		"instances":           h.acpRuntimeManager.ListInstances(),
-		"pending_permissions": h.acpRuntimeManager.ListPendingPermissions(),
+		"in_flight":           acpInFlightViews(h.acpRuntimeManager.ListInFlight()),
+		"instances":           acpInstanceViews(h.acpRuntimeManager.ListInstances()),
+		"pending_permissions": acpPermissionViews(h.acpRuntimeManager.ListPendingPermissions()),
 	})
 }
 
@@ -510,13 +511,50 @@ func (h *Handler) handleListACPInFlight(w http.ResponseWriter, r *http.Request) 
 		_ = httpjson.Error(w, http.StatusServiceUnavailable, "acp runtime manager is not configured")
 		return
 	}
-	_ = httpjson.Write(w, http.StatusOK, map[string]any{"items": h.acpRuntimeManager.ListInFlight()})
+	_ = httpjson.Write(w, http.StatusOK, map[string]any{"items": acpInFlightViews(h.acpRuntimeManager.ListInFlight())})
+}
+
+type acpInFlightView struct {
+	AgentID string `json:"agent_id"`
+	Scope   string `json:"scope"`
+}
+type acpInstanceView struct {
+	AgentID string `json:"agent_id"`
+	acpruntime.PooledInstanceInfo
+}
+type acpPermissionView struct {
+	RequestID string    `json:"request_id"`
+	AgentID   string    `json:"agent_id"`
+	SessionID string    `json:"session_id,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func acpInFlightViews(items []acpruntime.InFlightTurn) []acpInFlightView {
+	out := make([]acpInFlightView, 0, len(items))
+	for _, item := range items {
+		out = append(out, acpInFlightView{AgentID: acpruntime.ScopeServiceID(item.Scope), Scope: item.Scope})
+	}
+	return out
+}
+func acpInstanceViews(items []acpruntime.PooledInstanceInfo) []acpInstanceView {
+	out := make([]acpInstanceView, 0, len(items))
+	for _, item := range items {
+		out = append(out, acpInstanceView{AgentID: acpruntime.ScopeServiceID(item.Scope), PooledInstanceInfo: item})
+	}
+	return out
+}
+func acpPermissionViews(items []acpruntime.PendingPermissionInfo) []acpPermissionView {
+	out := make([]acpPermissionView, 0, len(items))
+	for _, item := range items {
+		out = append(out, acpPermissionView{RequestID: item.RequestID, AgentID: item.ServiceID, SessionID: item.SessionID, CreatedAt: item.CreatedAt})
+	}
+	return out
 }
 
 func (h *Handler) handleCloseACPThread(w http.ResponseWriter, r *http.Request) {
-	serviceID := strings.TrimSpace(r.PathValue("service_id"))
+	agentID := strings.TrimSpace(r.PathValue("agent_id"))
 	threadID := strings.TrimSpace(r.PathValue("thread_id"))
-	span := h.beginACPAdminAudit(r, serviceID, "thread_close", "")
+	span := h.beginACPAdminAudit(r, agentID, "thread_close", "")
 	span.SetExtension(usage.ACPExtension{ThreadID: threadID})
 	defer finishAdminAudit(span, http.StatusOK, "")
 	if h.acpRuntimeManager == nil {
@@ -524,12 +562,12 @@ func (h *Handler) handleCloseACPThread(w http.ResponseWriter, r *http.Request) {
 		_ = httpjson.Error(w, http.StatusServiceUnavailable, "acp runtime manager is not configured")
 		return
 	}
-	if serviceID == "" || threadID == "" {
+	if agentID == "" || threadID == "" {
 		finishAdminAudit(span, http.StatusBadRequest, "invalid_request")
-		_ = httpjson.Error(w, http.StatusBadRequest, "service_id and thread_id are required")
+		_ = httpjson.Error(w, http.StatusBadRequest, "agent_id and thread_id are required")
 		return
 	}
-	_ = httpjson.Write(w, http.StatusOK, map[string]any{"closed": h.acpRuntimeManager.CloseThread(serviceID, threadID)})
+	_ = httpjson.Write(w, http.StatusOK, map[string]any{"closed": h.acpRuntimeManager.CloseThread(agentID, threadID)})
 }
 
 func (h *Handler) beginACPAdminAudit(r *http.Request, serviceID, operation, sessionID string) usage.InteractionSpan {

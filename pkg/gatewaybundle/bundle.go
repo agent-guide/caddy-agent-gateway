@@ -13,6 +13,7 @@ import (
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
@@ -41,9 +42,10 @@ type GatewayBundle struct {
 	CLIAuthAuthenticators []CLIAuthAuthenticator            `json:"cliAuthAuthenticators,omitempty"`
 	MCPServices           []mcpservice.MCPServiceConfig     `json:"mcpServices,omitempty"`
 	MCPRoutes             []mcproute.MCPRouteConfig         `json:"mcpRoutes,omitempty"`
-	ACPServices           []acpservice.ServiceConfig        `json:"acpServices,omitempty"`
-	ACPRoutes             []acproute.ACPRouteConfig         `json:"acpRoutes,omitempty"`
-	BuiltinRoutes         []builtinroute.BuiltinRouteConfig `json:"builtinRoutes,omitempty"`
+	AgentRoutes           []agentroute.AgentRouteConfig     `json:"agentRoutes,omitempty"`
+	ACPServices           []acpservice.ServiceConfig        `json:"-"`
+	ACPRoutes             []acproute.ACPRouteConfig         `json:"-"`
+	BuiltinRoutes         []builtinroute.BuiltinRouteConfig `json:"-"`
 	Agents                []agentpkg.Agent                  `json:"agents,omitempty"`
 }
 
@@ -90,6 +92,31 @@ func DecodeYAML(data []byte) (*GatewayBundle, error) {
 		if _, exists := root["providerTypes"]; exists {
 			return nil, fmt.Errorf("providerTypes is not supported in GatewayBundle; configure provider types at gateway startup")
 		}
+		legacy := []string{}
+		for _, key := range []string{"acpServices", "acpRoutes", "builtinRoutes"} {
+			if _, exists := root[key]; exists {
+				legacy = append(legacy, key)
+			}
+		}
+		if agents, ok := root["agents"].([]any); ok {
+			for _, item := range agents {
+				a, _ := item.(map[string]any)
+				if _, ok := a["owns_service"]; ok {
+					legacy = append(legacy, "Agent.owns_service")
+					break
+				}
+				runtime, _ := a["runtime"].(map[string]any)
+				acp, _ := runtime["acp"].(map[string]any)
+				if _, ok := acp["service_id"]; ok {
+					legacy = append(legacy, "Agent.runtime.acp.service_id")
+					break
+				}
+			}
+		}
+		if len(legacy) > 0 {
+			sort.Strings(legacy)
+			return nil, fmt.Errorf("legacy_agent_runtime_config: legacy bundle fields detected (%s); run scripts/migrate-unified-agent-runtime", strings.Join(legacy, ", "))
+		}
 	}
 
 	jsonBytes, err := json.Marshal(expanded)
@@ -116,11 +143,30 @@ func EncodeYAML(bundle *GatewayBundle) ([]byte, error) {
 	if err := json.Unmarshal(jsonBytes, &raw); err != nil {
 		return nil, fmt.Errorf("decode gateway bundle json: %w", err)
 	}
+	removeManagedTimestamps(raw)
 	yamlBytes, err := yaml.Marshal(raw)
 	if err != nil {
 		return nil, fmt.Errorf("encode gateway bundle yaml: %w", err)
 	}
 	return yamlBytes, nil
+}
+
+func removeManagedTimestamps(value any) {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	for _, family := range []string{
+		"providers", "managedModels", "llmRoutes", "virtualKeys",
+		"mcpServices", "mcpRoutes", "agents", "agentRoutes",
+	} {
+		items, _ := root[family].([]any)
+		for _, item := range items {
+			object, _ := item.(map[string]any)
+			delete(object, "created_at")
+			delete(object, "updated_at")
+		}
+	}
 }
 
 func (b *GatewayBundle) Validate() error {
@@ -308,73 +354,30 @@ func (b *GatewayBundle) validate(_ bool) error {
 			errs.Append(fmt.Errorf("mcpRoutes[%q]: service_id is required", id))
 		}
 	}
-	acpServiceIDs := map[string]struct{}{}
-	for i := range b.ACPServices {
-		b.ACPServices[i].Normalize()
-		id := b.ACPServices[i].ID
+	agentIngressRouteIDs := map[string]struct{}{}
+	agentRouteTargetByID := map[string]string{}
+	for i := range b.AgentRoutes {
+		b.AgentRoutes[i].Normalize()
+		id := b.AgentRoutes[i].ID
 		if id == "" {
-			errs.Append(fmt.Errorf("acpServices[%d].id is required", i))
-			continue
-		}
-		if _, exists := acpServiceIDs[id]; exists {
-			errs.Append(fmt.Errorf("acpServices[%q]: duplicate id", id))
-		} else {
-			acpServiceIDs[id] = struct{}{}
-		}
-		if err := b.ACPServices[i].Validate(); err != nil {
-			errs.Append(fmt.Errorf("acpServices[%q]: %w", id, err))
-		}
-	}
-	acpRouteIDs := map[string]struct{}{}
-	acpRouteServiceByID := map[string]string{}
-	for i := range b.ACPRoutes {
-		b.ACPRoutes[i].Normalize()
-		id := b.ACPRoutes[i].ID
-		if id == "" {
-			errs.Append(fmt.Errorf("acpRoutes[%d].id is required", i))
+			errs.Append(fmt.Errorf("agentRoutes[%d].id is required", i))
 			continue
 		}
 		if err := routecore.ValidateRouteID(id); err != nil {
-			errs.Append(fmt.Errorf("acpRoutes[%d]: %w", i, err))
+			errs.Append(fmt.Errorf("agentRoutes[%d]: %w", i, err))
 		}
-		if _, exists := acpRouteIDs[id]; exists {
-			errs.Append(fmt.Errorf("acpRoutes[%q]: duplicate id", id))
+		if _, exists := agentIngressRouteIDs[id]; exists {
+			errs.Append(fmt.Errorf("agentRoutes[%q]: duplicate id", id))
 		} else {
-			acpRouteIDs[id] = struct{}{}
+			agentIngressRouteIDs[id] = struct{}{}
 		}
-		if b.ACPRoutes[i].Kind != acproute.RouteKindACP {
-			errs.Append(fmt.Errorf("acpRoutes[%q]: kind must be %q", id, acproute.RouteKindACP))
+		if b.AgentRoutes[i].Kind != agentroute.RouteKindAgent {
+			errs.Append(fmt.Errorf("agentRoutes[%q]: kind must be %q", id, agentroute.RouteKindAgent))
 		}
-		if b.ACPRoutes[i].ServiceID == "" {
-			errs.Append(fmt.Errorf("acpRoutes[%q]: service_id is required", id))
+		if b.AgentRoutes[i].AgentID == "" {
+			errs.Append(fmt.Errorf("agentRoutes[%q]: agent_id is required", id))
 		} else {
-			acpRouteServiceByID[id] = b.ACPRoutes[i].ServiceID
-		}
-	}
-	builtinRouteIDs := map[string]struct{}{}
-	builtinRouteAgentByID := map[string]string{}
-	for i := range b.BuiltinRoutes {
-		b.BuiltinRoutes[i].Normalize()
-		id := b.BuiltinRoutes[i].ID
-		if id == "" {
-			errs.Append(fmt.Errorf("builtinRoutes[%d].id is required", i))
-			continue
-		}
-		if err := routecore.ValidateRouteID(id); err != nil {
-			errs.Append(fmt.Errorf("builtinRoutes[%d]: %w", i, err))
-		}
-		if _, exists := builtinRouteIDs[id]; exists {
-			errs.Append(fmt.Errorf("builtinRoutes[%q]: duplicate id", id))
-		} else {
-			builtinRouteIDs[id] = struct{}{}
-		}
-		if b.BuiltinRoutes[i].Kind != builtinroute.RouteKindBuiltin {
-			errs.Append(fmt.Errorf("builtinRoutes[%q]: kind must be %q", id, builtinroute.RouteKindBuiltin))
-		}
-		if b.BuiltinRoutes[i].AgentID == "" {
-			errs.Append(fmt.Errorf("builtinRoutes[%q]: agent_id is required", id))
-		} else {
-			builtinRouteAgentByID[id] = b.BuiltinRoutes[i].AgentID
+			agentRouteTargetByID[id] = b.AgentRoutes[i].AgentID
 		}
 	}
 	// Routes of every kind share one persisted store, so route ids form one
@@ -382,10 +385,9 @@ func (b *GatewayBundle) validate(_ bool) error {
 	// allowed_route_ids against the union.
 	allRouteIDs := map[string]string{}
 	for family, ids := range map[string]map[string]struct{}{
-		"llmRoutes":     routeIDs,
-		"mcpRoutes":     mcpRouteIDs,
-		"acpRoutes":     acpRouteIDs,
-		"builtinRoutes": builtinRouteIDs,
+		"llmRoutes":   routeIDs,
+		"mcpRoutes":   mcpRouteIDs,
+		"agentRoutes": agentIngressRouteIDs,
 	} {
 		for id := range ids {
 			if other, exists := allRouteIDs[id]; exists {
@@ -418,7 +420,6 @@ func (b *GatewayBundle) validate(_ bool) error {
 		}
 	}
 	agentIDs := map[string]struct{}{}
-	agentServiceBindings := map[string]string{}
 	agentRouteBindings := map[string]string{}
 	for i := range b.Agents {
 		b.Agents[i].Normalize()
@@ -458,8 +459,6 @@ func (b *GatewayBundle) validate(_ bool) error {
 		checkRefs("virtual_key_id", agent.Resources.VirtualKeyIDs, virtualKeys, "virtualKeys")
 		checkRefs("llm_route_id", agent.Routes.LLMRouteIDs, routeIDs, "llmRoutes")
 		checkRefs("mcp_route_id", agent.Routes.MCPRouteIDs, mcpRouteIDs, "mcpRoutes")
-		checkRefs("acp_route_id", agent.Routes.ACPRouteIDs, acpRouteIDs, "acpRoutes")
-		checkRefs("builtin_route_id", agent.Routes.BuiltinRouteIDs, builtinRouteIDs, "builtinRoutes")
 		for _, routeID := range agentRouteIDs(*agent) {
 			if owner, exists := agentRouteBindings[routeID]; exists {
 				errs.Append(fmt.Errorf("agents[%q]: route %q is already bound by agent %q", id, routeID, owner))
@@ -468,49 +467,11 @@ func (b *GatewayBundle) validate(_ bool) error {
 			}
 		}
 
-		// builtin_route_ids are only valid on builtin-runtime agents; that rule
-		// lives in Agent.Validate (invoked above). Each referenced route must
-		// target this agent (intra-bundle form of manager.checkRouteConsistency);
-		// only enforced for routes defined in this bundle — cross-bundle routes
-		// are resolved at apply time.
-		if agent.Runtime.Type == agentpkg.RuntimeTypeBuiltin {
-			for _, routeID := range agent.Routes.BuiltinRouteIDs {
-				routeAgent, ok := builtinRouteAgentByID[routeID]
-				if !ok {
-					continue
-				}
-				if routeAgent != id {
-					errs.Append(fmt.Errorf("agents[%q]: builtin_route_id %q targets agent %q, not this agent", id, routeID, routeAgent))
-				}
-			}
-		}
-
-		serviceID := agent.ACPServiceID()
-		if serviceID == "" {
-			continue
-		}
-		// One ACP service is bound by at most one agent (P0 one-runtime-one-agent
-		// rule).
-		if owner, exists := agentServiceBindings[serviceID]; exists {
-			errs.Append(fmt.Errorf("agents[%q]: acp service %q is already bound by agent %q", id, serviceID, owner))
-		} else {
-			agentServiceBindings[serviceID] = id
-		}
-		if len(acpServiceIDs) > 0 {
-			if _, ok := acpServiceIDs[serviceID]; !ok {
-				errs.Append(fmt.Errorf("agents[%q]: runtime acp service_id %q does not exist in bundle acpServices", id, serviceID))
-			}
-		}
-		// acp_route_ids must target the agent's runtime service (intra-bundle form
-		// of manager.checkRouteConsistency). Only enforced for routes defined in
-		// this bundle; cross-bundle routes are resolved at apply time.
-		for _, routeID := range agent.Routes.ACPRouteIDs {
-			routeService, ok := acpRouteServiceByID[routeID]
-			if !ok {
-				continue
-			}
-			if routeService != serviceID {
-				errs.Append(fmt.Errorf("agents[%q]: acp_route_id %q targets service %q, not the agent runtime service %q", id, routeID, routeService, serviceID))
+	}
+	for routeID, targetID := range agentRouteTargetByID {
+		if len(agentIDs) > 0 {
+			if _, ok := agentIDs[targetID]; !ok {
+				errs.Append(fmt.Errorf("agentRoutes[%q]: agent_id %q does not exist in bundle agents", routeID, targetID))
 			}
 		}
 	}
@@ -535,26 +496,6 @@ func agentRouteIDs(agent agentpkg.Agent) []string {
 		out = append(out, routeID)
 	}
 	for _, routeID := range agent.Routes.MCPRouteIDs {
-		if routeID == "" {
-			continue
-		}
-		if _, ok := seen[routeID]; ok {
-			continue
-		}
-		seen[routeID] = struct{}{}
-		out = append(out, routeID)
-	}
-	for _, routeID := range agent.Routes.ACPRouteIDs {
-		if routeID == "" {
-			continue
-		}
-		if _, ok := seen[routeID]; ok {
-			continue
-		}
-		seen[routeID] = struct{}{}
-		out = append(out, routeID)
-	}
-	for _, routeID := range agent.Routes.BuiltinRouteIDs {
 		if routeID == "" {
 			continue
 		}

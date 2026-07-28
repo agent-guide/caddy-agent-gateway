@@ -26,10 +26,6 @@ type acpRuntimeOptionsV1 struct {
 	ConfigOverrides map[string]string `json:"config_overrides,omitempty"`
 }
 
-type acpServiceSource interface {
-	Get(context.Context, string) (acpservice.ServiceConfig, error)
-}
-
 // ACPTurnServer is the native ACP turn execution surface the ACP backend
 // drives. The production implementation is the process-pool runtime manager;
 // tests inject a fake through BootstrapOptions.ACPRuntime.
@@ -38,9 +34,9 @@ type ACPTurnServer interface {
 }
 
 // acpAgentConfig is one canonical, identity-free ACP execution config entry
-// keyed by agent_id. It is produced once at definition refresh by translating
-// the legacy bound-service record (the only M4 config source); turn dispatch,
-// capability discovery, and session/transcript reads consume only this shape.
+// keyed by agent_id. It is produced once at definition refresh from the
+// Agent-owned runtime.acp config; turn dispatch, capability discovery, and
+// session/transcript reads consume only this shape.
 type acpAgentConfig struct {
 	config      acpruntime.RuntimeConfig
 	fingerprint string
@@ -49,11 +45,8 @@ type acpAgentConfig struct {
 }
 
 // ACPBackend is the permanent Agent runtime adapter over the native ACP
-// manager. Legacy ACP routes decide whether to enter this boundary.
+// manager.
 type ACPBackend struct {
-	// services is read only during listener preparation/direct refresh;
-	// per-request paths never touch the service store.
-	services       acpServiceSource
 	runtime        ACPTurnServer
 	runs           *runtimeapi.RunRegistry
 	permissions    *runtimeapi.PermissionBroker
@@ -70,31 +63,24 @@ type ACPBackend struct {
 // bounded in-memory publication/retirement; process, permission-continuation,
 // and cancellation I/O is deferred to the returned cleanup.
 func (b *ACPBackend) PrepareRuntimeConfigs(ctx context.Context, agents []agentpkg.Agent) agentpkg.DefinitionCommit {
-	if b == nil || b.services == nil {
+	if b == nil {
 		return nil
 	}
 	next := make(map[string]acpAgentConfig, len(agents))
 	for _, a := range agents {
-		serviceID := a.ACPServiceID()
-		if serviceID == "" {
+		if a.Runtime.Type != agentpkg.RuntimeTypeACP || a.Runtime.ACP == nil {
 			continue
 		}
-		cfg, err := b.services.Get(ctx, serviceID)
-		if err != nil {
-			message := "referenced ACP service config is missing"
-			next[a.ID] = acpAgentConfig{configError: message}
-			b.logConfigError(a.ID, serviceID, message, err)
-			continue
-		}
-		runtimeCfg := runtimeConfigFromService(cfg)
+		runtimeCfg := runtimeConfigFromAgent(*a.Runtime.ACP)
+		disabled := a.Disabled
 		fingerprint, err := runtimeCfg.Fingerprint(a.ID)
 		if err != nil {
 			message := "ACP runtime config fingerprint is invalid"
-			next[a.ID] = acpAgentConfig{disabled: cfg.Disabled, configError: message}
-			b.logConfigError(a.ID, serviceID, message, err)
+			next[a.ID] = acpAgentConfig{disabled: disabled, configError: message}
+			b.logConfigError(a.ID, message, err)
 			continue
 		}
-		next[a.ID] = acpAgentConfig{config: runtimeCfg, fingerprint: fingerprint, disabled: cfg.Disabled}
+		next[a.ID] = acpAgentConfig{config: runtimeCfg, fingerprint: fingerprint, disabled: disabled}
 	}
 	return func() agentpkg.DefinitionCleanup {
 		b.configMu.Lock()
@@ -170,11 +156,11 @@ func (b *ACPBackend) RefreshRuntimeConfigs(ctx context.Context, agents []agentpk
 	}
 }
 
-func (b *ACPBackend) logConfigError(agentID, serviceID, message string, err error) {
+func (b *ACPBackend) logConfigError(agentID, message string, err error) {
 	if b.logger == nil {
 		return
 	}
-	b.logger.Error(message, zap.String("agent_id", agentID), zap.String("service_id", serviceID), zap.Error(err))
+	b.logger.Error(message, zap.String("agent_id", agentID), zap.Error(err))
 }
 
 // agentRuntimeConfig reads the canonical snapshot entry for one Agent. The
@@ -196,7 +182,7 @@ func (b *ACPBackend) agentRuntimeConfig(agentID string) (acpAgentConfig, error) 
 	return entry, nil
 }
 
-func runtimeConfigFromService(cfg acpservice.ServiceConfig) acpruntime.RuntimeConfig {
+func runtimeConfigFromAgent(cfg agentpkg.ACPRuntime) acpruntime.RuntimeConfig {
 	return acpruntime.RuntimeConfig{
 		AgentType: cfg.AgentType, CWD: cfg.CWD, AllowedRoots: append([]string(nil), cfg.AllowedRoots...),
 		DefaultModel: cfg.DefaultModel, Env: cloneStringMap(cfg.Env), ConfigOverrides: cloneStringMap(cfg.ConfigOverrides),
@@ -288,8 +274,8 @@ type RuntimeControls struct {
 	Logger      *zap.Logger
 }
 
-func NewACPBackend(services acpServiceSource, runtime ACPTurnServer, controls ...RuntimeControls) *ACPBackend {
-	b := &ACPBackend{services: services, runtime: runtime, continuations: map[string]acpPermissionContinuation{}, configs: map[string]acpAgentConfig{}}
+func NewACPBackend(runtime ACPTurnServer, controls ...RuntimeControls) *ACPBackend {
+	b := &ACPBackend{runtime: runtime, continuations: map[string]acpPermissionContinuation{}, configs: map[string]acpAgentConfig{}}
 	if len(controls) > 0 {
 		b.runs, b.permissions, b.logger = controls[0].Runs, controls[0].Permissions, controls[0].Logger
 	}
@@ -302,7 +288,7 @@ func (b *ACPBackend) Capabilities(ctx context.Context, a agentpkg.Agent) (runtim
 	if err := validateBackendAgent(a, agentpkg.RuntimeTypeACP); err != nil {
 		return runtimeapi.Capabilities{}, err
 	}
-	if b == nil || b.services == nil || b.runtime == nil {
+	if b == nil || b.runtime == nil {
 		return runtimeapi.Capabilities{}, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "acp runtime is not executable")
 	}
 	_ = ctx
@@ -326,7 +312,7 @@ func (b *ACPBackend) ServeTurn(ctx context.Context, a agentpkg.Agent, req runtim
 	if err := validateBackendAgent(a, agentpkg.RuntimeTypeACP); err != nil {
 		return err
 	}
-	if b == nil || b.services == nil || b.runtime == nil {
+	if b == nil || b.runtime == nil {
 		return runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "acp runtime is unavailable")
 	}
 	if err := validateRuntimeOptionsVersion(req.Options); err != nil {
@@ -508,7 +494,7 @@ func (b *ACPBackend) RuntimeSummary(_ context.Context, a agentpkg.Agent) (runtim
 	if err := validateBackendAgent(a, agentpkg.RuntimeTypeACP); err != nil {
 		return runtimeapi.RuntimeSummary{}, err
 	}
-	if b == nil || b.services == nil || b.runtime == nil {
+	if b == nil || b.runtime == nil {
 		return runtimeapi.RuntimeSummary{}, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "acp runtime is not executable")
 	}
 	b.configMu.RLock()
@@ -562,7 +548,7 @@ func (b *ACPBackend) RuntimeSummary(_ context.Context, a agentpkg.Agent) (runtim
 }
 func (b *ACPBackend) Health(_ context.Context, a agentpkg.Agent) (runtimeapi.Health, error) {
 	err := validateBackendAgent(a, agentpkg.RuntimeTypeACP)
-	if err == nil && (b == nil || b.services == nil || b.runtime == nil) {
+	if err == nil && (b == nil || b.runtime == nil) {
 		err = runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "acp runtime is not executable")
 	}
 	if err == nil {
@@ -1084,8 +1070,8 @@ func validateBackendAgent(a agentpkg.Agent, runtimeType string) error {
 	if a.Runtime.Type != runtimeType {
 		return runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "agent runtime does not match backend")
 	}
-	if runtimeType == agentpkg.RuntimeTypeACP && (a.Runtime.ACP == nil || strings.TrimSpace(a.Runtime.ACP.ServiceID) == "") {
-		return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "runtime.acp.service_id is required")
+	if runtimeType == agentpkg.RuntimeTypeACP && a.Runtime.ACP == nil {
+		return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "runtime.acp is required")
 	}
 	if runtimeType == agentpkg.RuntimeTypeBuiltin && a.Runtime.Builtin == nil {
 		return runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "runtime.builtin is required")
@@ -1154,8 +1140,6 @@ func mapACPError(err error) error {
 		return err
 	}
 	switch {
-	case errors.Is(err, acpservice.ErrServiceNotConfigured):
-		return runtimeapi.WrapError(runtimeapi.ErrorBackendUnavailable, "acp service is unavailable", err)
 	case errors.Is(err, acpruntime.ErrInvalidRequest):
 		return runtimeapi.WrapError(runtimeapi.ErrorInvalidRequest, "invalid acp request", err)
 	case errors.Is(err, acpruntime.ErrCapacityExceeded):

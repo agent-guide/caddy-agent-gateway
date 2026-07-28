@@ -19,8 +19,7 @@ func init() {
 type AgentRouteDispatcher struct {
 	APIHandlersRaw caddy.ModuleMap `json:"api_handlers,omitempty" caddy:"namespace=agent_route_dispatcher.llm_apis"`
 	EnableMCP      bool            `json:"mcp,omitempty"`
-	EnableACP      bool            `json:"acp,omitempty"`
-	EnableBuiltin  bool            `json:"builtin,omitempty"`
+	EnableAgent    bool            `json:"agent,omitempty"`
 
 	handler *dispatcherpkg.Handler
 }
@@ -56,7 +55,7 @@ func (h *AgentRouteDispatcher) Provision(ctx caddy.Context) error {
 		apiHandlers[name] = apiHandler
 	}
 
-	h.handler = dispatcherpkg.NewHandler(app.AgentGateway(), apiHandlers, ctx.Logger(h), dispatcherpkg.HandlerOptions{EnableMCP: h.EnableMCP, EnableACP: h.EnableACP, EnableBuiltin: h.EnableBuiltin})
+	h.handler = dispatcherpkg.NewHandler(app.AgentGateway(), apiHandlers, ctx.Logger(h), dispatcherpkg.HandlerOptions{EnableMCP: h.EnableMCP, EnableAgent: h.EnableAgent})
 	return nil
 }
 

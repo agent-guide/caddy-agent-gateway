@@ -89,16 +89,11 @@ var gatewayBuiltinRuntimeCancelTurnCmd = &cobra.Command{
 }
 
 func init() {
-	gatewayBuiltinRouteCmd.AddCommand(
-		gatewayBuiltinRouteListCmd,
-		gatewayBuiltinRouteGetCmd,
-	)
 	gatewayBuiltinRuntimeCancelTurnCmd.Flags().StringVar(&gatewayBuiltinCancelMode, "mode", "", "cancel mode: force (default) or graceful")
 	gatewayBuiltinRuntimeCmd.AddCommand(
 		gatewayBuiltinRuntimeGetCmd,
 		gatewayBuiltinRuntimeInFlightCmd,
 		gatewayBuiltinRuntimeCancelTurnCmd,
 	)
-	gatewayCmd.AddCommand(gatewayBuiltinRouteCmd)
 	gatewayCmd.AddCommand(gatewayBuiltinRuntimeCmd)
 }

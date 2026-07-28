@@ -10,10 +10,10 @@ kind: GatewayBundle
 #
 # Prerequisites:
 #   - DEEPSEEK_API_KEY set before apply
-#   - the dispatcher site block enables builtin turn handling:
+#   - the dispatcher site block enables unified Agent turn handling:
 #       agent_route_dispatcher {
 #           llm_api openai
-#           builtin
+#           agent
 #       }
 #
 # Talk to the agent (SSE events: session, delta, content, tool_call, usage,
@@ -129,7 +129,7 @@ agents:
         # Optional human-in-the-loop tool permissions: in interactive mode a
         # non-allowlisted MCP tool call suspends the turn (SSE `permission`
         # event + done stop_reason permission_required) until the client
-        # resumes through POST /<builtin-route>/turn with a `permission`
+        # resumes through POST /<agent-route>/turn with a `permission`
         # field carrying per-call allow/deny decisions. Fail-closed: an
         # unanswered call is denied, and a pending decision expires after
         # timeout_seconds.
@@ -146,8 +146,6 @@ agents:
     routes:
       llm_route_ids:
         - chat-main
-      builtin_route_ids:
-        - builtin-support
     resources: {}
     #   mcp_service_ids:
     #     - mcp-filesystem
@@ -179,8 +177,6 @@ agents:
   #   routes:
   #     llm_route_ids:
   #       - chat-alt
-  #     builtin_route_ids:
-  #       - builtin-research-team
   #   resources: {}
   #   policy: {}
 
@@ -208,8 +204,6 @@ agents:
   #   routes:
   #     llm_route_ids:
   #       - chat-alt
-  #     builtin_route_ids:
-  #       - builtin-planner-agent
   #   resources:
   #     mcp_service_ids:
   #       - mcp-filesystem
@@ -236,22 +230,20 @@ agents:
   #   routes:
   #     llm_route_ids:
   #       - chat-alt
-  #     builtin_route_ids:
-  #       - builtin-deep-agent
   #   resources: {}
   #   policy: {}
 
-builtinRoutes:
+agentRoutes:
 
-  # id defaults to the slash-free builtin:<agent_id>:<path-slug> when omitted.
-  - id: builtin-support
+  # id defaults to the slash-free agent:<agent_id>:<path-slug> when omitted.
+  - id: agent-support
     agent_id: support
     match_policy:
       path_prefix: /agents/support
     auth_policy:
       require_virtual_key: false
 
-  # - id: builtin-research-team
+  # - id: agent-research-team
   #   agent_id: research-team
   #   match_policy:
   #     path_prefix: /agents/research-team

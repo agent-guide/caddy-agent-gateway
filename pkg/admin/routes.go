@@ -132,33 +132,15 @@ func (h *Handler) Routes() []Route {
 		{Method: http.MethodGet, Path: "/admin/mcp/services/{id}/prompts", Handler: h.handleListMCPPrompts},
 		{Method: http.MethodPost, Path: "/admin/mcp/services/{id}/prompts/get", Handler: h.handleGetMCPPrompt},
 
-		// ACP
-		{Method: http.MethodGet, Path: "/admin/acp/services", Handler: h.handleListACPServices},
-		{Method: http.MethodPost, Path: "/admin/acp/services", Handler: h.handleCreateACPService},
-		{Method: http.MethodGet, Path: "/admin/acp/services/{id}", Handler: h.handleGetACPService},
-		{Method: http.MethodPut, Path: "/admin/acp/services/{id}", Handler: h.handleUpdateACPService},
-		{Method: http.MethodDelete, Path: "/admin/acp/services/{id}", Handler: h.handleDeleteACPService},
-		{Method: http.MethodGet, Path: "/admin/acp/services/{id}/sessions", Handler: h.handleListACPSessions},
-		{Method: http.MethodGet, Path: "/admin/acp/services/{id}/sessions/{session_id}/transcript", Handler: h.handleGetACPSessionTranscript},
-		{Method: http.MethodGet, Path: "/admin/acp/routes", Handler: h.handleListACPRoutes},
-		{Method: http.MethodPost, Path: "/admin/acp/routes", Handler: h.handleCreateACPRoute},
-		{Method: http.MethodGet, Path: "/admin/acp/routes/{id}", Handler: h.handleGetACPRoute},
-		{Method: http.MethodPut, Path: "/admin/acp/routes/{id}", Handler: h.handleUpdateACPRoute},
-		{Method: http.MethodDelete, Path: "/admin/acp/routes/{id}", Handler: h.handleDeleteACPRoute},
+		// Runtime-specific ACP operator details remain under /admin/acp/runtime.
 		{Method: http.MethodGet, Path: "/admin/acp/runtime", Handler: h.handleGetACPRuntime},
 		{Method: http.MethodGet, Path: "/admin/acp/runtime/inflight", Handler: h.handleListACPInFlight},
-		{Method: http.MethodDelete, Path: "/admin/acp/runtime/threads/{service_id}/{thread_id}", Handler: h.handleCloseACPThread},
-		{Method: http.MethodPost, Path: "/admin/acp/runtime/permissions/{request_id}", Handler: h.handleResolveACPPermission},
+		{Method: http.MethodDelete, Path: "/admin/acp/runtime/agents/{agent_id}/threads/{thread_id}", Handler: h.handleCloseACPThread},
 
-		// Builtin agent routes
+		// Runtime-specific builtin operator details remain under /admin/builtin/runtime.
 		{Method: http.MethodGet, Path: "/admin/builtin/runtime", Handler: h.handleGetBuiltinRuntime},
 		{Method: http.MethodGet, Path: "/admin/builtin/runtime/inflight", Handler: h.handleListBuiltinInFlight},
 		{Method: http.MethodDelete, Path: "/admin/builtin/runtime/turns/{agent_id}/{session_id}", Handler: h.handleCancelBuiltinTurn},
-		{Method: http.MethodGet, Path: "/admin/builtin/routes", Handler: h.handleListBuiltinRoutes},
-		{Method: http.MethodPost, Path: "/admin/builtin/routes", Handler: h.handleCreateBuiltinRoute},
-		{Method: http.MethodGet, Path: "/admin/builtin/routes/{id}", Handler: h.handleGetBuiltinRoute},
-		{Method: http.MethodPut, Path: "/admin/builtin/routes/{id}", Handler: h.handleUpdateBuiltinRoute},
-		{Method: http.MethodDelete, Path: "/admin/builtin/routes/{id}", Handler: h.handleDeleteBuiltinRoute},
 
 		// Memory
 		{Method: http.MethodGet, Path: "/admin/memory/config", Handler: h.handleGetMemoryConfig},
@@ -171,6 +153,11 @@ func (h *Handler) Routes() []Route {
 		{Method: http.MethodGet, Path: "/admin/agents/{id}", Handler: h.handleGetAgent},
 		{Method: http.MethodPut, Path: "/admin/agents/{id}", Handler: h.handleUpdateAgent},
 		{Method: http.MethodDelete, Path: "/admin/agents/{id}", Handler: h.handleDeleteAgent},
+		{Method: http.MethodGet, Path: "/admin/agents/routes", Handler: h.handleListAgentRoutes},
+		{Method: http.MethodPost, Path: "/admin/agents/routes", Handler: h.handleCreateAgentRoute},
+		{Method: http.MethodGet, Path: "/admin/agents/routes/{id}", Handler: h.handleGetAgentRoute},
+		{Method: http.MethodPut, Path: "/admin/agents/routes/{id}", Handler: h.handleUpdateAgentRoute},
+		{Method: http.MethodDelete, Path: "/admin/agents/routes/{id}", Handler: h.handleDeleteAgentRoute},
 		{Method: http.MethodGet, Path: "/admin/agents/{id}/workspace", Handler: h.handleGetAgentWorkspace},
 		{Method: http.MethodGet, Path: "/admin/agents/{id}/activity", Handler: h.handleGetAgentActivity},
 		{Method: http.MethodGet, Path: "/admin/agents/{id}/usage", Handler: h.handleGetAgentUsage},

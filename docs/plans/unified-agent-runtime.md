@@ -1,6 +1,6 @@
 # Unified Agent Runtime and Routing Plan
 
-Status: implementation in progress — M0-M4 complete
+Status: implementation in progress — M0-M5 complete
 
 Source branch: `feature/unified-agent-runtime` working tree based on `bc4e739`
 
@@ -21,8 +21,9 @@ two shipping runtimes prove it. M0-M2 are complete: the common contracts,
 identities/sequencer, and ACP/builtin adapters are live behind the legacy
 ingress routes. M3 and M4 are complete: the common control plane, the internal
 AgentRoute model/dispatch, the agent.Manager definition snapshot, and the
-canonical agent-keyed ACP runtime-config snapshot are live; the M5 public
-control-plane/bundle cutover remains pending.
+canonical agent-keyed ACP runtime-config snapshot are live. M5 is complete:
+AgentRoute is the only public Agent ingress, ACP execution config is owned by
+Agent definitions, and legacy stores require offline migration before startup.
 
 The target stack is:
 
@@ -1380,7 +1381,7 @@ The implementation contract-test matrix is:
 | Agent snapshot | M4 | no store read on dispatch, deep-clone mutation isolation, generation swap, update/delete invalidation |
 | AgentRoute target | M4/M5 | missing target rejected; disabled and non-executable target persisted; dispatch fails before backend |
 | Legacy store | M5/M7 | every legacy family and mixed fixture detected before writes; database unchanged; remediation complete |
-| Migration helper | M5/M7 | explicit/generated IDs, VirtualKey rewrites, collision, orphan/multi-bind, unrelated-object byte preservation, no partial output |
+| Migration helper | M5/M7 | explicit/generated IDs, VirtualKey rewrites, collision, orphan/multi-bind, unrelated-object semantic preservation, no partial output |
 
 ### M0 — Runtime API contracts and registry
 
@@ -1664,6 +1665,8 @@ Implemented M4 evidence:
 
 ### M5 — Public control-plane and bundle cutover
 
+Implementation status: complete.
+
 The M4 internal unified Agent ingress and the legacy ACP/builtin dimensions use
 independent token buckets backed by the same VirtualKey Agent policy. Enabling
 both paths during development can therefore admit twice that policy for one
@@ -1702,7 +1705,9 @@ Verification:
 - full and partial bundle validate/apply/export tests;
 - migration-helper golden tests cover explicit and generated route IDs,
   VirtualKeys referencing multiple route families, orphan/multiply-bound ACP
-  services, collisions, and byte-for-byte preservation of unrelated objects;
+  services, collisions, and semantic preservation of unrelated objects (the
+  helper intentionally re-encodes YAML, so comments and key order are not part
+  of its output contract);
 - Agent ACP config CRUD/validation and absence of every ACP service surface;
 - ACP execution resolves entirely from the Agent snapshot after the public
   schema cutover;
@@ -1718,6 +1723,25 @@ Verification:
   `acp_services`, `Agent.runtime.acp.service_id`, and `kind=acp`/`kind=builtin`
   rows fails with `legacy_agent_runtime_config` and the export/migrate/apply
   remediation from §9; no old row is modified or deleted.
+
+Implemented M5 evidence:
+
+- `/admin/agents/routes`, the Admin client, `agwctl gateway agent-route`, bundle
+  apply/export, Caddy `agent`, and standalone dispatch all use `kind=agent` and
+  target a stable `agent_id`;
+- ACP backend snapshots are built only from `Agent.runtime.acp`; Agent updates
+  continue to use the canonical fingerprint retirement and permission/run
+  cleanup path;
+- ACP service/route and builtin-route Admin and CLI registrations are absent,
+  and the default config-store schema no longer registers `acp_services`;
+- Agent workspaces derive ingress from AgentRoute targets, and Agent deletion
+  is rejected while any AgentRoute targets it;
+- `scripts/migrate-unified-agent-runtime` converts old bundles, rewrites
+  VirtualKey route allowlists, emits the route-ID map, and fails before output
+  on orphan, multiply-bound, unresolved, duplicate, or colliding input;
+- SQLite startup performs a read-only preflight and returns
+  `legacy_agent_runtime_config` with export/migrate/apply remediation before
+  creating schemas or modifying an old database.
 
 ### M6 — Observability route cutover
 
@@ -1766,7 +1790,7 @@ Verification:
 Removal verification:
 
 ```bash
-rg 'ACPRoute|BuiltinRoute|acpRoutes|builtinRoutes|acpServices|acp_services|acp-service|/admin/acp/services|runtime\\.acp\\.service_id|pkg/acp/service|acpservice|ACPServiceID|OwnsService|acp_route_ids|builtin_route_ids|EnableACP|EnableBuiltin'
+rg 'ACPRoute|BuiltinRoute|acpRoutes|builtinRoutes|acpServices|acp_services|acp-service|/admin/acp/services|runtime\\.acp\\.service_id|pkg/acp/service|acpservice|ACPServiceID|OwnsService|acp_route_ids|builtin_route_ids|EnableACP|EnableBuiltin|assembleACPWorkspace|acpRoutesForService|builtinRoutesForAgent|ListACPServices|ListACPRoutes'
 go test ./...
 go vet ./...
 make build

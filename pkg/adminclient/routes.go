@@ -30,16 +30,24 @@ func (c *Client) GetLLMRoute(ctx context.Context, id string) (*LLMRoute, error) 
 }
 
 func (c *Client) CreateLLMRoute(ctx context.Context, route LLMRouteConfig) (*LLMRouteConfig, error) {
+	body, err := withoutManagedTimestamps(route)
+	if err != nil {
+		return nil, err
+	}
 	var resp LLMRouteConfig
-	if err := c.do(ctx, http.MethodPost, "/admin/llm/routes", route, &resp, true, http.StatusCreated); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/admin/llm/routes", body, &resp, true, http.StatusCreated); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
 func (c *Client) UpdateLLMRoute(ctx context.Context, id string, route LLMRouteConfig) (*LLMRouteConfig, error) {
+	body, err := withoutManagedTimestamps(route)
+	if err != nil {
+		return nil, err
+	}
 	var resp LLMRouteConfig
-	if err := c.do(ctx, http.MethodPut, "/admin/llm/routes/"+url.PathEscape(id), route, &resp, true, http.StatusOK); err != nil {
+	if err := c.do(ctx, http.MethodPut, "/admin/llm/routes/"+url.PathEscape(id), body, &resp, true, http.StatusOK); err != nil {
 		return nil, err
 	}
 	return &resp, nil

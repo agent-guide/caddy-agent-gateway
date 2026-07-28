@@ -22,7 +22,6 @@ Current store names:
 - `credentials`
 - `routes`
 - `mcp_services`
-- `acp_services`
 - `agents`
 - `virtual_keys`
 - `managed_models`

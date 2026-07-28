@@ -3,6 +3,7 @@ package admin
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/agent-guide/agent-gateway/internal/httpcapture"
@@ -17,6 +18,7 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	"github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroute "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
@@ -40,6 +42,7 @@ type Handler struct {
 	sharedMCPRouteResolver     *mcproute.MCPRouteResolver
 	sharedACPRouteResolver     *acproute.ACPRouteResolver
 	sharedBuiltinRouteResolver *builtinroute.BuiltinRouteResolver
+	sharedAgentRouteResolver   *agentroute.AgentRouteResolver
 	sharedMCPServiceManager    *mcpservice.Manager
 	sharedACPServiceManager    *acpservice.Manager
 	agentManager               *agentpkg.Manager
@@ -57,6 +60,7 @@ type Handler struct {
 	usageStats                 usage.RuntimeStats
 	usagePrometheus            usage.PrometheusProvider
 	mux                        *http.ServeMux
+	agentRoutesMux             *http.ServeMux
 	logger                     *zap.Logger
 	cliAuthMu                  sync.RWMutex
 	cliAuthSessions            map[string]cliAuthStatus // login_id -> cliAuthStatus
@@ -79,6 +83,7 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 	var sharedMCPRouteResolver *mcproute.MCPRouteResolver
 	var sharedACPRouteResolver *acproute.ACPRouteResolver
 	var sharedBuiltinRouteResolver *builtinroute.BuiltinRouteResolver
+	var sharedAgentRouteResolver *agentroute.AgentRouteResolver
 	var sharedMCPServiceManager *mcpservice.Manager
 	var sharedACPServiceManager *acpservice.Manager
 	var agentManager *agentpkg.Manager
@@ -105,6 +110,7 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 		sharedMCPRouteResolver = agentGateway.MCPRouteResolver()
 		sharedACPRouteResolver = agentGateway.ACPRouteResolver()
 		sharedBuiltinRouteResolver = agentGateway.BuiltinRouteResolver()
+		sharedAgentRouteResolver = agentGateway.AgentRouteResolver()
 		sharedMCPServiceManager = agentGateway.MCPServiceManager()
 		sharedACPServiceManager = agentGateway.ACPServiceManager()
 		agentManager = agentGateway.AgentManager()
@@ -133,6 +139,7 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 		sharedMCPRouteResolver:     sharedMCPRouteResolver,
 		sharedACPRouteResolver:     sharedACPRouteResolver,
 		sharedBuiltinRouteResolver: sharedBuiltinRouteResolver,
+		sharedAgentRouteResolver:   sharedAgentRouteResolver,
 		sharedMCPServiceManager:    sharedMCPServiceManager,
 		sharedACPServiceManager:    sharedACPServiceManager,
 		agentManager:               agentManager,
@@ -154,11 +161,19 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 		cliAuthActive:              map[string]string{},
 	}
 	h.mux = http.NewServeMux()
+	h.agentRoutesMux = http.NewServeMux()
+	// Keep AgentRoute patterns separate: Go's ServeMux considers
+	// /admin/agents/routes/{id} and /admin/agents/{id}/workspace conflicting
+	// wildcard patterns and panics if both are registered on one mux.
 	// The Admin API does not authenticate requests itself; protect the mount
 	// with the HTTP deployment boundary (Caddy basic_auth, mTLS, a reverse
 	// proxy authenticator, or the standalone daemon's Basic Auth wrapper).
 	for _, route := range h.Routes() {
-		h.mux.HandleFunc(route.Method+" "+route.Path, route.Handler)
+		if strings.HasPrefix(route.Path, "/admin/agents/routes") {
+			h.agentRoutesMux.HandleFunc(route.Method+" "+route.Path, route.Handler)
+		} else {
+			h.mux.HandleFunc(route.Method+" "+route.Path, route.Handler)
+		}
 	}
 	return h
 }
@@ -182,6 +197,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == "OPTIONS" {
 		rr.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == "/admin/agents/routes" || strings.HasPrefix(r.URL.Path, "/admin/agents/routes/") {
+		h.agentRoutesMux.ServeHTTP(rr, r)
 		return
 	}
 	h.mux.ServeHTTP(rr, r)
@@ -232,4 +251,17 @@ func (h *Handler) builtinRouteResolver() (*builtinroute.BuiltinRouteResolver, er
 		return nil, configstore.ErrUnknownStoreName
 	}
 	return builtinroute.NewBuiltinRouteResolver(manager), nil
+}
+
+func (h *Handler) agentRouteResolver() (*agentroute.AgentRouteResolver, error) {
+	if h.sharedAgentRouteResolver != nil {
+		return h.sharedAgentRouteResolver, nil
+	}
+	manager := h.routeConfigManagerForRoutes()
+	if manager == nil {
+		return nil, configstore.ErrUnknownStoreName
+	}
+	resolver := agentroute.NewAgentRouteResolver(manager)
+	resolver.SetAgentLookup(h.agentManager)
+	return resolver, nil
 }

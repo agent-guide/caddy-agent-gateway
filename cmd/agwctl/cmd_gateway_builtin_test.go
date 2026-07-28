@@ -9,6 +9,7 @@ import (
 )
 
 func TestGatewayBuiltinRouteCommands(t *testing.T) {
+	t.Skip("M5 replaces builtin routes with agent-route")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/admin/auth/login":

@@ -14,12 +14,15 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configstoreschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
+	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
 	dispatcherpkg "github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
@@ -747,6 +750,111 @@ func TestLLMRouteCRUD(t *testing.T) {
 	}
 }
 
+func TestAgentRouteCRUD(t *testing.T) {
+	backend, err := configstore.OpenBackend(t.Context(), "sqlite", configstoresqlite.Config{SQLitePath: t.TempDir() + "/config.db"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configstoreschema.RegisterDefaultStores(backend); err != nil {
+		t.Fatal(err)
+	}
+	gw := newTestAgentGateway(backend, nil, nil, nil, nil)
+	if err := gw.AgentManager().Create(t.Context(), agentpkg.Agent{
+		ID: "assistant", Name: "Assistant",
+		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeHTTP, HTTP: &agentpkg.HTTPRuntime{Endpoint: "https://example.com/agent"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(gw, nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+
+	createBody, err := json.Marshal(agentroute.AgentRouteConfig{
+		AgentRouteBaseConfig: agentroute.AgentRouteBaseConfig{
+			ID:          "assistant",
+			MatchPolicy: agentroute.RouteMatch{PathPrefix: "/agents/assistant"},
+			AuthPolicy:  agentroute.RouteAuthPolicy{RequireVirtualKey: true},
+		},
+		AgentID: "assistant",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	createReq := httptest.NewRequest(http.MethodPost, "/admin/agents/routes", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create AgentRoute: status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+	var created AgentRouteView
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.Kind != agentroute.RouteKindAgent || created.Protocol != agentroute.RouteProtocolAgent || created.AgentID != "assistant" {
+		t.Fatalf("created AgentRoute = %#v", created)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/admin/agents/routes/assistant", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get AgentRoute: status=%d body=%s", getRec.Code, getRec.Body.String())
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/admin/agents/routes/assistant", nil)
+	deleteReq.Header.Set("Authorization", "Bearer "+token)
+	deleteRec := httptest.NewRecorder()
+	handler.ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("delete AgentRoute: status=%d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+}
+
+func TestAgentIDWithRoutesPrefixIsNotDispatchedAsAgentRoute(t *testing.T) {
+	backend, err := configstore.OpenBackend(t.Context(), "sqlite", configstoresqlite.Config{SQLitePath: t.TempDir() + "/config.db"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configstoreschema.RegisterDefaultStores(backend); err != nil {
+		t.Fatal(err)
+	}
+	gw := newTestAgentGateway(backend, nil, nil, nil, nil)
+	if err := gw.AgentManager().Create(t.Context(), agentpkg.Agent{
+		ID: "routesXYZ", Name: "Routes Prefix",
+		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeHTTP, HTTP: &agentpkg.HTTPRuntime{Endpoint: "https://example.com/agent"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(gw, nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+	for _, path := range []string{"/admin/agents/routesXYZ", "/admin/agents/routesXYZ/workspace"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+func TestLegacyRuntimeAdminSurfacesAreNotRegistered(t *testing.T) {
+	handler := NewHandler(newTestAgentGateway(&testConfigStore{
+		routeStore: &testRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
+	}, nil, nil, nil, nil), nil)
+	token := loginForTest(t, handler, "admin", "secret-pass")
+	for _, path := range []string{"/admin/acp/services", "/admin/acp/routes", "/admin/builtin/routes"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("GET %s status=%d body=%s, want 404", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestLLMRouteUpdatePreservesCreatedAt(t *testing.T) {
 	createdAt := time.Now().UTC().Add(-time.Hour).Round(0)
 	updatedAt := createdAt
@@ -918,6 +1026,7 @@ func TestMCPRouteCreateRejectsSlashID(t *testing.T) {
 // auto-generated id must be slash-free and addressable through the "{id}"
 // pattern.
 func TestACPRouteAutoIDIsSlashFreeAndAddressable(t *testing.T) {
+	t.Skip("legacy ACP route Admin surface removed by M5")
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
 	}, nil, nil, nil, nil), nil)
@@ -972,6 +1081,7 @@ func TestACPRouteAutoIDIsSlashFreeAndAddressable(t *testing.T) {
 // TestACPRouteCreateRejectsSlashID ensures an explicit slash-bearing ACP route
 // id is rejected with a 400 client error, not a 500.
 func TestACPRouteCreateRejectsSlashID(t *testing.T) {
+	t.Skip("legacy ACP route Admin surface removed by M5")
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
 	}, nil, nil, nil, nil), nil)
@@ -1001,6 +1111,7 @@ func TestACPRouteCreateRejectsSlashID(t *testing.T) {
 // builtin routes: an auto-generated id must be slash-free and addressable
 // through the "{id}" pattern.
 func TestBuiltinRouteAutoIDIsSlashFreeAndAddressable(t *testing.T) {
+	t.Skip("legacy builtin route Admin surface removed by M5")
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
 	}, nil, nil, nil, nil), nil)
@@ -1058,6 +1169,7 @@ func TestBuiltinRouteAutoIDIsSlashFreeAndAddressable(t *testing.T) {
 // TestBuiltinRouteCreateRejectsSlashID ensures an explicit slash-bearing
 // builtin route id is rejected with a 400 client error, not a 500.
 func TestBuiltinRouteCreateRejectsSlashID(t *testing.T) {
+	t.Skip("legacy builtin route Admin surface removed by M5")
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
 	}, nil, nil, nil, nil), nil)
@@ -1086,6 +1198,7 @@ func TestBuiltinRouteCreateRejectsSlashID(t *testing.T) {
 // TestBuiltinRouteCreateRequiresAgentID ensures a builtin route without an
 // agent_id target is rejected with a 400 client error.
 func TestBuiltinRouteCreateRequiresAgentID(t *testing.T) {
+	t.Skip("legacy builtin route Admin surface removed by M5")
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
 	}, nil, nil, nil, nil), nil)

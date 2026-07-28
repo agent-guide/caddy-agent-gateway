@@ -11,9 +11,15 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	baseacp "github.com/agent-guide/agent-gateway/pkg/acp"
+	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 )
 
-var ErrAgentNotConfigured = fmt.Errorf("agent is not configured")
+var (
+	ErrAgentNotConfigured = fmt.Errorf("agent is not configured")
+	ErrAgentRouteTarget   = fmt.Errorf("agent is targeted by an agent route")
+)
 
 // Runtime backend types, split by who owns the agent's process lifecycle.
 const (
@@ -40,10 +46,9 @@ type Agent struct {
 	Resources   Resources `json:"resources"`
 	Policy      Policy    `json:"policy"`
 	Disabled    bool      `json:"disabled"`
-	// OwnsService records that this agent auto-created its backing ACP service
-	// (provenance). It distinguishes "agent owns this service" from "agent
-	// references a pre-existing shared service" for deletion/cascade decisions.
-	OwnsService bool      `json:"owns_service,omitempty"`
+	// OwnsService is retained only for compiling the unreachable pre-M5
+	// migration code and is never persisted or exposed.
+	OwnsService bool      `json:"-"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -57,11 +62,22 @@ type Runtime struct {
 	Builtin *BuiltinRuntime `json:"builtin,omitempty"`
 }
 
-// ACPRuntime holds only the binding to an ACP service. ACP operational config
-// (permission_mode, allowed_roots, default_cwd) is owned by the ACP service
-// under /admin/acp/services, not duplicated here.
+// ACPRuntime is the Agent-owned ACP execution configuration. Agent identity,
+// lifecycle metadata, and disabled state stay on Agent itself.
 type ACPRuntime struct {
-	ServiceID string `json:"service_id"`
+	// ServiceID is legacy migration input only; new Agent definitions reject it
+	// during store/bundle preflight and it is never persisted.
+	ServiceID       string                  `json:"-"`
+	AgentType       string                  `json:"agent_type"`
+	CWD             string                  `json:"cwd"`
+	AllowedRoots    []string                `json:"allowed_roots,omitempty"`
+	DefaultModel    string                  `json:"default_model,omitempty"`
+	Env             map[string]string       `json:"env,omitempty"`
+	ConfigOverrides map[string]string       `json:"config_overrides,omitempty"`
+	IdleTTL         time.Duration           `json:"idle_ttl,omitempty"`
+	MaxInstances    int                     `json:"max_instances,omitempty"`
+	PermissionMode  string                  `json:"permission_mode,omitempty"`
+	Codex           *acpservice.CodexConfig `json:"codex,omitempty"`
 }
 
 // HTTPRuntime carries the agent-level endpoint and callback auth for an agent
@@ -74,10 +90,19 @@ type HTTPRuntime struct {
 // Routes are management/display references used to surface matching ingress
 // routes and to drive attribution; they do not select the execution backend.
 type Routes struct {
-	ACPRouteIDs     []string `json:"acp_route_ids,omitempty"`
 	LLMRouteIDs     []string `json:"llm_route_ids,omitempty"`
 	MCPRouteIDs     []string `json:"mcp_route_ids,omitempty"`
-	BuiltinRouteIDs []string `json:"builtin_route_ids,omitempty"`
+	ACPRouteIDs     []string `json:"-"`
+	BuiltinRouteIDs []string `json:"-"`
+}
+
+// ACPServiceID exists only for unreachable legacy adapter code retained until
+// M7 source deletion. New persisted definitions can never populate ServiceID.
+func (a Agent) ACPServiceID() string {
+	if a.Runtime.Type == RuntimeTypeACP && a.Runtime.ACP != nil {
+		return strings.TrimSpace(a.Runtime.ACP.ServiceID)
+	}
+	return ""
 }
 
 // Resources is a management view of what the agent is allowed to use. It is not
@@ -98,15 +123,6 @@ type Policy struct {
 type Budget struct {
 	MaxTurnsPerDay  int `json:"max_turns_per_day,omitempty"`
 	MaxTokensPerDay int `json:"max_tokens_per_day,omitempty"`
-}
-
-// ACPServiceID returns the bound ACP service id, or "" when the agent is not
-// ACP-backed.
-func (a Agent) ACPServiceID() string {
-	if a.Runtime.Type == RuntimeTypeACP && a.Runtime.ACP != nil {
-		return a.Runtime.ACP.ServiceID
-	}
-	return ""
 }
 
 func DecodeStoredAgentConfig(data []byte) (any, error) {
@@ -132,7 +148,11 @@ func (a *Agent) Normalize() {
 	switch a.Runtime.Type {
 	case RuntimeTypeACP:
 		if a.Runtime.ACP != nil {
-			a.Runtime.ACP.ServiceID = strings.TrimSpace(a.Runtime.ACP.ServiceID)
+			if strings.TrimSpace(a.Runtime.ACP.ServiceID) != "" && strings.TrimSpace(a.Runtime.ACP.AgentType) == "" {
+				a.Runtime.ACP.AgentType, a.Runtime.ACP.CWD = baseacp.AgentTypeCodex, "/tmp"
+				a.Runtime.ACP.AllowedRoots = []string{"/tmp"}
+			}
+			a.Runtime.ACP.normalize()
 		}
 		a.Runtime.HTTP = nil
 		a.Runtime.Builtin = nil
@@ -148,9 +168,9 @@ func (a *Agent) Normalize() {
 		a.Runtime.ACP = nil
 		a.Runtime.HTTP = nil
 	}
-	a.Routes.ACPRouteIDs = normalizeIDs(a.Routes.ACPRouteIDs)
 	a.Routes.LLMRouteIDs = normalizeIDs(a.Routes.LLMRouteIDs)
 	a.Routes.MCPRouteIDs = normalizeIDs(a.Routes.MCPRouteIDs)
+	a.Routes.ACPRouteIDs = normalizeIDs(a.Routes.ACPRouteIDs)
 	a.Routes.BuiltinRouteIDs = normalizeIDs(a.Routes.BuiltinRouteIDs)
 	a.Resources.ProviderIDs = normalizeIDs(a.Resources.ProviderIDs)
 	a.Resources.MCPServiceIDs = normalizeIDs(a.Resources.MCPServiceIDs)
@@ -166,14 +186,17 @@ func (a Agent) Validate() error {
 	}
 	switch a.Runtime.Type {
 	case RuntimeTypeACP:
-		if a.Runtime.ACP == nil || a.Runtime.ACP.ServiceID == "" {
-			return fmt.Errorf("runtime.acp.service_id is required for acp runtime")
+		if a.Runtime.ACP == nil {
+			return fmt.Errorf("runtime.acp is required for acp runtime")
 		}
 		if a.Runtime.HTTP != nil {
 			return fmt.Errorf("runtime.http must be empty for acp runtime")
 		}
 		if a.Runtime.Builtin != nil {
 			return fmt.Errorf("runtime.builtin must be empty for acp runtime")
+		}
+		if err := a.Runtime.ACP.validate(a.ID); err != nil {
+			return fmt.Errorf("runtime.acp: %w", err)
 		}
 	case RuntimeTypeHTTP:
 		if a.Runtime.HTTP == nil || a.Runtime.HTTP.Endpoint == "" {
@@ -200,9 +223,6 @@ func (a Agent) Validate() error {
 	default:
 		return fmt.Errorf("unsupported runtime.type %q", a.Runtime.Type)
 	}
-	// builtin_route_ids bind turn ingress to the builtin host; letting another
-	// runtime claim them would occupy the route -> agent attribution slot and
-	// block the actual target agent from declaring its own route.
 	if a.Runtime.Type != RuntimeTypeBuiltin && len(a.Routes.BuiltinRouteIDs) > 0 {
 		return fmt.Errorf("routes.builtin_route_ids is only valid for builtin runtime agents")
 	}
@@ -215,6 +235,64 @@ func (a Agent) Validate() error {
 		}
 	}
 	return nil
+}
+
+func (c *ACPRuntime) normalize() {
+	if c == nil {
+		return
+	}
+	cfg := c.serviceConfig("agent")
+	cfg.Normalize()
+	c.AgentType, c.CWD, c.AllowedRoots = cfg.AgentType, cfg.CWD, cfg.AllowedRoots
+	c.DefaultModel, c.Env, c.ConfigOverrides = cfg.DefaultModel, cfg.Env, cfg.ConfigOverrides
+	c.IdleTTL, c.MaxInstances, c.PermissionMode, c.Codex = cfg.IdleTTL, cfg.MaxInstances, cfg.PermissionMode, cfg.Codex
+}
+
+func (c ACPRuntime) validate(agentID string) error {
+	cfg := c.serviceConfig(agentID)
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c ACPRuntime) serviceConfig(agentID string) acpservice.ServiceConfig {
+	name := strings.TrimSpace(agentID)
+	if name == "" {
+		name = "agent"
+	}
+	mode := strings.TrimSpace(c.PermissionMode)
+	if mode == "" {
+		mode = baseacp.PermissionModeDeny
+	}
+	return acpservice.ServiceConfig{
+		ID: name, Name: name, AgentType: c.AgentType, CWD: c.CWD,
+		AllowedRoots: append([]string(nil), c.AllowedRoots...), DefaultModel: c.DefaultModel,
+		Env: cloneStringMap(c.Env), ConfigOverrides: cloneStringMap(c.ConfigOverrides),
+		IdleTTL: c.IdleTTL, MaxInstances: c.MaxInstances, PermissionMode: mode,
+		Codex: cloneACPCodexConfig(c.Codex),
+	}
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneACPCodexConfig(in *acpservice.CodexConfig) *acpservice.CodexConfig {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.AdapterArgs = append([]string(nil), in.AdapterArgs...)
+	out.AppServerArgs = append([]string(nil), in.AppServerArgs...)
+	return &out
 }
 
 func (a *Agent) NormalizeTimestamps(now time.Time) {

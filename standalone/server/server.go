@@ -157,7 +157,7 @@ func newDispatchHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) 
 		agentGateway,
 		newLLMAPIHandlers(logger),
 		logger,
-		dispatcher.HandlerOptions{EnableMCP: true},
+		dispatcher.HandlerOptions{EnableMCP: true, EnableAgent: true},
 	), nil
 }
 

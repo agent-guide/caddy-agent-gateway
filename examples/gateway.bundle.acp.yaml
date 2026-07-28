@@ -12,41 +12,53 @@ kind: GatewayBundle
 #     with codex auth configured
 #   - opencode: `opencode` on PATH with opencode auth configured
 #
-# permission_mode is one of:
+# runtime.acp.permission_mode is one of:
 #   deny         — fail-closed default; agent permission requests are rejected
 #   auto_approve — first "allow"-kind option is selected automatically
 #   interactive  — requests surface as `permission` SSE events on the turn
-#                  stream and resolve via POST /<acp-route>/permission or
-#                  `agwctl gateway acp-runtime resolve-permission`
+#                  stream and resolve via POST /<agent-route>/permission or
+#                  `agwctl gateway agent decide`
 
-acpServices:
+agents:
 
   - id: codex-main
     name: Codex
-    agent_type: codex
-    cwd: /tmp/acp-codex-test
-    max_instances: 4
-    permission_mode: auto_approve
+    runtime:
+      type: acp
+      acp:
+        agent_type: codex
+        cwd: /tmp/acp-codex-test
+        max_instances: 4
+        permission_mode: auto_approve
+    routes: {}
+    resources: {}
+    policy: {}
 
   # - id: opencode-main
   #   name: OpenCode
-  #   agent_type: opencode
-  #   cwd: /tmp/acp-opencode-test
-  #   max_instances: 4
-  #   permission_mode: auto_approve
+  #   runtime:
+  #     type: acp
+  #     acp:
+  #       agent_type: opencode
+  #       cwd: /tmp/acp-opencode-test
+  #       max_instances: 4
+  #       permission_mode: auto_approve
+  #   routes: {}
+  #   resources: {}
+  #   policy: {}
 
-acpRoutes:
+agentRoutes:
 
-  # id defaults to the slash-free acp:<service_id>:<path-slug> when omitted
-  - id: acp-codex
-    service_id: codex-main
+  # id defaults to the slash-free agent:<agent_id>:<path-slug> when omitted
+  - id: agent-codex
+    agent_id: codex-main
     match_policy:
       path_prefix: /acp/codex
     auth_policy:
       require_virtual_key: false
 
-  # - id: acp-opencode
-  #   service_id: opencode-main
+  # - id: agent-opencode
+  #   agent_id: opencode-main
   #   match_policy:
   #     path_prefix: /acp/opencode
   #   auth_policy:

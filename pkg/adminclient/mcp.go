@@ -164,16 +164,24 @@ func (c *Client) GetMCPRoute(ctx context.Context, id string) (*MCPRouteView, err
 }
 
 func (c *Client) CreateMCPRoute(ctx context.Context, cfg MCPRouteConfig) (*MCPRouteView, error) {
+	body, err := withoutManagedTimestamps(cfg)
+	if err != nil {
+		return nil, err
+	}
 	var resp MCPRouteView
-	if err := c.do(ctx, http.MethodPost, "/admin/mcp/routes", cfg, &resp, true, http.StatusCreated); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/admin/mcp/routes", body, &resp, true, http.StatusCreated); err != nil {
 		return nil, err
 	}
 	return &resp, nil
 }
 
 func (c *Client) UpdateMCPRoute(ctx context.Context, id string, cfg MCPRouteConfig) (*MCPRouteView, error) {
+	body, err := withoutManagedTimestamps(cfg)
+	if err != nil {
+		return nil, err
+	}
 	var resp MCPRouteView
-	if err := c.do(ctx, http.MethodPut, "/admin/mcp/routes/"+url.PathEscape(id), cfg, &resp, true, http.StatusOK); err != nil {
+	if err := c.do(ctx, http.MethodPut, "/admin/mcp/routes/"+url.PathEscape(id), body, &resp, true, http.StatusOK); err != nil {
 		return nil, err
 	}
 	return &resp, nil

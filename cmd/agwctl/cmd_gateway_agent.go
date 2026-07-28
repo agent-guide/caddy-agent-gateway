@@ -51,7 +51,7 @@ var gatewayAgentGetCmd = &cobra.Command{
 
 var gatewayAgentDeleteCmd = &cobra.Command{
 	Use:   "delete <agent-id>",
-	Short: "Delete an agent (does not delete its backing ACP service or routes)",
+	Short: "Delete an agent after its AgentRoutes are removed",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		resp, err := newGatewayClient().DeleteAgent(context.Background(), args[0])

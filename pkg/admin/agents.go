@@ -17,6 +17,7 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
+	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	"go.uber.org/zap"
@@ -139,14 +140,14 @@ func (h *Handler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
-	// Deleting an agent removes only the Agent record; it never cascade-deletes
-	// the backing ACP service or routes, which may be shared or independently
-	// operated. Report what was unbound so the caller knows the runtime backend
-	// remains.
 	current, getErr := manager.Get(r.Context(), id)
 	if err := manager.Delete(r.Context(), id); err != nil {
 		if errors.Is(err, agentpkg.ErrAgentNotConfigured) || errors.Is(err, configstore.ErrNotFound) {
 			_ = httpjson.Error(w, http.StatusNotFound, "agent not found")
+			return
+		}
+		if errors.Is(err, agentpkg.ErrAgentRouteTarget) {
+			_ = httpjson.Error(w, http.StatusConflict, err.Error())
 			return
 		}
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
@@ -163,16 +164,7 @@ func (h *Handler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 			h.logger.Error("cancel Agent runs after deletion", zap.String("agent_id", id), zap.Error(err))
 		}
 	}
-	unbound := map[string]any{}
-	if getErr == nil {
-		if svc := current.ACPServiceID(); svc != "" {
-			unbound["acp_service_id"] = svc
-		}
-		if len(current.Routes.ACPRouteIDs) > 0 {
-			unbound["acp_route_ids"] = current.Routes.ACPRouteIDs
-		}
-	}
-	_ = httpjson.Write(w, http.StatusOK, map[string]any{"status": "deleted", "id": id, "unbound": unbound})
+	_ = httpjson.Write(w, http.StatusOK, map[string]any{"status": "deleted", "id": id})
 }
 
 func (h *Handler) discardAgentContinuations(a agentpkg.Agent) {
@@ -197,8 +189,9 @@ type AgentWorkspace struct {
 	Runtime        *runtimeapi.RuntimeSummary `json:"runtime,omitempty"`
 	RuntimeDetails json.RawMessage            `json:"runtime_details,omitempty"`
 	Capabilities   *runtimeapi.Capabilities   `json:"capabilities,omitempty"`
-	ACPService     *ACPServiceView            `json:"acp_service,omitempty"`
-	ACPRoutes      []agentRouteRef            `json:"acp_routes,omitempty"`
+	AgentRoutes    []agentRouteRef            `json:"agent_routes,omitempty"`
+	ACPService     *ACPServiceView            `json:"-"`
+	ACPRoutes      []agentRouteRef            `json:"-"`
 	Builtin        *BuiltinWorkspaceView      `json:"builtin,omitempty"`
 	RuntimeView    *agentRuntimeSummary       `json:"runtime_view,omitempty"`
 	Usage          *usage.ACPSummary          `json:"usage,omitempty"`
@@ -230,12 +223,13 @@ type builtinAgentRouteRef struct {
 	ID         string `json:"id"`
 	PathPrefix string `json:"path_prefix,omitempty"`
 	AgentID    string `json:"agent_id"`
+	ServiceID  string `json:"-"`
 }
 
 type agentRouteRef struct {
 	ID         string `json:"id"`
 	PathPrefix string `json:"path_prefix,omitempty"`
-	ServiceID  string `json:"service_id"`
+	AgentID    string `json:"agent_id"`
 }
 
 type agentRuntimeSummary struct {
@@ -272,9 +266,9 @@ func (h *Handler) handleGetAgentWorkspace(w http.ResponseWriter, r *http.Request
 
 	// The acp runtime view is the only one P0 assembles. An http-runtime agent
 	// degrades to the runtime-agnostic parts.
-	serviceID := a.ACPServiceID()
-	if serviceID != "" {
-		h.assembleACPWorkspace(r.Context(), &ws, serviceID)
+	ws.AgentRoutes = h.agentRoutesForAgent(r.Context(), a.ID)
+	if a.Runtime.Type == agentpkg.RuntimeTypeACP {
+		ws.RuntimeView = h.acpRuntimeSummaryForService(a.ID)
 	}
 	if a.Runtime.Type == agentpkg.RuntimeTypeBuiltin {
 		h.assembleBuiltinWorkspace(r.Context(), &ws, a)
@@ -307,8 +301,28 @@ func (h *Handler) assembleBuiltinWorkspace(ctx context.Context, ws *AgentWorkspa
 			view.Definition.SummarizationEnabled = b.Middlewares.Summarization.Enabled
 		}
 	}
-	view.Routes = h.builtinRoutesForAgent(ctx, a.Routes.BuiltinRouteIDs)
 	ws.Builtin = view
+}
+
+func (h *Handler) agentRoutesForAgent(ctx context.Context, agentID string) []agentRouteRef {
+	if h.sharedAgentRouteResolver == nil {
+		return nil
+	}
+	configs, err := h.sharedAgentRouteResolver.ListConfigs(ctx, agentroute.RouteListOptions{})
+	if err != nil {
+		return nil
+	}
+	var refs []agentRouteRef
+	for _, cfg := range configs {
+		if cfg.Kind != agentroute.RouteKindAgent {
+			continue
+		}
+		route, err := agentroute.NewAgentRouteFromConfig(cfg)
+		if err == nil && route.AgentID == agentID {
+			refs = append(refs, agentRouteRef{ID: route.ID, PathPrefix: route.MatchPolicy.PathPrefix, AgentID: agentID})
+		}
+	}
+	return refs
 }
 
 // builtinRoutesForAgent resolves the agent's declared builtin route ids into
@@ -389,7 +403,7 @@ func (h *Handler) acpRoutesForService(ctx context.Context, serviceID string) []a
 		refs = append(refs, agentRouteRef{
 			ID:         route.ID,
 			PathPrefix: route.MatchPolicy.PathPrefix,
-			ServiceID:  route.ServiceID,
+			AgentID:    serviceID,
 		})
 	}
 	return refs
@@ -461,17 +475,12 @@ func agentAttributionFilter(a agentpkg.Agent) *usage.AttributionFilter {
 	f := &usage.AttributionFilter{AgentID: a.ID}
 	f.RouteIDs = append(f.RouteIDs, a.Routes.LLMRouteIDs...)
 	f.RouteIDs = append(f.RouteIDs, a.Routes.MCPRouteIDs...)
-	f.RouteIDs = append(f.RouteIDs, a.Routes.ACPRouteIDs...)
-	f.RouteIDs = append(f.RouteIDs, a.Routes.BuiltinRouteIDs...)
 	// Only the ACP runtime service is a safe service-level fallback: it is bound
 	// by at most one agent (P0 one-runtime-one-agent), so a service-keyed event
 	// attributes unambiguously. MCP service resources have no such uniqueness
 	// constraint — two agents may list the same mcp_service_id, so a service-level
 	// fallback there would double-attribute untagged MCP usage. MCP events are
 	// instead recovered through the agent's owned mcp_route_ids (route fallback).
-	if svc := a.ACPServiceID(); svc != "" {
-		f.ACPServiceIDs = append(f.ACPServiceIDs, svc)
-	}
 	return f
 }
 
@@ -545,14 +554,8 @@ func (h *Handler) handleGetAgentActivity(w http.ResponseWriter, r *http.Request)
 			out["interactions"] = resp.Items
 		}
 	}
-	if serviceID := a.ACPServiceID(); serviceID != "" && h.acpRuntimeManager != nil {
-		var pending []acpruntime.PendingPermissionInfo
-		for _, perm := range h.acpRuntimeManager.ListPendingPermissions() {
-			if perm.ServiceID == serviceID {
-				pending = append(pending, perm)
-			}
-		}
-		out["pending_permissions"] = pending
+	if h.permissionBroker != nil {
+		out["pending_permissions"] = h.permissionBroker.List(a.ID)
 	}
 	_ = httpjson.Write(w, http.StatusOK, out)
 }
@@ -793,8 +796,8 @@ func (h *Handler) handleGetAgentHealth(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if serviceID := a.ACPServiceID(); serviceID != "" {
-		if summary := h.acpRuntimeSummaryForService(serviceID); summary != nil {
+	if a.Runtime.Type == agentpkg.RuntimeTypeACP {
+		if summary := h.acpRuntimeSummaryForService(a.ID); summary != nil {
 			health["pooled_instances"] = len(summary.PooledInstances)
 			health["in_flight_turns"] = summary.InFlightTurns
 			health["pending_permissions"] = len(summary.PendingPermissions)

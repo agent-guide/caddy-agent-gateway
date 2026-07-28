@@ -18,12 +18,12 @@ Important files:
   It may depend on the `Agent` definition but must not import ACP, LLM, MCP, or
   other runtime implementations; gateway-owned adapters sit above both sides.
   `AgentGateway` registers the shipping ACP and builtin adapters during
-  bootstrap; Agent-bound legacy route turns share its run sequencer and
-  identity bridge, while unbound ACP remains the sole temporary native path.
+  bootstrap; all public ACP/builtin turns enter through unified AgentRoute
+  dispatch and share its run sequencer and identity bridge.
   The gateway-owned run registry and permission broker provide M3 exact-run
   cancellation, bounded terminal tombstones, and one-shot opaque continuation
   claims. Claimed permission ids retain short-lived owner/runtime routing
-  metadata so concurrent legacy and Agent entry points keep converging on the
+  metadata so concurrent Agent entry points keep converging on the
   broker after the winner removes continuation state. Agent Admin
   capability/run/permission/session/transcript reads must
   resolve through these interfaces and fail with the normalized capability
@@ -35,11 +35,11 @@ Important files:
   only allowlisted action identity/display and ACP option identity/kind/display
   fields, never native payloads or tool arguments. Opaque continuation tokens
   are resolved only in backend-owned stores.
-- `types.go`: the `Agent` model. Runtime is `acp` (gateway owns the lifecycle via
-  an ACP `service_id`), `http` (the agent owns its own lifecycle), or `builtin`
+- `types.go`: the `Agent` model. Runtime is `acp` (gateway owns the lifecycle and
+  stores execution config inline under `runtime.acp`), `http` (the agent owns its own lifecycle), or `builtin`
   (no separate process — a persisted definition materialized by the in-process
   ADK host). LLM and MCP are `resources`, not runtime types. `policy` is
-  runtime-agnostic; ACP operational config stays on the ACP service.
+  runtime-agnostic; ACP operational config stays under `Agent.runtime.acp`.
 - `builtin_types.go`: the `runtime.builtin` definition schema — model resolved
   through an LLM route (must appear in `routes.llm_route_ids`) with an
   optional `retry` block (`max_retries` 1–5, node-level ADK retry over the
@@ -67,12 +67,10 @@ Important files:
   fully-qualified `auto_approve_tools` validated against tools declared
   anywhere in the topology), and fail-closed `limits`
   (`max_concurrent_turns`, `turn_timeout_seconds`).
-- `manager.go`: agent CRUD plus the in-memory route/service → agent index. It
-  enforces P0 one-runtime-one-agent (a `service_id` is bound by at most one
-  agent), route-binding uniqueness (any LLM/MCP/ACP/builtin `route_id` is owned
-  by at most one agent, so the route → agent attribution mapping stays
-  unambiguous), `acp_route_ids` → runtime-service and `builtin_route_ids` →
-  target-agent consistency, and implements `ResolveAgentID` (the
+- `manager.go`: Agent CRUD, AgentRoute deletion guards, and the in-memory
+  resource-route attribution index. Unified ingress ownership is one-way from
+  `AgentRoute.agent_id`; Agent persistence contains no ACP/builtin ingress ids.
+  The manager implements `ResolveAgentID` (the
   `usage.AgentAttributor` seam). The index is derived from the definition
   generation on every commit, defensively: a `service_id` or `route_id` that
   resolves to more than one agent is dropped from the map (and

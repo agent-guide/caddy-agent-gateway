@@ -37,7 +37,7 @@ import (
 type BootstrapOptions struct {
 	StaticLLMRoutes     []routecore.AgentRouteConfig
 	StaticMCPRoutes     []routecore.AgentRouteConfig
-	StaticACPRoutes     []routecore.AgentRouteConfig
+	StaticAgentRoutes   []routecore.AgentRouteConfig
 	StaticProviders     map[string]provider.Provider
 	ConfigStoreBackend  configstore.ConfigStoreBackend
 	CLIAuthManager      *cliauth.Manager
@@ -107,19 +107,17 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	defer g.mu.Unlock()
 
 	g.configureConfigStoreBackend(opts.ConfigStoreBackend)
-	staticRoutes := make([]routecore.AgentRouteConfig, 0, len(opts.StaticLLMRoutes)+len(opts.StaticMCPRoutes)+len(opts.StaticACPRoutes))
+	staticRoutes := make([]routecore.AgentRouteConfig, 0, len(opts.StaticLLMRoutes)+len(opts.StaticMCPRoutes)+len(opts.StaticAgentRoutes))
 	staticRoutes = append(staticRoutes, opts.StaticLLMRoutes...)
 	staticRoutes = append(staticRoutes, opts.StaticMCPRoutes...)
-	staticRoutes = append(staticRoutes, opts.StaticACPRoutes...)
+	staticRoutes = append(staticRoutes, opts.StaticAgentRoutes...)
 	if err := g.configureRouteResolver(ctx, opts.ConfigStoreBackend, staticRoutes); err != nil {
 		return err
 	}
 	if err := g.configureMCPServiceManager(opts.ConfigStoreBackend); err != nil {
 		return err
 	}
-	if err := g.configureACPServiceManager(opts.ConfigStoreBackend); err != nil {
-		return err
-	}
+	g.acpRuntimeManager = acpruntime.NewManager(nil)
 	if err := g.configureAgentManager(ctx, opts.ConfigStoreBackend); err != nil {
 		return err
 	}
@@ -159,12 +157,12 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	var backends []runtimeapi.Backend
 	controls := RuntimeControls{Runs: g.runRegistry, Permissions: g.permissionBroker, Logger: opts.Logger}
 	var acpBackend *ACPBackend
-	if g.acpServiceManager != nil && g.acpRuntimeManager != nil {
+	if g.acpRuntimeManager != nil {
 		turnServer := ACPTurnServer(g.acpRuntimeManager)
 		if opts.ACPRuntime != nil {
 			turnServer = opts.ACPRuntime
 		}
-		acpBackend = NewACPBackend(g.acpServiceManager, turnServer, controls)
+		acpBackend = NewACPBackend(turnServer, controls)
 		backends = append(backends, acpBackend)
 	}
 	if g.builtinHost != nil {
@@ -555,8 +553,6 @@ func (g *AgentGateway) configureRouteResolver(ctx context.Context, configStoreBa
 	}
 	g.llmRouteResolver = llmroutepkg.NewLLMRouteResolver(g.routeConfigManager)
 	g.mcpRouteResolver = mcproutepkg.NewMCPRouteResolver(g.routeConfigManager)
-	g.acpRouteResolver = acproutepkg.NewACPRouteResolver(g.routeConfigManager)
-	g.builtinRouteResolver = builtinroutepkg.NewBuiltinRouteResolver(g.routeConfigManager)
 	g.agentRouteResolver = agentroutepkg.NewAgentRouteResolver(g.routeConfigManager)
 
 	return nil
@@ -577,22 +573,6 @@ func (g *AgentGateway) configureMCPServiceManager(configStoreBackend configstore
 	return nil
 }
 
-func (g *AgentGateway) configureACPServiceManager(configStoreBackend configstore.ConfigStoreBackend) error {
-	if g.acpServiceManager != nil {
-		return nil
-	}
-	if configStoreBackend == nil {
-		return nil
-	}
-	store, err := configStoreBackend.Get(schema.StoreACPServices)
-	if err != nil {
-		return err
-	}
-	g.acpServiceManager = acpservice.NewManager(store)
-	g.acpRuntimeManager = acpruntime.NewManager(g.acpServiceManager)
-	return nil
-}
-
 func (g *AgentGateway) configureAgentManager(ctx context.Context, configStoreBackend configstore.ConfigStoreBackend) error {
 	if g.agentManager != nil {
 		return nil
@@ -605,10 +585,7 @@ func (g *AgentGateway) configureAgentManager(ctx context.Context, configStoreBac
 		return err
 	}
 	manager := agentpkg.NewManager(store)
-	manager.SetRouteLookup(agentRouteLookup{
-		acp:     g.acpRouteResolver,
-		builtin: g.builtinRouteResolver,
-	})
+	manager.SetRouteLookup(agentRouteLookup{agent: g.agentRouteResolver})
 	if err := manager.Refresh(ctx); err != nil {
 		return fmt.Errorf("load agents: %w", err)
 	}
@@ -619,40 +596,34 @@ func (g *AgentGateway) configureAgentManager(ctx context.Context, configStoreBac
 	return nil
 }
 
-// agentRouteLookup adapts the ACP and builtin route resolvers to the agent
-// manager's lookup seams so the manager can validate acp_route_ids and
-// builtin_route_ids without depending on the resolver types directly.
+// agentRouteLookup adapts the unified AgentRoute resolver to the Agent
+// manager's deletion-guard lookup without reversing package dependencies.
 type agentRouteLookup struct {
-	acp     *acproutepkg.ACPRouteResolver
-	builtin *builtinroutepkg.BuiltinRouteResolver
+	agent *agentroutepkg.AgentRouteResolver
 }
 
-func (l agentRouteLookup) ACPRouteServiceID(ctx context.Context, routeID string) (string, error) {
-	if l.acp == nil {
-		return "", fmt.Errorf("acp route resolver is not configured")
+func (l agentRouteLookup) AgentRouteIDsForAgent(ctx context.Context, agentID string) ([]string, error) {
+	if l.agent == nil {
+		return nil, nil
 	}
-	route, err := l.acp.ResolveByID(ctx, routeID)
+	configs, err := l.agent.ListConfigs(ctx, agentroutepkg.RouteListOptions{})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if route == nil {
-		return "", fmt.Errorf("acp route %q not found", routeID)
+	var ids []string
+	for _, cfg := range configs {
+		if cfg.Kind != routecore.RouteKindAgent {
+			continue
+		}
+		target, err := agentroutepkg.DecodeTargetAgentID(cfg.TargetPolicy)
+		if err != nil {
+			return nil, err
+		}
+		if target == agentID {
+			ids = append(ids, cfg.ID)
+		}
 	}
-	return route.ServiceID, nil
-}
-
-func (l agentRouteLookup) BuiltinRouteAgentID(ctx context.Context, routeID string) (string, error) {
-	if l.builtin == nil {
-		return "", fmt.Errorf("builtin route resolver is not configured")
-	}
-	route, err := l.builtin.ResolveByID(ctx, routeID)
-	if err != nil {
-		return "", err
-	}
-	if route == nil {
-		return "", fmt.Errorf("builtin route %q not found", routeID)
-	}
-	return route.AgentID, nil
+	return ids, nil
 }
 
 // routedChatModelResolver implements the builtin host's ChatModelResolver:

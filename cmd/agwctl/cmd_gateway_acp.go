@@ -187,7 +187,7 @@ var gatewayACPRuntimeInFlightCmd = &cobra.Command{
 }
 
 var gatewayACPRuntimeCloseThreadCmd = &cobra.Command{
-	Use:   "close-thread <acp-service-id> <thread-id>",
+	Use:   "close-thread <agent-id> <thread-id>",
 	Short: "Close the pooled agent instances of one ACP thread",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -223,30 +223,10 @@ func init() {
 	gatewayACPServiceSessionsCmd.Flags().StringVar(&gatewayACPSessionCWD, "cwd", "", "filter sessions by working directory")
 	gatewayACPServiceSessionsCmd.Flags().StringVar(&gatewayACPSessionCursor, "cursor", "", "pagination cursor from a previous response")
 	gatewayACPServiceTranscriptCmd.Flags().StringVar(&gatewayACPTranscriptCWD, "cwd", "", "working directory used for the transient replay connection")
-	gatewayACPRuntimeResolvePermissionCmd.Flags().StringVar(&gatewayACPPermissionOutcome, "outcome", "", "permission outcome: selected or cancelled")
-	gatewayACPRuntimeResolvePermissionCmd.Flags().StringVar(&gatewayACPPermissionOptionID, "option-id", "", "ACP option id to select (required with --outcome selected)")
-
-	gatewayACPServiceCmd.AddCommand(
-		gatewayACPServiceListCmd,
-		gatewayACPServiceGetCmd,
-		gatewayACPServiceDeleteCmd,
-		gatewayACPServiceSessionsCmd,
-		gatewayACPServiceTranscriptCmd,
-	)
-	gatewayACPRouteCmd.AddCommand(
-		gatewayACPRouteListCmd,
-		gatewayACPRouteGetCmd,
-		gatewayACPRouteDeleteCmd,
-	)
 	gatewayACPRuntimeCmd.AddCommand(
 		gatewayACPRuntimeGetCmd,
 		gatewayACPRuntimeInFlightCmd,
 		gatewayACPRuntimeCloseThreadCmd,
-		gatewayACPRuntimeResolvePermissionCmd,
 	)
-	gatewayCmd.AddCommand(
-		gatewayACPServiceCmd,
-		gatewayACPRouteCmd,
-		gatewayACPRuntimeCmd,
-	)
+	gatewayCmd.AddCommand(gatewayACPRuntimeCmd)
 }

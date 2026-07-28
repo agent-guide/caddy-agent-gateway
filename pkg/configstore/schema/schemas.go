@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"strings"
 
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	modelcatalog "github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -29,7 +28,6 @@ func RegisterDefaultStores(backend configstore.ConfigStoreBackend) error {
 		VirtualKeySchema,
 		ManagedModelSchema,
 		MCPServiceSchema,
-		ACPServiceSchema,
 		AgentSchema,
 	}
 	for _, storeSchema := range schemas {
@@ -172,25 +170,6 @@ var MCPServiceSchema = configstore.StoreSchema{
 	},
 }
 
-var ACPServiceSchema = configstore.StoreSchema{
-	Name:              StoreACPServices,
-	Kind:              "acp service",
-	Table:             "acp_services",
-	PrimaryKeyColumns: []string{"id"},
-	TagColumn:         "tag",
-	DataColumn:        "config",
-	Timestamped:       true,
-	Codec: typedJSONCodec{
-		kind:     "acp service",
-		decode:   acpservice.DecodeStoredServiceConfig,
-		validate: validateACPServiceObject,
-	},
-	Metadata: configstore.MetadataFuncs{
-		PrimaryKeyFunc: primaryKeyFromStringFields("ID"),
-		TagFunc:        requiredTagFromStringField("AgentType", "agent_type"),
-	},
-}
-
 var AgentSchema = configstore.StoreSchema{
 	Name:              StoreAgents,
 	Kind:              "agent",
@@ -272,11 +251,23 @@ func validateCredentialObject(obj any) error {
 }
 
 func validateRouteObject(obj any) error {
-	switch unwrapConfigObject(obj).(type) {
-	case routecore.AgentRouteConfig, *routecore.AgentRouteConfig:
-		return nil
+	var cfg *routecore.AgentRouteConfig
+	switch value := unwrapConfigObject(obj).(type) {
+	case routecore.AgentRouteConfig:
+		cfg = &value
+	case *routecore.AgentRouteConfig:
+		cfg = value
 	default:
 		return fmt.Errorf("route object has unexpected type %T", obj)
+	}
+	if cfg == nil {
+		return fmt.Errorf("route object is nil")
+	}
+	switch cfg.Kind {
+	case routecore.RouteKindLLM, routecore.RouteKindMCP, routecore.RouteKindAgent:
+		return nil
+	default:
+		return fmt.Errorf("legacy agent runtime route kind %q is not supported; migrate to kind=agent", cfg.Kind)
 	}
 }
 
@@ -314,20 +305,6 @@ func validateMCPServiceObject(obj any) error {
 		return value.Validate()
 	default:
 		return fmt.Errorf("mcp service object has unexpected type %T", obj)
-	}
-}
-
-func validateACPServiceObject(obj any) error {
-	switch value := unwrapConfigObject(obj).(type) {
-	case acpservice.ServiceConfig:
-		return value.Validate()
-	case *acpservice.ServiceConfig:
-		if value == nil {
-			return fmt.Errorf("acp service object is nil")
-		}
-		return value.Validate()
-	default:
-		return fmt.Errorf("acp service object has unexpected type %T", obj)
 	}
 }
 

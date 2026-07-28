@@ -43,6 +43,7 @@ func (r *adminRetireRecordingRuntime) snapshot() []string {
 }
 
 func TestUpdateACPServiceRecommitsAgentConfigsAndRetiresOwner(t *testing.T) {
+	t.Skip("legacy ACP service surface removed by unified Agent runtime M5")
 	ctx := t.Context()
 	backend, err := configstore.OpenBackend(ctx, "sqlite", configstoresqlite.Config{SQLitePath: t.TempDir() + "/config.db"}, nil)
 	if err != nil {
@@ -67,7 +68,7 @@ func TestUpdateACPServiceRecommitsAgentConfigsAndRetiresOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	native := &adminRetireRecordingRuntime{}
-	acpBackend := gateway.NewACPBackend(services, native)
+	acpBackend := gateway.NewACPBackend(native)
 	agents.AddDefinitionListener(acpBackend.PrepareRuntimeConfigs)
 	if err := agents.Create(ctx, agentpkg.Agent{ID: "agent-recommit", Name: "Agent", Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{ServiceID: service.ID}}}); err != nil {
 		t.Fatal(err)

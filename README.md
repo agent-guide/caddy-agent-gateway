@@ -17,8 +17,8 @@ This repository builds three binaries:
 - manage providers, routes, VirtualKeys, credentials, and CLI auth through an Admin API
 - support MCP gateway routing, discovery, execution, and runtime inspection
 - expose the first native ACP control surface for codex/opencode agent routing
-- host builtin agents in-process on eino ADK: an agent defined as pure configuration (model via an LLM route, tools via MCP services, declarative topology), served as `POST /<builtin-route>/turn` with SSE; interactive tool permissions can suspend a turn on an ADK checkpoint until a human allows or denies each call — no slot, stream, or goroutine is held while waiting; operators can force-cancel or gracefully stop a running (or stuck) turn through the Admin API
-- execute Agent-bound ACP and builtin turns through one runtime-neutral backend registry with shared run ids, ordered event sequencing, normalized errors, and cross-runtime usage correlation; unbound legacy ACP routes remain native until the planned AgentRoute migration
+- host builtin agents in-process on eino ADK and serve them through the same `POST /<agent-route>/turn` SSE contract as ACP-backed Agents; interactive tool permissions can suspend a turn on an ADK checkpoint until a human allows or denies each call
+- execute ACP and builtin Agents through one runtime-neutral backend registry and unified AgentRoutes, with shared run ids, ordered event sequencing, normalized errors, and cross-runtime usage correlation
 - run with either a Caddyfile-based runtime or a standalone daemon with a config store
 
 ## Architecture
@@ -242,11 +242,9 @@ curl -s http://127.0.0.1:8080/mcp \
 
 MCP route IDs are auto-generated as the deterministic, slash-free `mcp:<service_id>:<path-slug>` when `id` is omitted (the path prefix lowercased with non-alphanumeric runs collapsed to `-`, `/` → `root`). See [docs/getting-started/quickstart-mcp.md](docs/getting-started/quickstart-mcp.md) for the full walkthrough.
 
-## ACP Quick Start
+## ACP Agent Quick Start
 
-The ACP gateway uses the same minimal Caddyfile as the Quick Start. Enable `acp` in `agent_route_dispatcher`, then apply ACP service and route objects dynamically with `agwctl`.
-
-Native ACP support is implemented in this repository. The gateway owns ACP route/service config, VirtualKey auth, Admin APIs, `POST /<acp-route>/turn` SSE streaming, runtime pooling, transcript replay, and permission handling. `opencode` launches the fixed `opencode acp --cwd <cwd>` shape; `codex` launches the fixed external ACP adapter binary `codex-acp` by default.
+Enable `agent` in `agent_route_dispatcher`, then apply an ACP-backed Agent and a unified AgentRoute. ACP runtime configuration is owned directly by the Agent; there is no separate ACP service object or ACP-specific ingress route.
 
 For Codex, install the adapter and create the working directory:
 
@@ -261,17 +259,25 @@ Create a bundle file `gateway.bundle.acp.yaml`:
 apiVersion: gateway.agw/v1alpha1
 kind: GatewayBundle
 
-acpServices:
+agents:
   - id: codex-main
     name: Codex
-    agent_type: codex
-    cwd: /tmp/acp-codex-test
-    max_instances: 4
-    permission_mode: auto_approve
+    runtime:
+      type: acp
+      acp:
+        agent_type: codex
+        cwd: /tmp/acp-codex-test
+        allowed_roots: [/tmp/acp-codex-test]
+        max_instances: 4
+        permission_mode: auto_approve
+    routes: {}
+    resources: {}
+    policy: {}
+    disabled: false
 
-acpRoutes:
+agentRoutes:
   - id: acp-codex
-    service_id: codex-main
+    agent_id: codex-main
     match_policy:
       path_prefix: /acp/codex
     auth_policy:
@@ -290,8 +296,8 @@ export AGW_ADMIN_BASIC_AUTH=admin:your-password
 
 ./agwctl gateway apply -f gateway.bundle.acp.yaml
 
-./agwctl gateway acp-service list
-./agwctl gateway acp-route list
+./agwctl gateway agent get codex-main
+./agwctl gateway agent-route list
 ./agwctl gateway acp-runtime get
 ```
 
@@ -303,10 +309,10 @@ ACP_API_KEY=$(./agwctl gateway virtualkey get acp-key | jq -r '.key')
 curl -N -s http://127.0.0.1:8080/acp/codex/turn \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $ACP_API_KEY" \
-  -d '{"thread_id":"t-demo-1","input":"Reply with exactly one word: pong"}'
+  -d '{"input":"Reply with exactly one word: pong","options":{"version":"v1","runtime":{"thread_id":"t-demo-1"}}}'
 ```
 
-List sessions or replay a transcript through the same ACP route and VirtualKey:
+List sessions or replay a transcript through the same AgentRoute and VirtualKey:
 
 ```bash
 curl -s "http://127.0.0.1:8080/acp/codex/sessions?cwd=/tmp/acp-codex-test" \
@@ -316,18 +322,17 @@ curl -s "http://127.0.0.1:8080/acp/codex/sessions/<session-id>/transcript" \
   -H "Authorization: Bearer $ACP_API_KEY"
 ```
 
-Inspect sessions, replay transcripts, or operate on runtime state:
+Inspect sessions, replay transcripts, or operate on runtime state through Agent-level capability APIs:
 
 ```bash
-./agwctl gateway acp-service sessions codex-main --cwd /tmp/acp-codex-test
-./agwctl gateway acp-service transcript codex-main <session-id>
+./agwctl gateway agent sessions codex-main --cwd /tmp/acp-codex-test
+./agwctl gateway agent transcript codex-main <session-id>
 
 ./agwctl gateway acp-runtime inflight
-./agwctl gateway acp-runtime resolve-permission <request-id> --outcome selected --option-id <option-id>
 ./agwctl gateway acp-runtime close-thread codex-main t-demo-1
 ```
 
-ACP route IDs are auto-generated as the deterministic, slash-free `acp:<service_id>:<path-slug>` when `id` is omitted (the path prefix lowercased with non-alphanumeric runs collapsed to `-`, `/` → `root`). Permission modes are `deny`, `auto_approve`, and `interactive`; interactive requests are surfaced as `permission` SSE events and can be resolved through `POST /<acp-route>/permission` or the Admin API.
+Agent route IDs are auto-generated as `agent:<agent_id>:<path-slug>` when omitted. Permission modes are `deny`, `auto_approve`, and `interactive`; clients must follow the runtime capability's advertised resume mode.
 
 See [docs/getting-started/quickstart-acp.md](docs/getting-started/quickstart-acp.md), [docs/architecture/acp-architecture.md](docs/architecture/acp-architecture.md), [docs/reference/acp-technical-spec.md](docs/reference/acp-technical-spec.md), and [docs/reference/acp-api.md](docs/reference/acp-api.md) for the full ACP documentation.
 

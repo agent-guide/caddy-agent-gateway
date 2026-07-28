@@ -439,8 +439,8 @@ func TestMetricsTimeseriesResolvesAgentAttribution(t *testing.T) {
 	if len(attr.RouteIDs) != 1 || attr.RouteIDs[0] != "llm-route" {
 		t.Fatalf("route fallback = %#v, want llm-route", attr.RouteIDs)
 	}
-	if len(attr.ACPServiceIDs) != 1 || attr.ACPServiceIDs[0] != "codex-main" {
-		t.Fatalf("acp service fallback = %#v, want codex-main", attr.ACPServiceIDs)
+	if len(attr.ACPServiceIDs) != 0 {
+		t.Fatalf("removed acp service fallback = %#v, want empty", attr.ACPServiceIDs)
 	}
 	// agent_id must NOT leak into the literal filter map (attribution handles it).
 	if _, ok := query.seriesOpts.Filters["agent_id"]; ok {

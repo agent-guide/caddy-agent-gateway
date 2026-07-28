@@ -21,9 +21,12 @@ import (
 )
 
 func (h *Handler) dispatchACP(w http.ResponseWriter, r *http.Request, next NextHandler, cfg routecore.AgentRouteConfig) error {
-	if !h.acpEnabled {
-		return serveNextOrNotFound(next, w, r)
-	}
+	return serveNextOrNotFound(next, w, r)
+}
+
+// dispatchACPRemoved is retained as dead source until the M7 physical cleanup.
+// No dispatcher or public configuration path can call it after the M5 cutover.
+func (h *Handler) dispatchACPRemoved(w http.ResponseWriter, r *http.Request, next NextHandler, cfg routecore.AgentRouteConfig) error {
 	routeResolver := h.gateway.ACPRouteResolver()
 	if routeResolver == nil {
 		return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusServiceUnavailable, w, r, "resolve acp route", "acp route resolver is not configured", fmt.Errorf("acp route resolver is not configured"))
@@ -119,9 +122,6 @@ func (h *Handler) dispatchACP(w http.ResponseWriter, r *http.Request, next NextH
 		}
 		if a.Runtime.Type != agentpkg.RuntimeTypeACP {
 			return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "ACP route is bound to a non-ACP agent"))
-		}
-		if route.ServiceID != a.ACPServiceID() {
-			return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "ACP route service does not match agent runtime service"))
 		}
 		backend, resolveErr := h.gateway.RuntimeRegistry().Resolve(a.Runtime.Type)
 		if resolveErr != nil {

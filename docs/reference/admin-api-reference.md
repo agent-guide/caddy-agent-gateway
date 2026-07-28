@@ -215,42 +215,43 @@ Implemented MCP admin families include:
 - MCP discovery and execution endpoints
 - MCP dispatcher runtime inspection endpoints
 
-## ACP Admin Families
+## Agents And AgentRoutes
 
-Implemented ACP admin families include:
+- `GET|POST /admin/agents`
+- `GET|PUT|DELETE /admin/agents/{id}`
+- `GET|POST /admin/agents/routes`
+- `GET|PUT|DELETE /admin/agents/routes/{id}`
+- `GET /admin/agents/{id}/workspace`
+- `GET /admin/agents/{id}/activity`
+- `GET /admin/agents/{id}/usage`
+- `GET /admin/agents/{id}/interactions`
+- `GET|PUT /admin/agents/{id}/resources`
+- `GET /admin/agents/{id}/health`
+- `GET /admin/agents/{id}/capabilities`
+- `GET /admin/agents/{id}/runs`
+- `DELETE /admin/agents/{id}/runs/{run_id}`
+- `GET /admin/agents/{id}/permissions`
+- `POST /admin/agents/{id}/permissions/{request_id}`
+- `GET /admin/agents/{id}/sessions`
+- `GET /admin/agents/{id}/sessions/{session_id}/transcript`
 
-- `GET /admin/acp/services`
-- `POST /admin/acp/services`
-- `GET /admin/acp/services/{id}`
-- `PUT /admin/acp/services/{id}`
-- `DELETE /admin/acp/services/{id}`
-- `GET /admin/acp/services/{id}/sessions`
-- `GET /admin/acp/services/{id}/sessions/{session_id}/transcript`
-- `GET /admin/acp/routes`
-- `POST /admin/acp/routes`
-- `GET /admin/acp/routes/{id}`
-- `PUT /admin/acp/routes/{id}`
-- `DELETE /admin/acp/routes/{id}`
+An Agent owns its execution config under `runtime`; an AgentRoute targets its
+stable `agent_id`. The old ACP service/route and builtin route Admin families
+are removed. Delete targeting AgentRoutes before deleting an Agent.
+
+## ACP Runtime Admin
+
 - `GET /admin/acp/runtime`
 - `GET /admin/acp/runtime/inflight`
-- `DELETE /admin/acp/runtime/threads/{service_id}/{thread_id}`
-- `POST /admin/acp/runtime/permissions/{request_id}`
+- `DELETE /admin/acp/runtime/agents/{agent_id}/threads/{thread_id}`
 
-The dispatcher also exposes consumer-facing route-scoped ACP session endpoints
-under `/<acp-route>/sessions` and
-`/<acp-route>/sessions/{session_id}/transcript`; those are not Admin API
-families because they resolve the service from the matched route and use the
-route's VirtualKey policy.
+ACP sessions, transcripts, runs, and permissions use the common Agent
+endpoints. Consumer-facing session endpoints resolve through the matched
+`/<agent-route>/sessions` and
+`/<agent-route>/sessions/{session_id}/transcript` paths.
 
-See [acp-api.md](acp-api.md) for request and response shapes.
+## Builtin Runtime Admin
 
-## Builtin Admin Families
-
-- `GET /admin/builtin/routes`
-- `POST /admin/builtin/routes`
-- `GET /admin/builtin/routes/{id}`
-- `PUT /admin/builtin/routes/{id}`
-- `DELETE /admin/builtin/routes/{id}`
 - `GET /admin/builtin/runtime`
 - `GET /admin/builtin/runtime/inflight`
 - `DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}`
@@ -265,8 +266,8 @@ running turn for that session; the optional `mode` query parameter is `force`
 current model/tool step, escalating to force after a grace period). The
 cancelled turn's own SSE stream emits a `done` event with
 `stop_reason: "cancelled"`; the operator call returns `404` when no matching
-turn is in flight. Pending interactive permission decisions flow through the
-data-plane resume on `POST /<builtin-route>/turn`, not the Admin API.
+turn is in flight. Pending permissions are listed and decided through the
+common Agent endpoints; resume follows the runtime's advertised capability.
 
 ## Metrics
 
