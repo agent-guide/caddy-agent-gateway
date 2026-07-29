@@ -11,9 +11,18 @@ import (
 // produces it (internal/observability/pipeline) and the Admin API that renders it can share
 // the type without an import cycle.
 type PrometheusSnapshot struct {
-	RequestsByKind map[string]int64
-	FailuresByKind map[string]int64
-	TokensByKind   map[string]int64
+	Requests map[PrometheusLabels]int64
+	Failures map[PrometheusLabels]int64
+	Tokens   map[PrometheusLabels]int64
+}
+
+// PrometheusLabels contains only bounded dimensions. RouteKind is one of the
+// registered route families and RuntimeType is empty or a registered Agent
+// backend type; request, session, route, endpoint, and Agent ids never appear
+// as labels.
+type PrometheusLabels struct {
+	RouteKind   string
+	RuntimeType string
 }
 
 // PrometheusProvider is implemented by the in-process Prometheus sink and lets
@@ -26,9 +35,9 @@ type PrometheusProvider interface {
 // Prometheus text exposition (version 0.0.4).
 func RenderPrometheus(snap PrometheusSnapshot, stats RuntimeStats) string {
 	var b strings.Builder
-	writeCounter(&b, "agentgateway_usage_requests_total", "Total gateway usage events by kind.", snap.RequestsByKind)
-	writeCounter(&b, "agentgateway_usage_failures_total", "Failed gateway usage events by kind.", snap.FailuresByKind)
-	writeCounter(&b, "agentgateway_usage_tokens_total", "Total LLM tokens accounted by kind.", snap.TokensByKind)
+	writeCounter(&b, "agentgateway_usage_requests_total", "Total gateway usage events by route kind and runtime type.", snap.Requests)
+	writeCounter(&b, "agentgateway_usage_failures_total", "Failed gateway usage events by route kind and runtime type.", snap.Failures)
+	writeCounter(&b, "agentgateway_usage_tokens_total", "Total LLM tokens accounted by route kind and runtime type.", snap.Tokens)
 
 	var dropped, failures uint64
 	if stats != nil {
@@ -44,15 +53,20 @@ func RenderPrometheus(snap PrometheusSnapshot, stats RuntimeStats) string {
 	return b.String()
 }
 
-func writeCounter(b *strings.Builder, name, help string, values map[string]int64) {
+func writeCounter(b *strings.Builder, name, help string, values map[PrometheusLabels]int64) {
 	fmt.Fprintf(b, "# HELP %s %s\n", name, help)
 	fmt.Fprintf(b, "# TYPE %s counter\n", name)
-	kinds := make([]string, 0, len(values))
-	for kind := range values {
-		kinds = append(kinds, kind)
+	labels := make([]PrometheusLabels, 0, len(values))
+	for label := range values {
+		labels = append(labels, label)
 	}
-	sort.Strings(kinds)
-	for _, kind := range kinds {
-		fmt.Fprintf(b, "%s{kind=%q} %d\n", name, kind, values[kind])
+	sort.Slice(labels, func(i, j int) bool {
+		if labels[i].RouteKind == labels[j].RouteKind {
+			return labels[i].RuntimeType < labels[j].RuntimeType
+		}
+		return labels[i].RouteKind < labels[j].RouteKind
+	})
+	for _, label := range labels {
+		fmt.Fprintf(b, "%s{route_kind=%q,runtime_type=%q} %d\n", name, label.RouteKind, label.RuntimeType, values[label])
 	}
 }

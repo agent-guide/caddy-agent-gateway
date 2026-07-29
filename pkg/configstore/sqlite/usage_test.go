@@ -549,7 +549,7 @@ func TestInteractionsSummaryServiceAndSessionFilters(t *testing.T) {
 	}
 }
 
-func TestAttributionServiceFallbackInteractions(t *testing.T) {
+func TestAgentAttributionDoesNotUseHistoricalACPServiceID(t *testing.T) {
 	backend, err := Open(t.Context(), Config{SQLitePath: t.TempDir() + "/usage.db"}, nil)
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -559,9 +559,8 @@ func TestAttributionServiceFallbackInteractions(t *testing.T) {
 		t.Fatalf("MigrateUsageTables() error = %v", err)
 	}
 	now := time.Now().UTC()
-	// Untagged ACP event on the agent's bound service but on a route the agent did
-	// not enumerate in acp_route_ids. Only the service-level fallback can recover
-	// it through the interactions union.
+	// A historical, untagged ACP service row is retained but must not become an
+	// active Agent identity after the unified route cutover.
 	if err := InsertACPUsageEvent(db, usage.ACPUsageEvent{
 		InteractionEvent: usage.InteractionEvent{EventID: "acp-svc-only", SpanID: "s1", StartedAt: now, FinishedAt: now, RouteID: "unlisted-route", RouteKind: "acp", Success: true, StatusCode: 200},
 		ServiceID:        "codex-main", AgentType: "codex", Operation: "turn", SessionID: "sess-1",
@@ -577,10 +576,15 @@ func TestAttributionServiceFallbackInteractions(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert mcp: %v", err)
 	}
+	if err := InsertACPUsageEvent(db, usage.ACPUsageEvent{
+		InteractionEvent: usage.InteractionEvent{EventID: "agent-acp", SpanID: "s3", StartedAt: now, FinishedAt: now, RouteID: "agent-route", RouteKind: "agent", RouteProtocol: "agent", Success: true, StatusCode: 200, AgentID: "coding-agent", RunID: "run-1", RuntimeType: "acp"},
+		AgentType:        "codex", Operation: "turn", SessionID: "sess-new",
+	}); err != nil {
+		t.Fatalf("insert unified acp: %v", err)
+	}
 
 	q := NewUsageQueries(db)
-	// Mirrors agentAttributionFilter for an agent that binds only the ACP service.
-	filter := &usage.AttributionFilter{AgentID: "coding-agent", ACPServiceIDs: []string{"codex-main"}}
+	filter := &usage.AttributionFilter{AgentID: "coding-agent"}
 	interactions, err := q.ListInteractions(usage.EventListOptions{Limit: 10, Attribution: filter})
 	if err != nil {
 		t.Fatalf("ListInteractions() error = %v", err)
@@ -589,22 +593,22 @@ func TestAttributionServiceFallbackInteractions(t *testing.T) {
 	for _, item := range interactions.Items {
 		got[item["event_id"].(string)] = true
 	}
-	if !got["acp-svc-only"] {
-		t.Fatalf("service fallback missed the acp-service-only event: %#v", got)
+	if got["acp-svc-only"] {
+		t.Fatalf("historical service identity leaked into Agent attribution: %#v", got)
 	}
-	if got["mcp-collision"] {
-		t.Fatalf("acp service arm must not attribute the same-named mcp service event: %#v", got)
+	if !got["agent-acp"] || got["mcp-collision"] {
+		t.Fatalf("direct Agent attribution = %#v, want only agent-acp", got)
 	}
 	sessionFiltered, err := q.ListInteractions(usage.EventListOptions{
 		Limit:       10,
 		Attribution: filter,
-		Filters:     map[string]string{"session_id": "sess-1"},
+		Filters:     map[string]string{"session_id": "sess-new"},
 	})
 	if err != nil {
 		t.Fatalf("ListInteractions(session filter) error = %v", err)
 	}
-	if len(sessionFiltered.Items) != 1 || sessionFiltered.Items[0]["event_id"] != "acp-svc-only" || sessionFiltered.Items[0]["session_id"] != "sess-1" {
-		t.Fatalf("session-filtered interactions = %#v, want only acp-svc-only with sess-1", sessionFiltered.Items)
+	if len(sessionFiltered.Items) != 1 || sessionFiltered.Items[0]["event_id"] != "agent-acp" || sessionFiltered.Items[0]["session_id"] != "sess-new" {
+		t.Fatalf("session-filtered interactions = %#v, want only agent-acp with sess-new", sessionFiltered.Items)
 	}
 
 	// The MCP breakdown must likewise ignore the ACP service arm: the collision
@@ -621,8 +625,8 @@ func TestAttributionServiceFallbackInteractions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InteractionsSummary() error = %v", err)
 	}
-	if len(summary.Items) != 1 || summary.Items[0]["group_value"] != "acp" {
-		t.Fatalf("interactions summary = %#v, want only acp service fallback", summary.Items)
+	if len(summary.Items) != 1 || summary.Items[0]["group_value"] != "agent" {
+		t.Fatalf("interactions summary = %#v, want unified agent route", summary.Items)
 	}
 	if rc := summary.Items[0]["request_count"]; rc != int64(1) {
 		t.Fatalf("interactions summary request_count = %v, want 1", rc)

@@ -459,7 +459,9 @@ The following are implemented enough to be production-shape code, even if still 
 - OpenAI-compatible and Anthropic-compatible ingress handlers
 - MCP dispatcher, upstream discovery, upstream execution, and runtime inspection
 - SQLite-backed usage metrics summaries and recent interaction event inspection,
-  including nullable common Agent `run_id`/`runtime_type` dimensions
+  including unified AgentRoute dimensions and typed ACP/builtin persistence;
+  Agent ingress carries direct `agent_id`, `run_id`, and `runtime_type`
+- bounded-label Prometheus counters grouped by `route_kind` and `runtime_type`
 - OTLP span export of usage events to an OpenTelemetry collector (opt-in via the `metrics.otlp` config)
 
 The following are partial or placeholder:
@@ -469,11 +471,10 @@ The following are partial or placeholder:
 - first-class non-HTTP MCP transports such as stdio in the active request path
 - full upstream progress relay back to MCP clients
 - full memory retrieval and writeback in request path
-- the `agents` control plane is implemented through P0 + P1 (CRUD, workspace,
-  observability, write-time `agent_id` attribution, the turn-first runtime API
-  contract/registry, run-scoped event sequencing, normalized errors, and common
-  usage identities); ACP/builtin backend adapters and the breaking migration
-  from ACPRoute/BuiltinRoute to one AgentRoute remain future work. See
+- the `agents` control plane, ACP/builtin runtime adapters, unified AgentRoute,
+  Agent-owned ACP configuration, common capability plane, and observability
+  cutover are implemented through M6; physical legacy-source deletion and the
+  HTTP execution backend remain follow-up work. See
   [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md).
 - the unified Workflow Runtime for synchronous resource composition, durable
   Agent Tasks, scheduling, and multi-agent DAGs remains future work. It
@@ -571,8 +572,8 @@ The most coherent next steps for the architecture are:
 - extend MCP runtime beyond the current Streamable HTTP and request-scoped cancellation model
 - include MCP objects in bundle/export/apply flows
 - finish the missing admin handlers for memory
-- complete the observability and source-deletion follow-ups after the unified
-  AgentRoute/Agent-owned ACP configuration cutover
+- complete the legacy source-deletion follow-up after the unified
+  AgentRoute/Agent-owned ACP configuration and observability cutover
 - implement the [Unified Workflow Runtime](../design/workflow-runtime.md) for
   request-bound LLM/MCP composition, durable Agent Tasks, scheduling, and
   multi-agent DAGs, integrated with the implemented P0 + P1

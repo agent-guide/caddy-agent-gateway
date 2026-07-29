@@ -208,6 +208,28 @@ func TestBuiltinSpanStubCarriesRunCorrelationAndResumeLink(t *testing.T) {
 	}
 }
 
+func TestUnifiedAgentACPSpanHasCommonIdentityWithoutServiceIdentity(t *testing.T) {
+	ev := testInteraction()
+	ev.RouteID, ev.RouteKind, ev.RouteProtocol = "agent:reviewer:review", "agent", "agent"
+	ev.AgentID, ev.RuntimeType, ev.RunID = "reviewer", "acp", "run-123"
+	stub, err := spanStub(usage.ACPUsageEvent{InteractionEvent: ev, AgentType: "codex", Operation: "turn"})
+	if err != nil {
+		t.Fatalf("spanStub() error = %v", err)
+	}
+	for key, want := range map[string]string{
+		"agw.route.kind": "agent", "agw.route.protocol": "agent", "agw.agent.id": "reviewer",
+		"agw.agent.runtime_type": "acp", "agw.agent.run_id": "run-123",
+	} {
+		v, ok := attrValue(t, stub.Attributes, key)
+		if !ok || v.AsString() != want {
+			t.Fatalf("attribute %s = %v (present=%v), want %q", key, v.Emit(), ok, want)
+		}
+	}
+	if _, ok := attrValue(t, stub.Attributes, "agw.acp.service_id"); ok {
+		t.Fatal("unified ACP span exposed historical service identity")
+	}
+}
+
 func TestSpanStubRejectsInvalidIDsAndUnknownTypes(t *testing.T) {
 	ev := testInteraction()
 	ev.TraceID = "not-hex"

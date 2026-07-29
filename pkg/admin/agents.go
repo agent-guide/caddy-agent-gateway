@@ -467,26 +467,20 @@ func (h *Handler) getAgentOr404(w http.ResponseWriter, r *http.Request) (agentpk
 }
 
 // agentAttributionFilter builds the metrics attribution selector for an agent:
-// the durable agent_id tag OR any route/service the agent currently owns. This
+// the durable agent_id tag OR any resource route the agent currently owns. This
 // is what lets per-agent reads include untagged-but-mappable events (pre-P1
-// history, or events written before a route/service was reassigned to this
+// history, or events written before a resource route was reassigned to this
 // agent) instead of only events stamped at write time.
 func agentAttributionFilter(a agentpkg.Agent) *usage.AttributionFilter {
 	f := &usage.AttributionFilter{AgentID: a.ID}
 	f.RouteIDs = append(f.RouteIDs, a.Routes.LLMRouteIDs...)
 	f.RouteIDs = append(f.RouteIDs, a.Routes.MCPRouteIDs...)
-	// Only the ACP runtime service is a safe service-level fallback: it is bound
-	// by at most one agent (P0 one-runtime-one-agent), so a service-keyed event
-	// attributes unambiguously. MCP service resources have no such uniqueness
-	// constraint — two agents may list the same mcp_service_id, so a service-level
-	// fallback there would double-attribute untagged MCP usage. MCP events are
-	// instead recovered through the agent's owned mcp_route_ids (route fallback).
 	return f
 }
 
 // agentAttributionFromRequest resolves an optional `agent_id` query filter into
 // a metrics attribution selector (the durable agent_id tag OR the agent's owned
-// routes/ACP service, matching the per-agent usage/interactions reads). When no
+// resource routes, matching the per-agent usage/interactions reads). When no
 // agent_id is present it returns (nil, true) so callers apply no attribution.
 // On an unresolvable agent id it writes the error response and returns ok=false.
 func (h *Handler) agentAttributionFromRequest(w http.ResponseWriter, r *http.Request) (*usage.AttributionFilter, bool) {
@@ -512,8 +506,8 @@ func (h *Handler) agentAttributionFromRequest(w http.ResponseWriter, r *http.Req
 }
 
 // handleGetAgentInteractions returns interaction events attributed to the agent.
-// It prefers the durable agent_id tag and falls back to the agent's owned
-// route/service mapping so untagged-but-mappable events still surface.
+// Agent ingress uses the durable agent_id tag; resource route ids recover
+// historical and nested LLM/MCP rows without reviving ACP service identity.
 func (h *Handler) handleGetAgentInteractions(w http.ResponseWriter, r *http.Request) {
 	a, ok := h.getAgentOr404(w, r)
 	if !ok {

@@ -1,6 +1,6 @@
 # Unified Agent Runtime and Routing Plan
 
-Status: implementation in progress — M0-M5 complete
+Status: implementation in progress — M0-M6 complete
 
 Source branch: `feature/unified-agent-runtime` working tree based on `bc4e739`
 
@@ -24,6 +24,9 @@ AgentRoute model/dispatch, the agent.Manager definition snapshot, and the
 canonical agent-keyed ACP runtime-config snapshot are live. M5 is complete:
 AgentRoute is the only public Agent ingress, ACP execution config is owned by
 Agent definitions, and legacy stores require offline migration before startup.
+M6 is complete: unified ingress selects typed ACP/builtin observability storage
+from `runtime_type`, common queries use direct Agent identity, and Prometheus
+and OTLP expose the runtime-neutral route dimensions.
 
 The target stack is:
 
@@ -1660,8 +1663,8 @@ Implemented M4 evidence:
   and common-event SSE, gates `/permission` on `resume_mode=active_stream`,
   and gates `/sessions`/`/sessions/{id}/transcript` on backend capability
   interfaces; the dispatcher `EnableAgent` switch remains internal until M5;
-- until the M6 observability cutover, kind=agent spans record the base
-  interaction event with common `agent_id`/`run_id`/`runtime_type` identities.
+- M4 temporarily recorded kind=agent spans as base interaction events; M6
+  supersedes that behavior with runtime-selected typed persistence.
 
 ### M5 — Public control-plane and bundle cutover
 
@@ -1763,6 +1766,23 @@ Verification:
 - bounded-label Prometheus assertions;
 - OTLP spans contain common identities without secrets.
 
+Implemented M6 evidence:
+
+- unified ingress persists ACP and builtin turns in their existing typed event
+  tables while retaining `route_kind=agent`, `route_protocol=agent`, direct
+  `agent_id`, bounded `runtime_type`, and common `run_id`;
+- AgentRoute attribution, including pre-dispatch failures, resolves the target
+  and runtime from immutable in-memory snapshots and never consults the
+  historical route/service ownership index;
+- unified ACP events keep native agent type, thread/session, permission, usage,
+  and event-count extensions but leave the retained SQL `service_id` column
+  empty; Agent activity/usage queries no longer have an ACP service fallback;
+- permission audits carry runtime/run/session correlation, and common Agent
+  permission/cancel Admin operations emit typed control audit events;
+- Prometheus counters use only bounded `route_kind` and `runtime_type` labels;
+  OTLP spans carry the common Agent identities and builtin resume links without
+  exposing ACP service identity or continuation payloads.
+
 ### M7 — Remove old route surface and align released documentation
 
 - M5 has already made the legacy API/store/dispatch surfaces unreachable and
@@ -1776,7 +1796,8 @@ Verification:
   management object (for example adapter open requests and pool-count helpers)
   to runtime/owner terminology; this does not rename MCP services;
 - delete runtime-specific dispatch entrypoints after reusable logic lives only
-  in adapters;
+  in adapters, including the unregistered legacy ACP Admin session handlers
+  `handleListACPSessions` and `handleGetACPSessionTranscript`;
 - remove old constants, Admin paths, CLI commands, bundle fields, dispatcher
   flags, Agent fields, examples, and tests;
 - explicitly remove

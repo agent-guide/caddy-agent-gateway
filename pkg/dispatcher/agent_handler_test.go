@@ -189,15 +189,18 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	if envelope.AgentID != "unified" || !runtimeapi.ValidRunID(envelope.RunID) || envelope.Sequence != 1 {
 		t.Fatalf("common envelope = %+v", envelope)
 	}
-	// Until the M6 observability cutover, kind=agent spans record the base
-	// interaction event with the common identities stamped.
-	turnEvents := eventsOfType[usage.InteractionEvent](sink.events)
+	// M6 keeps route_kind/protocol unified while selecting the typed builtin
+	// event store from runtime_type.
+	turnEvents := eventsOfType[usage.BuiltinUsageEvent](sink.events)
 	if len(turnEvents) == 0 {
 		t.Fatalf("no interaction events recorded: %#v", sink.events)
 	}
 	turnEvent := turnEvents[len(turnEvents)-1]
 	if turnEvent.AgentID != "unified" || turnEvent.RunID != envelope.RunID || turnEvent.RouteKind != "agent" || turnEvent.RuntimeType != "builtin" {
 		t.Fatalf("interaction event = %+v", turnEvent)
+	}
+	if !turnEvent.Success || turnEvent.ResultStatus != "success" {
+		t.Fatalf("successful turn status = %+v", turnEvent)
 	}
 	// The inner LLM call is parented under the agent turn with attribution.
 	llmEvents := eventsOfType[usage.LLMUsageEvent](sink.events)
@@ -208,6 +211,11 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	// Unknown top-level fields and foreign runtime options fail closed.
 	if rec := turn(`{"input":"hello","thread_id":"t1"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("unknown top-level field status = %d, want 400", rec.Code)
+	}
+	failedTurnEvents := eventsOfType[usage.BuiltinUsageEvent](sink.events)
+	failedTurn := failedTurnEvents[len(failedTurnEvents)-1]
+	if failedTurn.Success || failedTurn.ResultStatus != "error" || failedTurn.ErrorType != string(runtimeapi.ErrorUnsupportedOption) {
+		t.Fatalf("pre-stream decode event = %+v, want typed error status", failedTurn)
 	}
 	if rec := turn(`{"input":"hello","options":{"version":"v1","runtime":{"cwd":"/tmp"}}}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("foreign runtime option status = %d, want 400", rec.Code)
@@ -234,6 +242,23 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	}
 	if recPermission.Code != http.StatusNotImplemented {
 		t.Fatalf("builtin route permission status = %d, want 501 (new_stream continues on /turn)", recPermission.Code)
+	}
+	capabilityEvents := eventsOfType[usage.BuiltinUsageEvent](sink.events)
+	capabilityEvent := capabilityEvents[len(capabilityEvents)-1]
+	if capabilityEvent.Success || capabilityEvent.ResultStatus != "error" || capabilityEvent.ErrorType != string(runtimeapi.ErrorCapabilityNotSupported) {
+		t.Fatalf("capability rejection event = %+v, want typed error status", capabilityEvent)
+	}
+
+	wrongMethod := httptest.NewRequest(http.MethodGet, "/agents/unified/turn", nil)
+	wrongMethod.Header.Set("Authorization", "Bearer vk-secret")
+	recWrongMethod := httptest.NewRecorder()
+	if err := handler.Dispatch(recWrongMethod, wrongMethod, nil); err != nil {
+		t.Fatalf("Dispatch wrong method: %v", err)
+	}
+	methodEvents := eventsOfType[usage.BuiltinUsageEvent](sink.events)
+	methodEvent := methodEvents[len(methodEvents)-1]
+	if recWrongMethod.Code != http.StatusMethodNotAllowed || methodEvent.Success || methodEvent.ResultStatus != "error" || methodEvent.ErrorType != "method_not_allowed" {
+		t.Fatalf("method rejection status/event = %d/%+v", recWrongMethod.Code, methodEvent)
 	}
 
 	// Changing runtime.type keeps the route id, URL, and VirtualKey allowlist:
@@ -424,14 +449,48 @@ func TestDispatchAgentRouteACPTurnSuccess(t *testing.T) {
 		t.Fatal("native turn request carries no gateway run id")
 	}
 
-	// kind=agent attribution records the common identities on the base event.
-	turnEvents := eventsOfType[usage.InteractionEvent](sink.events)
+	// kind=agent attribution persists in the ACP typed family without restoring
+	// the removed service identity.
+	turnEvents := eventsOfType[usage.ACPUsageEvent](sink.events)
 	if len(turnEvents) == 0 {
 		t.Fatalf("no interaction events recorded: %#v", sink.events)
 	}
 	turnEvent := turnEvents[len(turnEvents)-1]
 	if turnEvent.AgentID != "acp-agent" || turnEvent.RunID != native.req.RunID || turnEvent.RouteKind != "agent" || turnEvent.RuntimeType != "acp" {
 		t.Fatalf("interaction event = %+v", turnEvent)
+	}
+	if turnEvent.ServiceID != "" || turnEvent.Operation != "turn" || turnEvent.ThreadID != "thread-1" || turnEvent.SessionID != "native-session" {
+		t.Fatalf("typed acp extension = %+v", turnEvent)
+	}
+}
+
+func TestServeAgentPermissionDecodeFailureMarksTypedError(t *testing.T) {
+	sink := &usage.InMemorySink{}
+	span, ctx := usage.NewObserver(sink).Begin(t.Context(), usage.InteractionDimensions{
+		RouteKind: "agent", AgentID: "acp-agent", RuntimeType: agentpkg.RuntimeTypeACP,
+	})
+	a := agentpkg.Agent{
+		ID: "acp-agent",
+		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
+			AgentType: baseacp.AgentTypeOpencode,
+		}},
+	}
+	backend := &agentHandlerCapabilityBackend{Backend: runtimeapitest.NewBackend(agentpkg.RuntimeTypeACP)}
+	caps := runtimeapi.Capabilities{Executable: true, Permissions: runtimeapi.PermissionCapabilities{
+		Interactive: true, ResumeMode: runtimeapi.PermissionResumeActiveStream,
+	}}
+	req := httptest.NewRequest(http.MethodPost, "/agents/acp/permission", strings.NewReader(`{"request_id":`)).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	err := (&Handler{}).serveAgentPermission(rec, req, backend, a, caps)
+	if err != nil {
+		t.Fatalf("serveAgentPermission: %v", err)
+	}
+	span.Finish(usage.InteractionOutcome{Success: false, StatusCode: rec.Code, ErrorType: string(runtimeapi.ErrorInvalidRequest)})
+
+	event := sink.Events[0].(usage.ACPUsageEvent)
+	if rec.Code != http.StatusBadRequest || event.Success || event.Operation != "permission" || event.ResultStatus != "error" || event.ErrorType != string(runtimeapi.ErrorInvalidRequest) {
+		t.Fatalf("malformed permission status/event = %d/%+v", rec.Code, event)
 	}
 }
 

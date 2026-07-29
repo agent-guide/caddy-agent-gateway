@@ -10,6 +10,10 @@ operational descriptions in the architecture documentation rather than here.
   `mcp_usage_events`, `acp_usage_events`, `builtin_usage_events`), not generic
   config stores or internal rollups. Preserve nullable `agent_id`, `run_id`,
   and `runtime_type` correlation fields for direct non-Agent traffic.
+- Unified `kind=agent` ingress selects the ACP/builtin typed event family from
+  bounded `runtime_type` while preserving `route_kind=agent` and
+  `route_protocol=agent`. Stamp `agent_id` directly from AgentRoute; never use
+  the historical ACP `service_id` column as an active Agent identity.
 - A failed span without an explicit `error_type` maps 4xx statuses to
   `client_error` and other statuses to `internal_error`.
 - When the dispatcher passes an unhandled request to the next handler, call
@@ -29,6 +33,8 @@ operational descriptions in the architecture documentation rather than here.
   emit separate usage events or consume/copy streams.
 - The process-global component exporter may be replaced on reload, but callback
   handlers must not be registered repeatedly.
+- Prometheus usage counters label only bounded `route_kind` and `runtime_type`;
+  never add Agent, route, endpoint, run, session, request, or permission ids.
 
 ## Integration points
 

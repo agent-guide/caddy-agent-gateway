@@ -197,7 +197,7 @@ func (q *UsageQueries) InteractionsSummary(opts usage.BreakdownOptions) (usage.B
 		where = append(where, col+" = ?")
 		args = append(args, value)
 	}
-	if clause, attrArgs := attributionWhere(opts.Attribution, serviceArmACPScoped); clause != "" {
+	if clause, attrArgs := attributionWhere(opts.Attribution); clause != "" {
 		where = append(where, clause)
 		args = append(args, attrArgs...)
 	}
@@ -227,7 +227,7 @@ func (q *UsageQueries) listRows(baseQuery, table string, allowedFilters map[stri
 	if err != nil {
 		return resp, err
 	}
-	if clause, attrArgs := attributionWhere(opts.Attribution, serviceArmForTable(table)); clause != "" {
+	if clause, attrArgs := attributionWhere(opts.Attribution); clause != "" {
 		where = append(where, clause)
 		args = append(args, attrArgs...)
 	}
@@ -283,7 +283,7 @@ func (q *UsageQueries) timeseries(table string, opts usage.TimeseriesOptions, al
 		where = append(where, col+" = ?")
 		args = append(args, value)
 	}
-	if clause, attrArgs := attributionWhere(opts.Attribution, serviceArmForTable(table)); clause != "" {
+	if clause, attrArgs := attributionWhere(opts.Attribution); clause != "" {
 		where = append(where, clause)
 		args = append(args, attrArgs...)
 	}
@@ -329,7 +329,7 @@ func (q *UsageQueries) breakdown(table string, opts usage.BreakdownOptions, allo
 		where = append(where, col+" = ?")
 		args = append(args, value)
 	}
-	if clause, attrArgs := attributionWhere(opts.Attribution, serviceArmForTable(table)); clause != "" {
+	if clause, attrArgs := attributionWhere(opts.Attribution); clause != "" {
 		where = append(where, clause)
 		args = append(args, attrArgs...)
 	}
@@ -622,44 +622,13 @@ func unixMillis(t time.Time) int64 {
 	return t.UTC().UnixNano() / int64(time.Millisecond)
 }
 
-// serviceArm describes how the attribution service_id arm renders for a given
-// query target. The agent's only unambiguous service fallback is its ACP runtime
-// service, so the arm must be ACP-scoped: acp_services and mcp_services are
-// separate stores with no global id uniqueness, so a bare `service_id IN (...)`
-// would also match an unrelated mcp_usage_events row that happens to share the
-// id.
-type serviceArm int
-
-const (
-	// serviceArmNone: do not emit a service arm (llm/mcp tables).
-	serviceArmNone serviceArm = iota
-	// serviceArmACP: the target is the acp event table, every row is already ACP,
-	// so a plain `service_id IN (...)` is ACP-scoped.
-	serviceArmACP
-	// serviceArmACPScoped: the target is the interactions UNION (mixed protocols),
-	// so the service arm must guard on `route_kind = 'acp'`.
-	serviceArmACPScoped
-)
-
-func serviceArmForTable(table string) serviceArm {
-	switch table {
-	case "acp_usage_events":
-		return serviceArmACP
-	case "interactions":
-		return serviceArmACPScoped
-	default:
-		// llm has no service_id; mcp must not be matched by the ACP service arm.
-		return serviceArmNone
-	}
-}
-
 // attributionWhere builds the per-agent OR clause `(agent_id = ? OR route_id IN
-// (...) [OR <acp service arm>])`. Route ids are globally unique (single routes
-// store), so the route arm is unconditional. The service arm is ACP-only and
-// emitted per the serviceArm mode. A non-nil filter that yields no usable arm
+// (...))`. AgentRoute ingress is attributed solely by its durable agent_id;
+// route ids recover historical nested resource usage only. A non-nil filter
+// that yields no usable arm
 // collapses to a match-nothing clause so an attribution filter never silently
 // widens to all rows; a nil filter means "no attribution filtering".
-func attributionWhere(f *usage.AttributionFilter, svc serviceArm) (string, []any) {
+func attributionWhere(f *usage.AttributionFilter) (string, []any) {
 	if f == nil {
 		return "", nil
 	}
@@ -673,19 +642,6 @@ func attributionWhere(f *usage.AttributionFilter, svc serviceArm) (string, []any
 		clauses = append(clauses, "route_id IN ("+sqlPlaceholders(len(ids))+")")
 		for _, id := range ids {
 			args = append(args, id)
-		}
-	}
-	if svc != serviceArmNone {
-		if ids := dedupeNonEmpty(f.ACPServiceIDs); len(ids) > 0 {
-			placeholders := sqlPlaceholders(len(ids))
-			clause := "service_id IN (" + placeholders + ")"
-			if svc == serviceArmACPScoped {
-				clause = "(route_kind = 'acp' AND service_id IN (" + placeholders + "))"
-			}
-			clauses = append(clauses, clause)
-			for _, id := range ids {
-				args = append(args, id)
-			}
 		}
 	}
 	if len(clauses) == 0 {

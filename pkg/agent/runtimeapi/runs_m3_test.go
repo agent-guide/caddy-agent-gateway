@@ -137,7 +137,35 @@ func TestPermissionBrokerConcurrentDecisionHasOneWinner(t *testing.T) {
 		if audit.Source != "test_transport" {
 			t.Fatalf("audit source = %q", audit.Source)
 		}
+		if audit.RuntimeType != "acp" || audit.RunID != "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+			t.Fatalf("audit correlation = %+v", audit)
+		}
 	}
+}
+
+func TestPermissionBrokerLookupRetainsClaimedCorrelation(t *testing.T) {
+	b := NewPermissionBroker()
+	t.Cleanup(func() { b.Close(WithPermissionSource(context.Background(), "test_cleanup")) })
+	binding := &testContinuation{}
+	info := PendingPermission{
+		RequestID: "perm-correlation", AgentID: "agent-a", RuntimeType: "acp",
+		RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SessionID: "session-a", ExpiresAt: time.Now().Add(time.Minute),
+	}
+	if _, err := b.Register(info, "cont-correlation", binding); err != nil {
+		t.Fatal(err)
+	}
+	assertCorrelation := func(stage string) {
+		t.Helper()
+		got, ok := b.LookupPermission(info.RequestID)
+		if !ok || got.RequestID != info.RequestID || got.AgentID != info.AgentID || got.RuntimeType != info.RuntimeType || got.RunID != info.RunID || got.SessionID != info.SessionID {
+			t.Fatalf("%s correlation = %+v, present=%v", stage, got, ok)
+		}
+	}
+	assertCorrelation("pending")
+	if err := b.Resolve(t.Context(), info.AgentID, PermissionDecision{RequestID: info.RequestID, Outcome: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	assertCorrelation("claimed")
 }
 
 func TestPermissionBrokerExpiryClaimsFailClosed(t *testing.T) {

@@ -96,19 +96,14 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 	rec := httpcapture.NewResponseRecorder(w)
 	traceCtx := extractTraceContext(r)
 	writeTraceHeaders(rec, traceCtx)
+	baseDims := h.routeInteractionDimensions(cfg, traceCtx, "")
 	if maxDepth := h.gateway.UsageConfig().MaxAgentDepth; maxDepth > 0 && traceCtx.AgentDepth >= maxDepth {
-		span, _ := h.gateway.UsageObserver().Begin(r.Context(), usage.InteractionDimensions{
-			TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID, ParentSpanID: traceCtx.ParentSpanID, AgentDepth: traceCtx.AgentDepth,
-			RouteID: cfg.ID, RouteKind: string(cfg.Kind), RouteProtocol: string(cfg.Protocol),
-		})
+		span, _ := h.gateway.UsageObserver().Begin(r.Context(), baseDims)
 		defer span.Finish(usage.InteractionOutcome{Success: false, StatusCode: http.StatusForbidden, ErrorType: "agent_depth_exceeded"})
 		return httpjson.Error(rec, http.StatusForbidden, "agent depth limit exceeded")
 	}
 	if cfg.Disabled {
-		span, _ := h.gateway.UsageObserver().Begin(r.Context(), usage.InteractionDimensions{
-			TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID, ParentSpanID: traceCtx.ParentSpanID, AgentDepth: traceCtx.AgentDepth,
-			RouteID: cfg.ID, RouteKind: string(cfg.Kind), RouteProtocol: string(cfg.Protocol),
-		})
+		span, _ := h.gateway.UsageObserver().Begin(r.Context(), baseDims)
 		defer span.Finish(usage.InteractionOutcome{Success: false, StatusCode: http.StatusForbidden, ErrorType: "route_disabled"})
 		return httpjson.Error(rec, http.StatusForbidden, fmt.Sprintf("route %q is disabled", cfg.ID))
 	}
@@ -123,10 +118,7 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 
 	virtualKey, err := h.gateway.ResolveVirtualKey(r.Context(), r, cfg)
 	if err != nil {
-		span, _ := h.gateway.UsageObserver().Begin(r.Context(), usage.InteractionDimensions{
-			TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID, ParentSpanID: traceCtx.ParentSpanID, AgentDepth: traceCtx.AgentDepth,
-			RouteID: cfg.ID, RouteKind: string(cfg.Kind), RouteProtocol: string(cfg.Protocol),
-		})
+		span, _ := h.gateway.UsageObserver().Begin(r.Context(), baseDims)
 		defer span.Finish(usage.InteractionOutcome{Success: false, StatusCode: statuserr.StatusCode(err, http.StatusUnauthorized), ErrorType: "virtual_key_rejected"})
 		return WriteDispatchError(h.logger, "", cfg.ID, "", 0, rec, r, "resolve virtual key", "", err,
 			zap.Bool("require_virtual_key", cfg.AuthPolicy.RequireVirtualKey),
@@ -145,23 +137,7 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 	if virtualKey != nil {
 		virtualKeyID = virtualKey.ID
 	}
-	dims := usage.InteractionDimensions{
-		TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID, ParentSpanID: traceCtx.ParentSpanID, AgentDepth: traceCtx.AgentDepth,
-		RouteID: cfg.ID, RouteKind: string(cfg.Kind), RouteProtocol: string(cfg.Protocol), VirtualKeyID: virtualKeyID,
-	}
-	// Builtin and agent routes carry their target agent in the route config;
-	// stamp it explicitly so their attribution never depends on the
-	// route -> agent index (§5.7.6, unified-agent-runtime §6.4).
-	if cfg.Kind == routecore.RouteKindBuiltin {
-		if agentID, err := builtinroutepkg.DecodeTargetAgentID(cfg.TargetPolicy); err == nil && agentID != "" {
-			dims.AgentID = agentID
-		}
-	}
-	if cfg.Kind == routecore.RouteKindAgent {
-		if agentID, err := agentroutepkg.DecodeTargetAgentID(cfg.TargetPolicy); err == nil && agentID != "" {
-			dims.AgentID = agentID
-		}
-	}
+	dims := h.routeInteractionDimensions(cfg, traceCtx, virtualKeyID)
 	span, spanCtx := h.gateway.UsageObserver().Begin(r.Context(), dims)
 	spanCtx = bindAgentRuntimeIdentity(spanCtx, span, cfg.Kind)
 	r = r.WithContext(spanCtx)
@@ -206,6 +182,37 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 	default:
 		return WriteDispatchError(h.logger, string(cfg.Protocol), cfg.ID, "", http.StatusServiceUnavailable, rec, r, "dispatch route", "route kind is not configured", fmt.Errorf("route %q kind %q is not configured", cfg.ID, cfg.Kind))
 	}
+}
+
+// routeInteractionDimensions resolves the stable AgentRoute target and the
+// selected runtime from immutable in-memory snapshots before the span opens.
+// Agent ingress therefore never relies on the historical route/service
+// attribution index, including authentication and other pre-dispatch errors.
+func (h *Handler) routeInteractionDimensions(cfg routecore.AgentRouteConfig, traceCtx traceContext, virtualKeyID string) usage.InteractionDimensions {
+	dims := usage.InteractionDimensions{
+		TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID, ParentSpanID: traceCtx.ParentSpanID, AgentDepth: traceCtx.AgentDepth,
+		RouteID: cfg.ID, RouteKind: string(cfg.Kind), RouteProtocol: string(cfg.Protocol), VirtualKeyID: virtualKeyID,
+	}
+	if cfg.Kind == routecore.RouteKindBuiltin {
+		if agentID, err := builtinroutepkg.DecodeTargetAgentID(cfg.TargetPolicy); err == nil && agentID != "" {
+			dims.AgentID, dims.RuntimeType = agentID, agentpkg.RuntimeTypeBuiltin
+		}
+		return dims
+	}
+	if cfg.Kind != routecore.RouteKindAgent {
+		return dims
+	}
+	agentID, err := agentroutepkg.DecodeTargetAgentID(cfg.TargetPolicy)
+	if err != nil || agentID == "" {
+		return dims
+	}
+	dims.AgentID = agentID
+	if manager := h.gateway.AgentManager(); manager != nil {
+		if a, ok := manager.GetSnapshot(agentID); ok {
+			dims.RuntimeType = a.Runtime.Type
+		}
+	}
+	return dims
 }
 
 // bindAgentRuntimeIdentity adds a runtime type only after Agent attribution is

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 )
@@ -89,13 +90,19 @@ func (h *Handler) handleCancelAgentRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	runID := strings.TrimSpace(r.PathValue("run_id"))
+	span := h.beginAgentControlAudit(r, a, "run_cancel", runID, "", "")
+	auditStatus, auditError := http.StatusOK, ""
+	defer func() { finishAgentControlAudit(span, a.Runtime.Type, auditStatus, auditError) }()
 	b, err := h.agentBackend(a)
 	if err != nil {
+		auditStatus, auditError = runtimeapi.HTTPStatus(err), string(runtimeapi.PublicError(err).ErrorType)
 		writeRuntimeError(w, err)
 		return
 	}
 	c, ok := b.(runtimeapi.RunCanceller)
 	if !ok {
+		auditStatus, auditError = http.StatusNotImplemented, string(runtimeapi.ErrorCapabilityNotSupported)
 		writeRuntimeError(w, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "run cancellation is not supported"))
 		return
 	}
@@ -104,21 +111,25 @@ func (h *Handler) handleCancelAgentRun(w http.ResponseWriter, r *http.Request) {
 		mode = runtimeapi.CancelModeForce
 	}
 	if mode != runtimeapi.CancelModeForce && mode != runtimeapi.CancelModeGraceful {
+		auditStatus, auditError = http.StatusBadRequest, string(runtimeapi.ErrorInvalidRequest)
 		writeRuntimeError(w, runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "invalid cancel mode"))
 		return
 	}
 	caps, err := b.Capabilities(r.Context(), a)
 	if err != nil {
+		auditStatus, auditError = runtimeapi.HTTPStatus(err), string(runtimeapi.PublicError(err).ErrorType)
 		writeRuntimeError(w, err)
 		return
 	}
 	if (mode == runtimeapi.CancelModeForce && !caps.Cancellation.Force) ||
 		(mode == runtimeapi.CancelModeGraceful && !caps.Cancellation.Graceful) {
+		auditStatus, auditError = http.StatusNotImplemented, string(runtimeapi.ErrorCapabilityNotSupported)
 		writeRuntimeError(w, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "cancel mode is not supported"))
 		return
 	}
-	result, err := c.CancelRun(r.Context(), a, runtimeapi.CancelRequest{RunID: strings.TrimSpace(r.PathValue("run_id")), Mode: mode})
+	result, err := c.CancelRun(r.Context(), a, runtimeapi.CancelRequest{RunID: runID, Mode: mode})
 	if err != nil {
+		auditStatus, auditError = runtimeapi.HTTPStatus(err), string(runtimeapi.PublicError(err).ErrorType)
 		if code, ok := runtimeapi.ErrorCodeOf(err); ok && code == runtimeapi.ErrorBackendUnavailable {
 			w.Header().Set("Retry-After", strconv.Itoa(1))
 		}
@@ -145,37 +156,52 @@ func (h *Handler) handleResolveAgentPermission(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
+	pathID := strings.TrimSpace(r.PathValue("request_id"))
+	runID, sessionID := "", ""
+	if h.permissionBroker != nil {
+		if correlation, found := h.permissionBroker.LookupPermission(pathID); found && correlation.AgentID == a.ID {
+			runID, sessionID = correlation.RunID, correlation.SessionID
+		}
+	}
+	span := h.beginAgentControlAudit(r, a, "permission", runID, sessionID, pathID)
+	auditStatus, auditError := http.StatusOK, ""
+	defer func() { finishAgentControlAudit(span, a.Runtime.Type, auditStatus, auditError) }()
 	var decision runtimeapi.PermissionDecision
 	if err := httpjson.Decode(r, &decision); err != nil {
+		auditStatus, auditError = http.StatusBadRequest, string(runtimeapi.ErrorInvalidRequest)
 		writeRuntimeError(w, runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "invalid permission decision"))
 		return
 	}
-	pathID := strings.TrimSpace(r.PathValue("request_id"))
 	if decision.RequestID == "" {
 		decision.RequestID = pathID
 	}
 	if decision.RequestID != pathID {
+		auditStatus, auditError = http.StatusBadRequest, string(runtimeapi.ErrorInvalidRequest)
 		writeRuntimeError(w, runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "request_id does not match path"))
 		return
 	}
 	b, err := h.agentBackend(a)
 	if err != nil {
+		auditStatus, auditError = runtimeapi.HTTPStatus(err), string(runtimeapi.PublicError(err).ErrorType)
 		writeRuntimeError(w, err)
 		return
 	}
 	resolver, supported := b.(runtimeapi.PermissionResolver)
 	if !supported {
+		auditStatus, auditError = http.StatusNotImplemented, string(runtimeapi.ErrorCapabilityNotSupported)
 		writeRuntimeError(w, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "permission resolution is not supported"))
 		return
 	}
 	caps, err := b.Capabilities(r.Context(), a)
 	if err != nil {
+		auditStatus, auditError = runtimeapi.HTTPStatus(err), string(runtimeapi.PublicError(err).ErrorType)
 		writeRuntimeError(w, err)
 		return
 	}
 	resumeRequired := caps.Permissions.ResumeMode == runtimeapi.PermissionResumeNewStream
 	ctx := runtimeapi.WithPermissionSource(r.Context(), "agent_admin")
 	if err := resolver.ResolvePermission(ctx, a, decision); err != nil {
+		auditStatus, auditError = runtimeapi.HTTPStatus(err), string(runtimeapi.PublicError(err).ErrorType)
 		writeRuntimeError(w, err)
 		return
 	}
@@ -184,6 +210,35 @@ func (h *Handler) handleResolveAgentPermission(w http.ResponseWriter, r *http.Re
 		response["resume_required"] = true
 	}
 	_ = httpjson.Write(w, http.StatusOK, response)
+}
+
+func (h *Handler) beginAgentControlAudit(r *http.Request, a agentpkg.Agent, operation, runID, sessionID, requestID string) usage.InteractionSpan {
+	if h.usageObserver == nil {
+		return usage.NoopSpan{}
+	}
+	span, _ := h.usageObserver.Begin(r.Context(), usage.InteractionDimensions{
+		RouteID: "/admin/agents", RouteKind: "agent", RouteProtocol: "admin",
+		AgentID: a.ID, RuntimeType: a.Runtime.Type, RunID: strings.TrimSpace(runID),
+	})
+	switch a.Runtime.Type {
+	case agentpkg.RuntimeTypeACP:
+		span.SetExtension(usage.ACPExtension{Operation: operation, SessionID: sessionID, PermissionRequestID: requestID, ResultStatus: "success"})
+	case agentpkg.RuntimeTypeBuiltin:
+		span.SetExtension(usage.BuiltinExtension{Operation: operation, RunID: runID, SessionID: sessionID, PermissionRequestID: requestID, ResultStatus: "success"})
+	}
+	return span
+}
+
+func finishAgentControlAudit(span usage.InteractionSpan, runtimeType string, status int, errorType string) {
+	if errorType != "" {
+		switch runtimeType {
+		case agentpkg.RuntimeTypeACP:
+			span.SetExtension(usage.ACPExtension{ResultStatus: "error"})
+		case agentpkg.RuntimeTypeBuiltin:
+			span.SetExtension(usage.BuiltinExtension{ResultStatus: "error"})
+		}
+	}
+	span.Finish(usage.InteractionOutcome{Success: status < 400, StatusCode: status, ErrorType: errorType})
 }
 
 func (h *Handler) handleListAgentSessions(w http.ResponseWriter, r *http.Request) {

@@ -53,22 +53,16 @@ func (a *AgentAttribution) ResolveAgentID(routeID, serviceID, sessionID string) 
 // agent_id stamping is the primary signal, but it cannot cover events written
 // before the agent existed, before the agent_id column existed, or while the
 // route/service was bound to a different agent. The filter therefore matches the
-// durable agent_id tag OR a route/service the agent currently owns, so per-agent
-// reads (interactions, usage, activity, health) fall back to the route/service
-// mapping for untagged-but-mappable events. An empty filter matches nothing.
-//
-// ACPServiceIDs is intentionally ACP-only: the ACP runtime service is bound by
-// at most one agent (P0 one-runtime-one-agent), so it is the only unambiguous
-// service-level fallback. MCP service resources carry no uniqueness constraint
-// and are recovered through RouteIDs instead. The query layer keeps this arm
-// ACP-scoped so a same-named MCP service is never matched.
+// durable agent_id tag OR a resource route the agent currently references, so
+// per-agent reads retain historical nested LLM/MCP rows. Agent ingress itself
+// is always stamped directly from AgentRoute.agent_id; the removed ACP service
+// identity is never used as an active attribution fallback.
 type AttributionFilter struct {
-	AgentID       string
-	RouteIDs      []string
-	ACPServiceIDs []string
+	AgentID  string
+	RouteIDs []string
 }
 
 // IsEmpty reports whether the filter carries no selector at all.
 func (f *AttributionFilter) IsEmpty() bool {
-	return f == nil || (f.AgentID == "" && len(f.RouteIDs) == 0 && len(f.ACPServiceIDs) == 0)
+	return f == nil || (f.AgentID == "" && len(f.RouteIDs) == 0)
 }

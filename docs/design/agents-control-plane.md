@@ -609,17 +609,15 @@ leave P1-era events without reliable per-agent attribution. Concretely:
    mapping is precisely the signal that the deployment has outgrown unique
    service/route → agent binding.
 
-4. **Query layer prefers the tag, falls back to mapping.** Per-agent usage and
-   activity prefer the `agent_id` filter and fall back to service/route/session
-   mapping for events with no tag (pre-P1 events, non-agent traffic later
-   reassigned, or the ambiguous case). The fallback's ambiguity caveat is
-   surfaced in the response/UI, not hidden.
+4. **Query layer uses direct Agent identity for ingress.** Per-agent usage and
+   activity filter Agent execution by the durable `agent_id`; resource route
+   ids remain a fallback only for historical/nested LLM and MCP rows. The
+   removed ACP service identity is not an active query arm.
 
-Items 2-4 describe the implemented pre-unification fallback. After the
-AgentRoute/service-removal cutover, Agent ingress stamps `agent_id` directly and
-new ACP runtime events carry their owner `agent_id`; active queries no longer
-infer ownership from `service_id`. Any retained SQL service column is
-historical-only.
+After the AgentRoute/service-removal and M6 observability cutovers, Agent
+ingress stamps `agent_id` directly and new ACP runtime events carry their owner
+`agent_id`; active queries no longer infer ownership from `service_id`. Any
+retained SQL service column is historical-only.
 
 `origin_agent_id` for cross-agent handoff is deferred to P2/P3, because there is
 nothing to stamp until handoff exists. It is added the same additive way when
@@ -1227,34 +1225,13 @@ A post-implementation review tightened the following:
   same `service_id`. The List-based uniqueness check was otherwise a
   check-then-write TOCTOU. Covered by `TestCreateConcurrentServiceBindingIsExclusive`
   (run under `-race`).
-- **Attribution fallback (§5.6 / §6.2):** per-agent reads no longer filter on
-  `agent_id` equality alone; the new `usage.AttributionFilter` OR-matches the
-  tag, the agent's owned route ids, and its service ids, so untagged-but-mappable
-  events surface. A nil filter means "no attribution filtering"; a non-nil but
-  empty filter matches nothing (never widens to all rows).
-  - **Service fallback is ACP-only and unambiguous:** only the ACP runtime
-    `service_id` (bound by at most one agent under P0 one-runtime-one-agent) is
-    used as a service-level fallback, carried in `AttributionFilter.ACPServiceIDs`.
-    MCP service resources have no uniqueness constraint — two agents may list the
-    same `mcp_service_id` — so attributing untagged MCP usage by service would
-    double-count; MCP events are recovered via the agent's owned `mcp_route_ids`
-    instead.
-  - **The service arm is ACP-scoped in SQL, not a bare `service_id IN (…)`:**
-    `acp_services` and `mcp_services` are separate config stores with no global id
-    uniqueness, so a same-named MCP service must not be matched by the agent's ACP
-    fallback. The query layer therefore emits the service arm only against the ACP
-    event table (`acp_usage_events`, already all-ACP) and, in the mixed-protocol
-    interactions UNION, guards it as `route_kind = 'acp' AND service_id IN (…)`.
-    The MCP/LLM tables get no service arm at all. Route arms stay unconditional
-    because route ids are globally unique (single routes store).
-  - **Interactions union projects `service_id`:** the
-    `llm/mcp/acp` UNION behind `ListInteractions` projects `service_id` (NULL for
-    llm rows) and enables the service arm, so `/activity`, `/interactions`, and
-    `/health` recover ACP events for an agent that binds only the service and did
-    not enumerate `acp_route_ids`. (Write-time `agent_id` stamping still happens at
-    span `Begin`, where only the route id is known — the service id arrives later
-    via the ACP extension — so the read-side service fallback is what closes this
-    gap for service-only agents.)
+- **Attribution fallback (§5.6 / §6.2):** before route unification, per-agent
+  reads OR-matched `agent_id`, owned route ids, and an ACP service arm. M6
+  removed the service arm: unified Agent ingress always stamps `agent_id`
+  directly, while resource route ids recover only historical/nested LLM and
+  MCP rows. A nil filter means "no attribution filtering"; a non-nil empty
+  filter matches nothing (never widens to all rows). The retained ACP SQL
+  `service_id` column is historical detail, not an ownership key.
 - **Route-binding uniqueness (§5.1 / §5.6):** uniqueness is no longer limited to
   the ACP `service_id`. Any LLM/MCP/ACP `route_id` is now owned by at most one
   agent, enforced in three places: `Manager.checkRouteUniqueness` on create/update

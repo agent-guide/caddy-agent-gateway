@@ -75,12 +75,20 @@ type PermissionBroker struct {
 
 type claimedPermission struct {
 	agentID, runtimeType string
+	runID, sessionID     string
 	at                   time.Time
 }
 
 type expiredPermission struct {
 	agentID string
 	at      time.Time
+}
+
+func claimedPermissionFrom(info PendingPermission, at time.Time) claimedPermission {
+	return claimedPermission{
+		agentID: info.AgentID, runtimeType: info.RuntimeType,
+		runID: info.RunID, sessionID: info.SessionID, at: at,
+	}
 }
 
 type permissionSourceKey struct{}
@@ -97,11 +105,24 @@ func permissionSource(ctx context.Context) string {
 }
 
 type PermissionAudit struct {
-	RequestID string    `json:"request_id"`
-	AgentID   string    `json:"agent_id"`
-	Source    string    `json:"source"`
-	Result    string    `json:"result"`
-	At        time.Time `json:"at"`
+	RequestID   string    `json:"request_id"`
+	AgentID     string    `json:"agent_id"`
+	RuntimeType string    `json:"runtime_type,omitempty"`
+	RunID       string    `json:"run_id,omitempty"`
+	SessionID   string    `json:"session_id,omitempty"`
+	Source      string    `json:"source"`
+	Result      string    `json:"result"`
+	At          time.Time `json:"at"`
+}
+
+// PermissionCorrelation is the durable, non-secret identity retained while a
+// permission is pending and for the bounded claimed tombstone lifetime.
+type PermissionCorrelation struct {
+	RequestID   string
+	AgentID     string
+	RuntimeType string
+	RunID       string
+	SessionID   string
 }
 
 func NewPermissionBroker() *PermissionBroker {
@@ -185,14 +206,13 @@ func (b *PermissionBroker) List(agentID string) []PendingPermission {
 	return out
 }
 
-// PermissionOwner identifies the common Agent owner for a pending or recently
-// claimed opaque request id. Retaining only this routing metadata lets
-// concurrent legacy entry points reach Resolve after the atomic winner has
-// removed continuation state; they then receive the broker's one-shot error
-// instead of falling through to a native permission registry.
-func (b *PermissionBroker) PermissionOwner(requestID string) (agentID, runtimeType string, ok bool) {
+// LookupPermission returns common correlation for a pending or recently
+// claimed opaque request id. Retaining only non-secret identity lets audit
+// paths keep run/session attribution after an atomic winner removes the
+// continuation from the pending set.
+func (b *PermissionBroker) LookupPermission(requestID string) (PermissionCorrelation, bool) {
 	if b == nil || strings.TrimSpace(requestID) == "" {
-		return "", "", false
+		return PermissionCorrelation{}, false
 	}
 	now := b.now().UTC()
 	b.mu.Lock()
@@ -200,12 +220,18 @@ func (b *PermissionBroker) PermissionOwner(requestID string) (agentID, runtimeTy
 	b.sweepExpiredLocked(now)
 	requestID = strings.TrimSpace(requestID)
 	if e := b.pending[requestID]; e != nil {
-		return e.info.AgentID, e.info.RuntimeType, true
+		return PermissionCorrelation{
+			RequestID: requestID, AgentID: e.info.AgentID, RuntimeType: e.info.RuntimeType,
+			RunID: e.info.RunID, SessionID: e.info.SessionID,
+		}, true
 	}
 	if e, exists := b.claimed[requestID]; exists {
-		return e.agentID, e.runtimeType, true
+		return PermissionCorrelation{
+			RequestID: requestID, AgentID: e.agentID, RuntimeType: e.runtimeType,
+			RunID: e.runID, SessionID: e.sessionID,
+		}, true
 	}
-	return "", "", false
+	return PermissionCorrelation{}, false
 }
 
 func (b *PermissionBroker) Resolve(ctx context.Context, agentID string, decision PermissionDecision) error {
@@ -273,7 +299,17 @@ func (b *PermissionBroker) audit(agentID, requestID, source, result string) {
 		return
 	}
 	b.mu.Lock()
-	b.audits = append(b.audits, PermissionAudit{RequestID: strings.TrimSpace(requestID), AgentID: strings.TrimSpace(agentID), Source: source, Result: result, At: b.now().UTC()})
+	requestID = strings.TrimSpace(requestID)
+	audit := PermissionAudit{RequestID: requestID, AgentID: strings.TrimSpace(agentID), Source: source, Result: result, At: b.now().UTC()}
+	if entry := b.pending[requestID]; entry != nil {
+		audit.RuntimeType, audit.RunID, audit.SessionID = entry.info.RuntimeType, entry.info.RunID, entry.info.SessionID
+	} else if claimed, ok := b.claimed[requestID]; ok {
+		if audit.AgentID == "" {
+			audit.AgentID = claimed.agentID
+		}
+		audit.RuntimeType, audit.RunID, audit.SessionID = claimed.runtimeType, claimed.runID, claimed.sessionID
+	}
+	b.audits = append(b.audits, audit)
 	if len(b.audits) > 4096 {
 		b.audits = append([]PermissionAudit(nil), b.audits[len(b.audits)-4096:]...)
 	}
@@ -291,7 +327,7 @@ func (b *PermissionBroker) DrainRun(ctx context.Context, agentID, runID string) 
 		if e.info.AgentID == agentID && e.info.RunID == runID {
 			claimed = append(claimed, e)
 			delete(b.pending, id)
-			b.claimed[id] = claimedPermission{agentID: e.info.AgentID, runtimeType: e.info.RuntimeType, at: b.now().UTC()}
+			b.claimed[id] = claimedPermissionFrom(e.info, b.now().UTC())
 		}
 	}
 	b.mu.Unlock()
@@ -325,7 +361,7 @@ func (b *PermissionBroker) ClaimAgent(agentID string) func(context.Context) int 
 		if e.info.AgentID == agentID {
 			claimed = append(claimed, e)
 			delete(b.pending, id)
-			b.claimed[id] = claimedPermission{agentID: e.info.AgentID, runtimeType: e.info.RuntimeType, at: b.now().UTC()}
+			b.claimed[id] = claimedPermissionFrom(e.info, b.now().UTC())
 		}
 	}
 	b.mu.Unlock()
@@ -353,7 +389,7 @@ func (b *PermissionBroker) DrainAll(ctx context.Context) int {
 	for id, e := range b.pending {
 		claimed = append(claimed, e)
 		delete(b.pending, id)
-		b.claimed[id] = claimedPermission{agentID: e.info.AgentID, runtimeType: e.info.RuntimeType, at: now}
+		b.claimed[id] = claimedPermissionFrom(e.info, now)
 	}
 	b.mu.Unlock()
 	for _, e := range claimed {
@@ -408,7 +444,7 @@ func (b *PermissionBroker) claim(agentID, requestID string, expiry bool, decisio
 	}
 	if e != nil {
 		delete(b.pending, requestID)
-		b.claimed[requestID] = claimedPermission{agentID: e.info.AgentID, runtimeType: e.info.RuntimeType, at: now}
+		b.claimed[requestID] = claimedPermissionFrom(e.info, now)
 		if expiry || expiredNow {
 			b.expired[requestID] = expiredPermission{agentID: e.info.AgentID, at: now}
 		}
@@ -521,7 +557,7 @@ func (b *PermissionBroker) expireDue() {
 		if !now.Before(e.info.ExpiresAt) {
 			due = append(due, e)
 			delete(b.pending, id)
-			b.claimed[id] = claimedPermission{agentID: e.info.AgentID, runtimeType: e.info.RuntimeType, at: now}
+			b.claimed[id] = claimedPermissionFrom(e.info, now)
 			b.expired[id] = expiredPermission{agentID: e.info.AgentID, at: now}
 		}
 	}

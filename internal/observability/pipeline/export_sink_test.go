@@ -15,8 +15,19 @@ func TestPrometheusSinkSnapshot(t *testing.T) {
 		t.Fatalf("Write() error = %v", err)
 	}
 	snap := sink.Snapshot()
-	if snap.RequestsByKind["llm"] != 1 || snap.TokensByKind["llm"] != 7 {
+	labels := usage.PrometheusLabels{RouteKind: "llm"}
+	if snap.Requests[labels] != 1 || snap.Tokens[labels] != 7 {
 		t.Fatalf("snapshot = %+v, want one llm request and 7 tokens", snap)
+	}
+	if err := sink.Write(usage.ACPUsageEvent{InteractionEvent: usage.InteractionEvent{
+		RouteKind: "agent", RouteProtocol: "agent", RuntimeType: "acp", AgentID: "high-cardinality-agent-id", Success: false,
+	}}); err != nil {
+		t.Fatalf("Write(agent) error = %v", err)
+	}
+	snap = sink.Snapshot()
+	agentLabels := usage.PrometheusLabels{RouteKind: "agent", RuntimeType: "acp"}
+	if snap.Requests[agentLabels] != 1 || snap.Failures[agentLabels] != 1 || len(snap.Requests) != 2 {
+		t.Fatalf("bounded Agent labels snapshot = %+v", snap)
 	}
 }
 

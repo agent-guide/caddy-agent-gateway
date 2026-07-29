@@ -255,6 +255,20 @@ func (s *eventSpan) Finish(outcome InteractionOutcome) {
 		sink.Enqueue(acpEvent(base, acp))
 	case "builtin":
 		sink.Enqueue(builtinEvent(base, builtin))
+	case "agent":
+		// AgentRoute deliberately hides the selected backend in its route kind.
+		// Keep the unified route dimensions on the common event while selecting
+		// the existing typed store from the bounded runtime_type extension.
+		switch base.RuntimeType {
+		case "acp":
+			sink.Enqueue(acpEvent(base, acp))
+		case "builtin":
+			sink.Enqueue(builtinEvent(base, builtin))
+		default:
+			// HTTP is not executable until M8. Retain the generic event for any
+			// diagnostic sink without falsely classifying it as another runtime.
+			sink.Enqueue(base)
+		}
 	default:
 		sink.Enqueue(base)
 	}

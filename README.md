@@ -339,8 +339,12 @@ See [docs/getting-started/quickstart-acp.md](docs/getting-started/quickstart-acp
 ## Metrics Admin API
 
 Usage metrics are backed by the SQLite usage event tables (`llm_usage_events`,
-`mcp_usage_events`, `acp_usage_events`) when the sqlite config store backend is
-active.
+`mcp_usage_events`, `acp_usage_events`, `builtin_usage_events`) when the sqlite
+config store backend is active. Unified Agent ingress keeps
+`route_kind=agent`/`route_protocol=agent` and selects the ACP or builtin typed
+table through `runtime_type`; new ACP Agent events use `agent_id` directly and
+do not populate the historical `service_id` column. Prometheus counters use
+only the bounded `route_kind` and `runtime_type` labels.
 
 ```text
 GET /admin/metrics                       # per-kind summaries + pipeline health counters

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
@@ -44,6 +45,16 @@ func (*retryableCancelBackend) CancelRun(context.Context, agentpkg.Agent, runtim
 	return runtimeapi.CancelResult{}, runtimeapi.NewError(runtimeapi.ErrorBackendUnavailable, "run cancellation is not ready; retry")
 }
 
+type claimedAuditContinuation struct{}
+
+func (claimedAuditContinuation) ValidateContinuationDecision(string, runtimeapi.PendingPermission, runtimeapi.PermissionDecision) error {
+	return nil
+}
+func (claimedAuditContinuation) ResolveContinuation(context.Context, string, runtimeapi.PermissionDecision, time.Time) error {
+	return nil
+}
+func (claimedAuditContinuation) ExpireContinuation(context.Context, string) error { return nil }
+
 func TestResolveBuiltinAgentPermissionRequiresNewStreamResume(t *testing.T) {
 	store := newAgentConfigStore()
 	a := &agentpkg.Agent{ID: "a1", Name: "A1", Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeBuiltin, Builtin: &agentpkg.BuiltinRuntime{}}}
@@ -74,6 +85,52 @@ func TestResolveBuiltinAgentPermissionRequiresNewStreamResume(t *testing.T) {
 	}
 }
 
+func TestResolveAgentPermissionAuditRetainsClaimedRunCorrelation(t *testing.T) {
+	store := newAgentConfigStore()
+	a := &agentpkg.Agent{ID: "a1", Name: "A1", Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeBuiltin, Builtin: &agentpkg.BuiltinRuntime{}}}
+	if err := store.Create(t.Context(), a); err != nil {
+		t.Fatal(err)
+	}
+	backend := &permissionResponseBackend{}
+	registry := runtimeapi.NewRegistry()
+	if err := registry.Register(backend); err != nil {
+		t.Fatal(err)
+	}
+	broker := runtimeapi.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
+	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if _, err := broker.Register(runtimeapi.PendingPermission{
+		RequestID: "perm-claimed", AgentID: a.ID, RuntimeType: agentpkg.RuntimeTypeBuiltin,
+		RunID: runID, SessionID: "session-1", ExpiresAt: time.Now().Add(time.Minute),
+	}, "cont-claimed", claimedAuditContinuation{}); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a concurrent entrypoint winning the atomic claim before this
+	// Admin request begins; the bounded claimed metadata must still correlate
+	// the audit span.
+	if err := broker.Resolve(t.Context(), a.ID, runtimeapi.PermissionDecision{RequestID: "perm-claimed", Outcome: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	sink := &adminCaptureSink{}
+	h := &Handler{
+		agentManager: agentpkg.NewManager(store), runtimeRegistry: registry,
+		permissionBroker: broker, usageObserver: usage.NewObserver(sink),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/agents/a1/permissions/perm-claimed", strings.NewReader(`{"outcome":"allow"}`))
+	req.SetPathValue("id", a.ID)
+	req.SetPathValue("request_id", "perm-claimed")
+	rec := httptest.NewRecorder()
+	h.handleResolveAgentPermission(rec, req)
+
+	if rec.Code != http.StatusOK || len(sink.events) != 1 {
+		t.Fatalf("status/events = %d/%#v; body=%s", rec.Code, sink.events, rec.Body.String())
+	}
+	ev, ok := sink.events[0].(usage.BuiltinUsageEvent)
+	if !ok || ev.AgentID != a.ID || ev.RuntimeType != agentpkg.RuntimeTypeBuiltin || ev.RunID != runID || ev.SessionID != "session-1" || ev.PermissionRequestID != "perm-claimed" || ev.Operation != "permission" || ev.ResultStatus != "success" {
+		t.Fatalf("claimed permission audit = %#v", sink.events[0])
+	}
+}
+
 func TestCancelAgentRunBackendUnavailableIsRetryable(t *testing.T) {
 	store := newAgentConfigStore()
 	a := &agentpkg.Agent{ID: "a1", Name: "A1", Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeBuiltin, Builtin: &agentpkg.BuiltinRuntime{}}}
@@ -84,7 +141,8 @@ func TestCancelAgentRunBackendUnavailableIsRetryable(t *testing.T) {
 	if err := registry.Register(&retryableCancelBackend{}); err != nil {
 		t.Fatal(err)
 	}
-	h := &Handler{agentManager: agentpkg.NewManager(store), runtimeRegistry: registry}
+	sink := &adminCaptureSink{}
+	h := &Handler{agentManager: agentpkg.NewManager(store), runtimeRegistry: registry, usageObserver: usage.NewObserver(sink)}
 	req := httptest.NewRequest(http.MethodDelete, "/admin/agents/a1/runs/run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil)
 	req.SetPathValue("id", "a1")
 	req.SetPathValue("run_id", "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -92,6 +150,13 @@ func TestCancelAgentRunBackendUnavailableIsRetryable(t *testing.T) {
 	h.handleCancelAgentRun(rec, req)
 	if rec.Code != http.StatusServiceUnavailable || rec.Header().Get("Retry-After") != "1" {
 		t.Fatalf("status=%d retry-after=%q body=%s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
+	}
+	if len(sink.events) != 1 {
+		t.Fatalf("cancel audit events = %#v", sink.events)
+	}
+	ev, ok := sink.events[0].(usage.BuiltinUsageEvent)
+	if !ok || ev.RouteKind != "agent" || ev.RouteProtocol != "admin" || ev.AgentID != "a1" || ev.RuntimeType != "builtin" || ev.RunID != "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || ev.Operation != "run_cancel" || ev.ResultStatus != "error" {
+		t.Fatalf("cancel audit = %#v", sink.events[0])
 	}
 }
 
@@ -438,9 +503,6 @@ func TestMetricsTimeseriesResolvesAgentAttribution(t *testing.T) {
 	}
 	if len(attr.RouteIDs) != 1 || attr.RouteIDs[0] != "llm-route" {
 		t.Fatalf("route fallback = %#v, want llm-route", attr.RouteIDs)
-	}
-	if len(attr.ACPServiceIDs) != 0 {
-		t.Fatalf("removed acp service fallback = %#v, want empty", attr.ACPServiceIDs)
 	}
 	// agent_id must NOT leak into the literal filter map (attribution handles it).
 	if _, ok := query.seriesOpts.Filters["agent_id"]; ok {

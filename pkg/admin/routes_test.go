@@ -15,6 +15,7 @@ import (
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
 	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configstoreschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
@@ -78,6 +79,16 @@ func (s *adminCaptureSink) Enqueue(v any) bool {
 	s.events = append(s.events, v)
 	return true
 }
+
+type adminPermissionContinuation struct{}
+
+func (adminPermissionContinuation) ValidateContinuationDecision(string, runtimeapi.PendingPermission, runtimeapi.PermissionDecision) error {
+	return nil
+}
+func (adminPermissionContinuation) ResolveContinuation(context.Context, string, runtimeapi.PermissionDecision, time.Time) error {
+	return nil
+}
+func (adminPermissionContinuation) ExpireContinuation(context.Context, string) error { return nil }
 
 func newTestAgentGateway(configStoreBackend configstore.ConfigStoreBackend, cliauthMgr *cliauth.Manager, cliauthRefresher *cliauth.AutoRefresher, staticRoutes []llmroutepkg.LLMRoute, _ []virtualkeypkg.VirtualKey, staticProviders ...map[string]provider.Provider) *gateway.AgentGateway {
 	var providers map[string]provider.Provider
@@ -2594,6 +2605,52 @@ func TestACPAdminAuditRecordsTraceID(t *testing.T) {
 	}
 	if !usage.ValidSpanID(ev.SpanID) {
 		t.Fatalf("span_id = %q, want generated W3C span id", ev.SpanID)
+	}
+}
+
+func TestACPAdminAuditUsesDirectAgentIdentityWithoutServiceID(t *testing.T) {
+	sink := &adminCaptureSink{}
+	handler := &Handler{usageObserver: usage.NewObserver(sink)}
+	req := httptest.NewRequest(http.MethodDelete, "/admin/acp/runtime/agents/acp-agent/threads/thread-1", nil)
+	req.SetPathValue("agent_id", "acp-agent")
+	req.SetPathValue("thread_id", "thread-1")
+	rec := httptest.NewRecorder()
+	handler.handleCloseACPThread(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable || len(sink.events) != 1 {
+		t.Fatalf("status/events = %d/%#v", rec.Code, sink.events)
+	}
+	ev, ok := sink.events[0].(usage.ACPUsageEvent)
+	if !ok || ev.RouteID != "/admin/acp" || ev.RouteKind != "acp" || ev.RouteProtocol != "admin" || ev.AgentID != "acp-agent" || ev.RuntimeType != agentpkg.RuntimeTypeACP || ev.ServiceID != "" || ev.Operation != "thread_close" || ev.ThreadID != "thread-1" || ev.ResultStatus != "error" {
+		t.Fatalf("ACP Admin audit = %#v", sink.events[0])
+	}
+}
+
+func TestACPAdminPermissionAuditCarriesBrokerCorrelation(t *testing.T) {
+	sink := &adminCaptureSink{}
+	broker := runtimeapi.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
+	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	if _, err := broker.Register(runtimeapi.PendingPermission{
+		RequestID: "perm-1", AgentID: "acp-agent", RuntimeType: agentpkg.RuntimeTypeACP,
+		RunID: runID, SessionID: "session-1", ExpiresAt: time.Now().Add(time.Minute),
+	}, "cont-1", adminPermissionContinuation{}); err != nil {
+		t.Fatal(err)
+	}
+	runtimeManager := acpruntime.NewManager(acpservice.NewManager(nil))
+	t.Cleanup(runtimeManager.Close)
+	handler := &Handler{acpRuntimeManager: runtimeManager, permissionBroker: broker, usageObserver: usage.NewObserver(sink)}
+	req := httptest.NewRequest(http.MethodPost, "/admin/acp/runtime/permissions/perm-1", strings.NewReader(`{"outcome":"allow"}`))
+	req.SetPathValue("request_id", "perm-1")
+	rec := httptest.NewRecorder()
+	handler.handleResolveACPPermission(rec, req)
+
+	if rec.Code != http.StatusOK || len(sink.events) != 1 {
+		t.Fatalf("status/events = %d/%#v; body=%s", rec.Code, sink.events, rec.Body.String())
+	}
+	ev, ok := sink.events[0].(usage.ACPUsageEvent)
+	if !ok || ev.AgentID != "acp-agent" || ev.RuntimeType != agentpkg.RuntimeTypeACP || ev.RunID != runID || ev.ServiceID != "" || ev.Operation != "permission" || ev.SessionID != "session-1" || ev.PermissionRequestID != "perm-1" || ev.ResultStatus != "success" {
+		t.Fatalf("ACP permission audit = %#v", sink.events[0])
 	}
 }
 

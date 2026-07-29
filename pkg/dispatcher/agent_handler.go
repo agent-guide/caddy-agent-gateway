@@ -1,6 +1,7 @@
 package dispatcher
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -60,42 +61,49 @@ func (h *Handler) dispatchAgent(w http.ResponseWriter, r *http.Request, next Nex
 	if !ok {
 		return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorAgentNotFound, "agent not found"))
 	}
+	// Record the typed operation identity as soon as the target Agent is known,
+	// but do not declare success until the selected operation completes.
+	setAgentOperationExtension(rewritten.Context(), a, endpoint, sessionID, "")
 	if a.Disabled {
-		return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorAgentDisabled, "agent is disabled"))
+		return writeAgentRuntimePreStreamError(w, rewritten, a, endpoint, sessionID, runtimeapi.NewError(runtimeapi.ErrorAgentDisabled, "agent is disabled"))
 	}
 	backend, err := h.gateway.RuntimeRegistry().Resolve(a.Runtime.Type)
 	if err != nil {
-		return writeRuntimePreStreamError(w, rewritten, err)
+		return writeAgentRuntimePreStreamError(w, rewritten, a, endpoint, sessionID, err)
 	}
 	caps, err := backend.Capabilities(rewritten.Context(), a)
 	if err != nil {
-		return writeRuntimePreStreamError(w, rewritten, err)
+		return writeAgentRuntimePreStreamError(w, rewritten, a, endpoint, sessionID, err)
 	}
 	if !caps.Executable {
-		return writeRuntimePreStreamError(w, rewritten, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "agent runtime is not executable"))
+		return writeAgentRuntimePreStreamError(w, rewritten, a, endpoint, sessionID, runtimeapi.NewError(runtimeapi.ErrorRuntimeNotExecutable, "agent runtime is not executable"))
 	}
 
 	switch endpoint {
 	case "turn":
 		if rewritten.Method != http.MethodPost {
+			setAgentOperationExtension(rewritten.Context(), a, endpoint, sessionID, "error")
 			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "method_not_allowed")
 			return httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return h.serveAgentTurn(w, rewritten, backend, a)
 	case "permission":
 		if rewritten.Method != http.MethodPost {
+			setAgentOperationExtension(rewritten.Context(), a, endpoint, sessionID, "error")
 			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "method_not_allowed")
 			return httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return h.serveAgentPermission(w, rewritten, backend, a, caps)
 	case "sessions":
 		if rewritten.Method != http.MethodGet {
+			setAgentOperationExtension(rewritten.Context(), a, endpoint, sessionID, "error")
 			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "method_not_allowed")
 			return httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
 		return h.serveAgentSessions(w, rewritten, backend, a, caps)
 	case "transcript":
 		if rewritten.Method != http.MethodGet {
+			setAgentOperationExtension(rewritten.Context(), a, endpoint, sessionID, "error")
 			usage.SpanFromContext(rewritten.Context()).AddAnnotation("error_type", "method_not_allowed")
 			return httpjson.Error(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -114,15 +122,30 @@ func (h *Handler) serveAgentTurn(w http.ResponseWriter, r *http.Request, backend
 	// fields fail with unsupported_option instead of being ignored (§6.5).
 	req, err := runtimeapi.DecodeTurnRequest(r.Body)
 	if err != nil {
-		return writeRuntimePreStreamError(w, r, err)
+		return writeAgentRuntimePreStreamError(w, r, a, "turn", "", err)
 	}
 	req.Input = strings.TrimSpace(req.Input)
 	if req.Input == "" && req.Permission == nil {
-		return writeRuntimePreStreamError(w, r, runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "input or permission is required"))
+		return writeAgentRuntimePreStreamError(w, r, a, "turn", req.SessionID, runtimeapi.NewError(runtimeapi.ErrorInvalidRequest, "input or permission is required"))
+	}
+	if a.Runtime.Type == agentpkg.RuntimeTypeACP {
+		var opts struct {
+			ThreadID        string            `json:"thread_id"`
+			CWD             string            `json:"cwd"`
+			Model           string            `json:"model"`
+			FreshSession    bool              `json:"fresh_session"`
+			ConfigOverrides map[string]string `json:"config_overrides"`
+		}
+		if err := runtimeapi.DecodeRuntimeOptions(req.Options.Runtime, &opts); err == nil {
+			usage.SpanFromContext(r.Context()).SetExtension(usage.ACPExtension{
+				ThreadID: strings.TrimSpace(opts.ThreadID), SessionID: strings.TrimSpace(req.SessionID),
+				FreshSession: usage.Bool(opts.FreshSession),
+			})
+		}
 	}
 	sequencer, err := runtimeapi.NewTurnSequencer(r.Context(), backend, a, req)
 	if err != nil {
-		return writeRuntimePreStreamError(w, r, err)
+		return writeAgentRuntimePreStreamError(w, r, a, "turn", req.SessionID, err)
 	}
 	req.RunID = sequencer.RunID()
 	r = r.WithContext(bindRuntimeRequestContext(r.Context(), a.ID, a.Runtime.Type, req.RunID, req.SessionID, permissionRequestID(req.Permission)))
@@ -133,14 +156,23 @@ func (h *Handler) serveAgentTurn(w http.ResponseWriter, r *http.Request, backend
 	// validation failures return real HTTP status codes; mid-stream failures
 	// become the sequencer-owned terminal SSE error event.
 	sink := newAgentSSESink(w)
-	result, serveErr := sequencer.ServeSegment(r.Context(), backend, a, req, sink.emit)
+	emit := runtimeapi.EventSink(sink.emit)
+	if a.Runtime.Type == agentpkg.RuntimeTypeACP {
+		counts := map[string]int{}
+		emit = observeAgentACPEvents(r.Context(), emit, counts)
+	}
+	result, serveErr := sequencer.ServeSegment(r.Context(), backend, a, req, emit)
 	if serveErr != nil {
+		setAgentOperationExtension(r.Context(), a, "turn", req.SessionID, "error")
 		code, _ := runtimeapi.ErrorCodeOf(serveErr)
 		if !result.Started {
 			usage.SpanFromContext(r.Context()).AddAnnotation("error_type", string(code))
 			return writeRuntimePreStreamError(w, r, serveErr)
 		}
 		usage.SpanFromContext(r.Context()).AddAnnotation("error_type", string(code))
+	}
+	if serveErr == nil {
+		setAgentOperationExtension(r.Context(), a, "turn", req.SessionID, "success")
 	}
 	return nil
 }
@@ -152,53 +184,107 @@ func (h *Handler) serveAgentPermission(w http.ResponseWriter, r *http.Request, b
 	// permission decision on POST /turn, so this operation stays fail-closed
 	// there until a separate permission-contract decision changes it (§6.5).
 	if !ok || !caps.Permissions.Interactive || caps.Permissions.ResumeMode != runtimeapi.PermissionResumeActiveStream {
-		return writeRuntimePreStreamError(w, r, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "permission resolution is not supported on this route"))
+		return writeAgentRuntimePreStreamError(w, r, a, "permission", "", runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "permission resolution is not supported on this route"))
 	}
 	var decision runtimeapi.PermissionDecision
 	if r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, MaxACPRequestBodyBytes)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&decision); err != nil {
+		setAgentOperationExtension(r.Context(), a, "permission", "", "error")
+		usage.SpanFromContext(r.Context()).AddAnnotation("error_type", string(runtimeapi.ErrorInvalidRequest))
 		return httpjson.Error(w, RequestBodyErrorStatus(err, http.StatusBadRequest), fmt.Sprintf("decode request: %v", err))
 	}
 	decision.RequestID = strings.TrimSpace(decision.RequestID)
 	decision.Outcome = strings.TrimSpace(decision.Outcome)
 	decision.OptionID = strings.TrimSpace(decision.OptionID)
+	if a.Runtime.Type == agentpkg.RuntimeTypeACP {
+		usage.SpanFromContext(r.Context()).SetExtension(usage.ACPExtension{PermissionRequestID: decision.RequestID})
+	} else if a.Runtime.Type == agentpkg.RuntimeTypeBuiltin {
+		usage.SpanFromContext(r.Context()).SetExtension(usage.BuiltinExtension{PermissionRequestID: decision.RequestID})
+	}
 	if err := resolver.ResolvePermission(runtimeapi.WithPermissionSource(r.Context(), "agent_route"), a, decision); err != nil {
+		setAgentOperationExtension(r.Context(), a, "permission", "", "error")
 		public := runtimeapi.PublicError(err)
 		usage.SpanFromContext(r.Context()).AddAnnotation("error_type", string(public.ErrorType))
 		return httpjson.Write(w, runtimeapi.HTTPStatus(err), public)
 	}
+	setAgentOperationExtension(r.Context(), a, "permission", "", "success")
 	return httpjson.Write(w, http.StatusOK, map[string]string{"status": "resolved"})
+}
+
+func writeAgentRuntimePreStreamError(w http.ResponseWriter, r *http.Request, a agentpkg.Agent, operation, sessionID string, err error) error {
+	setAgentOperationExtension(r.Context(), a, operation, sessionID, "error")
+	return writeRuntimePreStreamError(w, r, err)
+}
+
+func setAgentOperationExtension(ctx context.Context, a agentpkg.Agent, operation, sessionID, resultStatus string) {
+	span := usage.SpanFromContext(ctx)
+	switch a.Runtime.Type {
+	case agentpkg.RuntimeTypeACP:
+		agentType := ""
+		if a.Runtime.ACP != nil {
+			agentType = a.Runtime.ACP.AgentType
+		}
+		span.SetExtension(usage.ACPExtension{
+			AgentType: agentType, Operation: operation, SessionID: strings.TrimSpace(sessionID), ResultStatus: resultStatus,
+		})
+	case agentpkg.RuntimeTypeBuiltin:
+		span.SetExtension(usage.BuiltinExtension{Operation: operation, SessionID: strings.TrimSpace(sessionID), ResultStatus: resultStatus})
+	}
+}
+
+func observeAgentACPEvents(ctx context.Context, next runtimeapi.EventSink, counts map[string]int) runtimeapi.EventSink {
+	return func(ev runtimeapi.TurnEvent) error {
+		name := strings.TrimSpace(ev.Event)
+		if name == "" {
+			name = runtimeapi.EventDelta
+		}
+		counts[name]++
+		ext := usage.ACPExtension{EventCounts: counts}
+		if ev.SessionID != "" {
+			ext.SessionID = ev.SessionID
+		}
+		if ev.RequestID != "" && name == runtimeapi.EventPermission {
+			ext.PermissionRequestID = ev.RequestID
+		}
+		if name == runtimeapi.EventUsage && len(ev.Data) > 0 {
+			ext.UsageJSON = string(ev.Data)
+		}
+		usage.SpanFromContext(ctx).SetExtension(ext)
+		return next(ev)
+	}
 }
 
 func (h *Handler) serveAgentSessions(w http.ResponseWriter, r *http.Request, backend runtimeapi.Backend, a agentpkg.Agent, caps runtimeapi.Capabilities) error {
 	lister, ok := backend.(runtimeapi.SessionLister)
 	if !ok || !caps.Sessions.List {
-		return writeRuntimePreStreamError(w, r, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "session listing is not supported on this route"))
+		return writeAgentRuntimePreStreamError(w, r, a, "sessions", "", runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "session listing is not supported on this route"))
 	}
 	result, err := lister.ListSessions(r.Context(), a, runtimeapi.ListSessionsRequest{
 		CWD:    strings.TrimSpace(r.URL.Query().Get("cwd")),
 		Cursor: strings.TrimSpace(r.URL.Query().Get("cursor")),
 	})
 	if err != nil {
-		return writeRuntimePreStreamError(w, r, err)
+		return writeAgentRuntimePreStreamError(w, r, a, "sessions", "", err)
 	}
+	setAgentOperationExtension(r.Context(), a, "sessions", "", "success")
 	return httpjson.Write(w, http.StatusOK, result)
 }
 
 func (h *Handler) serveAgentTranscript(w http.ResponseWriter, r *http.Request, backend runtimeapi.Backend, a agentpkg.Agent, sessionID string, caps runtimeapi.Capabilities) error {
 	loader, ok := backend.(runtimeapi.TranscriptLoader)
 	if !ok || !caps.Sessions.Transcript {
-		return writeRuntimePreStreamError(w, r, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "transcript loading is not supported on this route"))
+		return writeAgentRuntimePreStreamError(w, r, a, "transcript", sessionID, runtimeapi.NewError(runtimeapi.ErrorCapabilityNotSupported, "transcript loading is not supported on this route"))
 	}
 	result, err := loader.LoadTranscript(r.Context(), a, runtimeapi.TranscriptRequest{
 		SessionID: sessionID,
 		CWD:       strings.TrimSpace(r.URL.Query().Get("cwd")),
 	})
 	if err != nil {
-		return writeRuntimePreStreamError(w, r, err)
+		return writeAgentRuntimePreStreamError(w, r, a, "transcript", sessionID, err)
 	}
+	setAgentOperationExtension(r.Context(), a, "transcript", sessionID, "success")
 	return httpjson.Write(w, http.StatusOK, result)
 }
 

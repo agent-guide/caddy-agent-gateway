@@ -10,16 +10,16 @@ import (
 // shape the Admin API /metrics exposition layer renders into Prometheus text.
 type PrometheusSink struct {
 	mu       sync.RWMutex
-	requests map[string]int64
-	failures map[string]int64
-	tokens   map[string]int64
+	requests map[usage.PrometheusLabels]int64
+	failures map[usage.PrometheusLabels]int64
+	tokens   map[usage.PrometheusLabels]int64
 }
 
 func NewPrometheusSink() *PrometheusSink {
 	return &PrometheusSink{
-		requests: map[string]int64{},
-		failures: map[string]int64{},
-		tokens:   map[string]int64{},
+		requests: map[usage.PrometheusLabels]int64{},
+		failures: map[usage.PrometheusLabels]int64{},
+		tokens:   map[usage.PrometheusLabels]int64{},
 	}
 }
 
@@ -27,18 +27,18 @@ func (s *PrometheusSink) Write(ev any) error {
 	if s == nil {
 		return nil
 	}
-	kind, success, tokens := eventMetrics(ev)
-	if kind == "" {
+	labels, success, tokens := eventMetrics(ev)
+	if labels.RouteKind == "" {
 		return nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requests[kind]++
+	s.requests[labels]++
 	if !success {
-		s.failures[kind]++
+		s.failures[labels]++
 	}
 	if tokens > 0 {
-		s.tokens[kind] += int64(tokens)
+		s.tokens[labels] += int64(tokens)
 	}
 	return nil
 }
@@ -49,9 +49,9 @@ func (s *PrometheusSink) Snapshot() usage.PrometheusSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return usage.PrometheusSnapshot{
-		RequestsByKind: cloneInt64Map(s.requests),
-		FailuresByKind: cloneInt64Map(s.failures),
-		TokensByKind:   cloneInt64Map(s.tokens),
+		Requests: cloneInt64Map(s.requests),
+		Failures: cloneInt64Map(s.failures),
+		Tokens:   cloneInt64Map(s.tokens),
 	}
 }
 
@@ -60,23 +60,27 @@ func (s *PrometheusSink) PrometheusSnapshot() usage.PrometheusSnapshot {
 	return s.Snapshot()
 }
 
-func eventMetrics(ev any) (kind string, success bool, tokens int) {
+func eventMetrics(ev any) (labels usage.PrometheusLabels, success bool, tokens int) {
 	switch e := ev.(type) {
 	case usage.LLMUsageEvent:
-		return "llm", e.Success, e.TotalTokens
+		return prometheusLabels(e.InteractionEvent), e.Success, e.TotalTokens
 	case usage.MCPUsageEvent:
-		return "mcp", e.Success, 0
+		return prometheusLabels(e.InteractionEvent), e.Success, 0
 	case usage.ACPUsageEvent:
-		return "acp", e.Success, 0
+		return prometheusLabels(e.InteractionEvent), e.Success, 0
 	case usage.BuiltinUsageEvent:
-		return "builtin", e.Success, 0
+		return prometheusLabels(e.InteractionEvent), e.Success, 0
 	default:
-		return "", false, 0
+		return usage.PrometheusLabels{}, false, 0
 	}
 }
 
-func cloneInt64Map(src map[string]int64) map[string]int64 {
-	out := make(map[string]int64, len(src))
+func prometheusLabels(ev usage.InteractionEvent) usage.PrometheusLabels {
+	return usage.PrometheusLabels{RouteKind: ev.RouteKind, RuntimeType: ev.RuntimeType}
+}
+
+func cloneInt64Map(src map[usage.PrometheusLabels]int64) map[usage.PrometheusLabels]int64 {
+	out := make(map[usage.PrometheusLabels]int64, len(src))
 	for k, v := range src {
 		out[k] = v
 	}

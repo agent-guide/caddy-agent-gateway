@@ -51,6 +51,37 @@ func TestObserverCarriesCommonRuntimeIdentity(t *testing.T) {
 	}
 }
 
+func TestObserverSelectsTypedStoreForUnifiedAgentRoute(t *testing.T) {
+	for _, tc := range []struct {
+		runtimeType string
+		wantType    string
+	}{
+		{runtimeType: "acp", wantType: "acp"},
+		{runtimeType: "builtin", wantType: "builtin"},
+	} {
+		t.Run(tc.runtimeType, func(t *testing.T) {
+			sink := &captureEventSink{}
+			span, _ := NewObserver(sink).Begin(t.Context(), InteractionDimensions{
+				RouteKind: "agent", RouteProtocol: "agent", AgentID: "a1", RuntimeType: tc.runtimeType, RunID: "run-1",
+			})
+			span.Finish(InteractionOutcome{Success: true, StatusCode: 200})
+			if len(sink.events) != 1 {
+				t.Fatalf("events = %d", len(sink.events))
+			}
+			switch tc.wantType {
+			case "acp":
+				if _, ok := sink.events[0].(ACPUsageEvent); !ok {
+					t.Fatalf("event type = %T, want ACPUsageEvent", sink.events[0])
+				}
+			case "builtin":
+				if _, ok := sink.events[0].(BuiltinUsageEvent); !ok {
+					t.Fatalf("event type = %T, want BuiltinUsageEvent", sink.events[0])
+				}
+			}
+		})
+	}
+}
+
 func TestFinishFallbackErrorTypeClassifiesByStatusClass(t *testing.T) {
 	sink := &captureEventSink{}
 	observer := NewObserver(sink)

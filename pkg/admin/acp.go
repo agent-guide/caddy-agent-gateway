@@ -480,9 +480,11 @@ func (h *Handler) handleResolveACPPermission(w http.ResponseWriter, r *http.Requ
 		_ = httpjson.Error(w, http.StatusBadRequest, "request_id in body must match path")
 		return
 	}
-	if agentID, runtimeType, ok := h.permissionBroker.PermissionOwner(requestID); ok && runtimeType == agentpkg.RuntimeTypeACP {
+	if correlation, ok := h.permissionBroker.LookupPermission(requestID); ok && correlation.RuntimeType == agentpkg.RuntimeTypeACP {
+		span.SetExtension(usage.CommonExtension{AgentID: correlation.AgentID, RuntimeType: correlation.RuntimeType, RunID: correlation.RunID})
+		span.SetExtension(usage.ACPExtension{SessionID: correlation.SessionID})
 		common := runtimeapi.PermissionDecision{RequestID: requestID, Outcome: decision.Outcome, OptionID: decision.OptionID}
-		if err := h.permissionBroker.Resolve(runtimeapi.WithPermissionSource(r.Context(), "acp_admin"), agentID, common); err != nil {
+		if err := h.permissionBroker.Resolve(runtimeapi.WithPermissionSource(r.Context(), "acp_admin"), correlation.AgentID, common); err != nil {
 			finishAdminAudit(span, runtimeapi.HTTPStatus(err), string(runtimeapi.PublicError(err).ErrorType))
 			_ = httpjson.Write(w, runtimeapi.HTTPStatus(err), runtimeapi.PublicError(err))
 			return
@@ -570,7 +572,7 @@ func (h *Handler) handleCloseACPThread(w http.ResponseWriter, r *http.Request) {
 	_ = httpjson.Write(w, http.StatusOK, map[string]any{"closed": h.acpRuntimeManager.CloseThread(agentID, threadID)})
 }
 
-func (h *Handler) beginACPAdminAudit(r *http.Request, serviceID, operation, sessionID string) usage.InteractionSpan {
+func (h *Handler) beginACPAdminAudit(r *http.Request, agentID, operation, sessionID string) usage.InteractionSpan {
 	observer := h.usageObserver
 	if observer == nil {
 		return usage.NoopSpan{}
@@ -581,9 +583,10 @@ func (h *Handler) beginACPAdminAudit(r *http.Request, serviceID, operation, sess
 		RouteID:       "/admin/acp",
 		RouteKind:     "acp",
 		RouteProtocol: "admin",
+		AgentID:       agentID,
+		RuntimeType:   agentpkg.RuntimeTypeACP,
 	})
 	span.SetExtension(usage.ACPExtension{
-		ServiceID:    serviceID,
 		Operation:    operation,
 		SessionID:    sessionID,
 		ResultStatus: "success",
