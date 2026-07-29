@@ -67,9 +67,11 @@ func (s *countingConfigStore) List(ctx context.Context) ([]any, error) {
 
 func snapshotTestAgent(id string) Agent {
 	return Agent{
-		ID:        id,
-		Name:      id,
-		Runtime:   Runtime{Type: RuntimeTypeACP, ACP: &ACPRuntime{ServiceID: "svc-" + id}},
+		ID:   id,
+		Name: id,
+		Runtime: Runtime{Type: RuntimeTypeACP, ACP: &ACPRuntime{
+			AgentType: "codex", CWD: "/tmp", AllowedRoots: []string{"/tmp"}, Env: map[string]string{"OWNER": id},
+		}},
 		Resources: Resources{MCPServiceIDs: []string{"docs"}},
 	}
 }
@@ -85,20 +87,20 @@ func TestGetSnapshotDeepCloneMutationIsolation(t *testing.T) {
 	}
 	// Mutate every reference-typed field on the returned value; the committed
 	// generation must be unaffected.
-	got.Runtime.ACP.ServiceID = "mutated"
+	got.Runtime.ACP.Env["OWNER"] = "mutated"
 	got.Resources.MCPServiceIDs[0] = "mutated"
 	again, ok := m.GetSnapshot("a1")
 	if !ok {
 		t.Fatal("second GetSnapshot returned ok=false")
 	}
-	if again.Runtime.ACP.ServiceID != "svc-a1" || again.Resources.MCPServiceIDs[0] != "docs" {
+	if again.Runtime.ACP.Env["OWNER"] != "a1" || again.Resources.MCPServiceIDs[0] != "docs" {
 		t.Fatalf("snapshot was corrupted by caller mutation: %+v", again)
 	}
 	for _, a := range m.Snapshot() {
-		a.Runtime.ACP.ServiceID = "mutated-again"
+		a.Runtime.ACP.Env["OWNER"] = "mutated-again"
 	}
 	final, _ := m.GetSnapshot("a1")
-	if final.Runtime.ACP.ServiceID != "svc-a1" {
+	if final.Runtime.ACP.Env["OWNER"] != "a1" {
 		t.Fatalf("Snapshot list aliases the generation: %+v", final)
 	}
 }
@@ -250,9 +252,9 @@ func TestDefinitionListenerObservesEveryCommit(t *testing.T) {
 	if err := m.Create(ctx, snapshotTestAgent("a2")); err != nil {
 		t.Fatalf("Create a2: %v", err)
 	}
-	calls[3][0].Runtime.ACP.ServiceID = "mutated"
+	calls[3][0].Runtime.ACP.Env["OWNER"] = "mutated"
 	got, _ := m.GetSnapshot("a2")
-	if got.Runtime.ACP.ServiceID != "svc-a2" {
+	if got.Runtime.ACP.Env["OWNER"] != "a2" {
 		t.Fatalf("listener payload aliases the generation: %+v", got)
 	}
 }

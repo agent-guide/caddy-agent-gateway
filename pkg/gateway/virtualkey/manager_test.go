@@ -243,7 +243,7 @@ func TestVirtualKeyRateLimiterDimensionsAndRefill(t *testing.T) {
 	}
 	for _, dimension := range []RateLimitDimension{
 		RateLimitDimensionLLM, RateLimitDimensionMCP,
-		RateLimitDimensionACP, RateLimitDimensionBuiltin,
+		RateLimitDimensionAgent,
 	} {
 		got, err := manager.Admit(key, dimension)
 		if err != nil || !got.Allowed {
@@ -353,16 +353,10 @@ func TestVirtualKeyRateLimiterUpdateDeleteAndResetRemoveBuckets(t *testing.T) {
 	}
 }
 
-// TestVirtualKeyRateLimiterBuiltinDimensionDoesNotConsumeIngress covers the §7
-// requirement that builtin internal LLM and MCP calls do not consume ingress
-// buckets. Admission is keyed by the matched route kind, and the builtin route
-// kind maps to the builtin dimension only. An in-process builtin turn therefore
-// consumes the builtin bucket and never the llm/mcp/acp ingress buckets — even
-// when it performs nested LLM and MCP work that does not re-enter the
-// dispatcher. The reverse holds too: ingress LLM traffic consumes no builtin
-// capacity, so a builtin turn's admission budget is independent of how much
-// LLM ingress the same VirtualKey has used.
-func TestVirtualKeyRateLimiterBuiltinDimensionDoesNotConsumeIngress(t *testing.T) {
+// TestVirtualKeyRateLimiterAgentDimensionDoesNotConsumeLLMOrMCP covers the §7
+// requirement that an agent turn's internal LLM and MCP calls do not consume
+// ingress buckets when they do not re-enter the dispatcher.
+func TestVirtualKeyRateLimiterAgentDimensionDoesNotConsumeLLMOrMCP(t *testing.T) {
 	manager := NewVirtualKeyManager(nil)
 	key := VirtualKey{
 		ID: "vk-a",
@@ -373,32 +367,22 @@ func TestVirtualKeyRateLimiterBuiltinDimensionDoesNotConsumeIngress(t *testing.T
 		},
 	}
 
-	// A builtin turn maps to the builtin dimension and consumes its lone token.
-	if got, _ := manager.Admit(key, RateLimitDimensionBuiltin); !got.Allowed {
-		t.Fatal("builtin admission denied on first turn")
+	if got, _ := manager.Admit(key, RateLimitDimensionAgent); !got.Allowed {
+		t.Fatal("agent admission denied on first turn")
 	}
-	// The builtin bucket is now exhausted, so a second builtin turn is rejected.
-	if got, _ := manager.Admit(key, RateLimitDimensionBuiltin); got.Allowed {
-		t.Fatal("second builtin admission allowed; builtin bucket should be exhausted")
+	if got, _ := manager.Admit(key, RateLimitDimensionAgent); got.Allowed {
+		t.Fatal("second agent admission allowed; agent bucket should be exhausted")
 	}
 
-	// Ingress LLM and MCP traffic is entirely unaffected — the builtin turn
-	// spent no ingress tokens. This mirrors §7: internal calls that do not
-	// re-enter the dispatcher are not counted against ingress buckets.
+	// LLM and MCP ingress are unaffected by the agent admission. Internal calls
+	// likewise spend no ingress tokens unless they re-enter the dispatcher.
 	for _, dimension := range []RateLimitDimension{RateLimitDimensionLLM, RateLimitDimensionMCP} {
 		if got, _ := manager.Admit(key, dimension); !got.Allowed {
-			t.Fatalf("ingress Admit(%s) denied; builtin turn leaked into ingress", dimension)
+			t.Fatalf("ingress Admit(%s) denied; agent turn leaked into ingress", dimension)
 		}
 	}
-
-	// The reverse invariant: spending ingress LLM capacity must not free up the
-	// exhausted builtin bucket (and the ACP bucket, which shares the agent
-	// policy, remains independently usable because it is a separate bucket).
-	if got, _ := manager.Admit(key, RateLimitDimensionACP); !got.Allowed {
-		t.Fatal("ACP admission denied; builtin exhaustion should not affect the separate ACP bucket")
-	}
-	if got, _ := manager.Admit(key, RateLimitDimensionBuiltin); got.Allowed {
-		t.Fatal("builtin admission allowed after ingress traffic; buckets cross-contaminated")
+	if got, _ := manager.Admit(key, RateLimitDimensionAgent); got.Allowed {
+		t.Fatal("agent admission allowed after ingress traffic; buckets cross-contaminated")
 	}
 }
 

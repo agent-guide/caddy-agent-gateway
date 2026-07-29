@@ -178,7 +178,7 @@
           <li><b>声明式能力</b> 模型与工具绑定是 agent 定义的一部分 —— 可发现，而不是口口相传。</li>
           <li><b>实时状态</b> 物化状态、池化实例、在途轮次、待裁决审批。</li>
           <li><b>健康与活动</b> 按 agent 的健康状况、用量汇总与交互历史。</li>
-          <li><b>归属无歧义</b> 一条路由或运行时服务至多属于一个 agent —— 归因不可能含糊。</li>
+          <li><b>运行时切换仍稳定</b> 更换运行时后，同一 AgentRoute 的 URL、路由 ID 与 VirtualKey 允许列表保持不变。</li>
         </ul>
       </div>
 
@@ -187,7 +187,7 @@
           <span class="kicker">agent as a product</span>
           <h3>像发布 API 一样发布 Agent</h3>
           <p>
-            路由之后的 builtin 或 ACP agent 是一个有稳定端点的企业能力：消费方拿到一个 URL 和一把虚拟密钥；
+            统一且与运行时无关的 AgentRoute 之后，builtin 或 ACP agent 是一个有稳定端点的企业能力：消费方拿到一个 URL 和一把虚拟密钥；
             你保有版本化的定义、按消费方的计量，以及一处吊销访问的权力。
             像交付服务一样向内部团队交付 agent。
           </p>

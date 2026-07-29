@@ -339,8 +339,10 @@ func printGatewayAgentsTable(items []adminclient.AgentView) {
 	headers := []string{"ID", "NAME", "RUNTIME", "RUNTIME-TARGET", "DISABLED", "SOURCE"}
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
-		target := item.ACPServiceID()
-		if target == "" && item.Runtime.HTTP != nil {
+		target := ""
+		if item.Runtime.ACP != nil {
+			target = item.Runtime.ACP.AgentType
+		} else if item.Runtime.HTTP != nil {
 			target = item.Runtime.HTTP.Endpoint
 		}
 		rows = append(rows, []string{
@@ -348,78 +350,6 @@ func printGatewayAgentsTable(items []adminclient.AgentView) {
 			dash(item.Name),
 			dash(item.Runtime.Type),
 			dash(target),
-			boolStr(item.Disabled),
-			dash(item.Source),
-		})
-	}
-	printTable(headers, rows)
-}
-
-func printGatewayACPServicesTable(items []adminclient.ACPServiceView) {
-	headers := []string{"ID", "NAME", "AGENT-TYPE", "CWD", "PERMISSION-MODE", "DISABLED", "SOURCE"}
-	rows := make([][]string, 0, len(items))
-	for _, item := range items {
-		rows = append(rows, []string{
-			dash(item.ID),
-			dash(item.Name),
-			dash(item.AgentType),
-			dash(item.CWD),
-			dash(item.PermissionMode),
-			boolStr(item.Disabled),
-			dash(item.Source),
-		})
-	}
-	printTable(headers, rows)
-}
-
-func printGatewayACPSessionsTable(resp *adminclient.ACPListSessionsResponse) {
-	headers := []string{"SESSION-ID", "CWD", "TITLE", "UPDATED-AT"}
-	rows := [][]string{}
-	if resp != nil {
-		for _, item := range resp.Sessions {
-			updatedAt := ""
-			if item.UpdatedAt != nil {
-				updatedAt = formatTimestamp(*item.UpdatedAt)
-			}
-			rows = append(rows, []string{
-				dash(item.SessionID),
-				dash(item.CWD),
-				dash(item.Title),
-				dash(updatedAt),
-			})
-		}
-	}
-	printTable(headers, rows)
-	if resp != nil && resp.NextCursor != "" {
-		fmt.Fprintf(os.Stdout, "next cursor: %s\n", resp.NextCursor)
-	}
-}
-
-func printGatewayACPRoutesTable(items []adminclient.ACPRouteView) {
-	headers := []string{"ID", "PATH-PREFIX", "SERVICE-ID", "VIRTUALKEY", "DISABLED", "SOURCE"}
-	rows := make([][]string, 0, len(items))
-	for _, item := range items {
-		rows = append(rows, []string{
-			dash(item.ID),
-			dash(item.MatchPolicy.PathPrefix),
-			dash(item.ServiceID),
-			boolStr(item.AuthPolicy.RequireVirtualKey),
-			boolStr(item.Disabled),
-			dash(item.Source),
-		})
-	}
-	printTable(headers, rows)
-}
-
-func printGatewayBuiltinRoutesTable(items []adminclient.BuiltinRouteView) {
-	headers := []string{"ID", "PATH-PREFIX", "AGENT-ID", "VIRTUALKEY", "DISABLED", "SOURCE"}
-	rows := make([][]string, 0, len(items))
-	for _, item := range items {
-		rows = append(rows, []string{
-			dash(item.ID),
-			dash(item.MatchPolicy.PathPrefix),
-			dash(item.AgentID),
-			boolStr(item.AuthPolicy.RequireVirtualKey),
 			boolStr(item.Disabled),
 			dash(item.Source),
 		})
@@ -463,12 +393,12 @@ func printGatewayACPInstancesTable(items []adminclient.ACPPooledInstanceInfo) {
 }
 
 func printGatewayACPPendingPermissionsTable(items []adminclient.ACPPendingPermissionInfo) {
-	headers := []string{"REQUEST-ID", "SERVICE-ID", "SESSION-ID", "CREATED-AT"}
+	headers := []string{"REQUEST-ID", "AGENT-ID", "SESSION-ID", "CREATED-AT"}
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
 		rows = append(rows, []string{
 			dash(item.RequestID),
-			dash(item.ServiceID),
+			dash(item.OwnerID),
 			dash(item.SessionID),
 			dash(formatTimestamp(item.CreatedAt)),
 		})

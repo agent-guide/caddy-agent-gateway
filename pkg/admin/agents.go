@@ -11,14 +11,11 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
-	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
 	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
-	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	"go.uber.org/zap"
 )
@@ -190,11 +187,8 @@ type AgentWorkspace struct {
 	RuntimeDetails json.RawMessage            `json:"runtime_details,omitempty"`
 	Capabilities   *runtimeapi.Capabilities   `json:"capabilities,omitempty"`
 	AgentRoutes    []agentRouteRef            `json:"agent_routes,omitempty"`
-	ACPService     *ACPServiceView            `json:"-"`
-	ACPRoutes      []agentRouteRef            `json:"-"`
 	Builtin        *BuiltinWorkspaceView      `json:"builtin,omitempty"`
 	RuntimeView    *agentRuntimeSummary       `json:"runtime_view,omitempty"`
-	Usage          *usage.ACPSummary          `json:"usage,omitempty"`
 	Links          map[string]string          `json:"links,omitempty"`
 }
 
@@ -204,7 +198,6 @@ type AgentWorkspace struct {
 type BuiltinWorkspaceView struct {
 	Definition BuiltinDefinitionSummary `json:"definition"`
 	HostState  builtinpkg.EntryState    `json:"host_state"`
-	Routes     []builtinAgentRouteRef   `json:"routes,omitempty"`
 }
 
 // BuiltinDefinitionSummary condenses the persisted builtin definition. Limits
@@ -217,13 +210,6 @@ type BuiltinDefinitionSummary struct {
 	MaxConcurrentTurns   int      `json:"max_concurrent_turns,omitempty"`
 	TurnTimeoutSeconds   int      `json:"turn_timeout_seconds,omitempty"`
 	SummarizationEnabled bool     `json:"summarization_enabled"`
-}
-
-type builtinAgentRouteRef struct {
-	ID         string `json:"id"`
-	PathPrefix string `json:"path_prefix,omitempty"`
-	AgentID    string `json:"agent_id"`
-	ServiceID  string `json:"-"`
 }
 
 type agentRouteRef struct {
@@ -264,11 +250,20 @@ func (h *Handler) handleGetAgentWorkspace(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	// The acp runtime view is the only one P0 assembles. An http-runtime agent
-	// degrades to the runtime-agnostic parts.
 	ws.AgentRoutes = h.agentRoutesForAgent(r.Context(), a.ID)
+	if len(ws.AgentRoutes) > 0 {
+		prefix := strings.TrimRight(ws.AgentRoutes[0].PathPrefix, "/")
+		ws.Links = map[string]string{
+			"turn": prefix + "/turn", "sessions": prefix + "/sessions",
+			"transcript": prefix + "/sessions/{session_id}/transcript",
+		}
+	}
 	if a.Runtime.Type == agentpkg.RuntimeTypeACP {
-		ws.RuntimeView = h.acpRuntimeSummaryForService(a.ID)
+		ws.RuntimeView = h.acpRuntimeSummaryForOwner(a.ID)
+		if ws.Links == nil {
+			ws.Links = map[string]string{}
+		}
+		ws.Links["admin_runtime"] = "/admin/acp/runtime"
 	}
 	if a.Runtime.Type == agentpkg.RuntimeTypeBuiltin {
 		h.assembleBuiltinWorkspace(r.Context(), &ws, a)
@@ -325,125 +320,27 @@ func (h *Handler) agentRoutesForAgent(ctx context.Context, agentID string) []age
 	return refs
 }
 
-// builtinRoutesForAgent resolves the agent's declared builtin route ids into
-// route references; a dangling or non-builtin id is skipped.
-func (h *Handler) builtinRoutesForAgent(ctx context.Context, routeIDs []string) []builtinAgentRouteRef {
-	if h.sharedBuiltinRouteResolver == nil {
-		return nil
-	}
-	var refs []builtinAgentRouteRef
-	for _, routeID := range routeIDs {
-		cfg, err := h.sharedBuiltinRouteResolver.GetConfig(ctx, routeID)
-		if err != nil {
-			continue
-		}
-		if cfg.Kind != builtinroute.RouteKindBuiltin {
-			continue
-		}
-		route, err := builtinroute.NewBuiltinRouteConfigFromConfig(cfg)
-		if err != nil {
-			continue
-		}
-		refs = append(refs, builtinAgentRouteRef{
-			ID:         route.ID,
-			PathPrefix: route.MatchPolicy.PathPrefix,
-			AgentID:    route.AgentID,
-		})
-	}
-	return refs
-}
-
-func (h *Handler) assembleACPWorkspace(ctx context.Context, ws *AgentWorkspace, serviceID string) {
-	if h.sharedACPServiceManager != nil {
-		if svc, err := h.sharedACPServiceManager.Get(ctx, serviceID); err == nil {
-			view := ACPServiceView{ServiceConfig: svc, Source: "config_store"}
-			ws.ACPService = &view
-		}
-	}
-	ws.ACPRoutes = h.acpRoutesForService(ctx, serviceID)
-	ws.RuntimeView = h.acpRuntimeSummaryForService(serviceID)
-	if h.usageQuery != nil {
-		if summary, err := h.usageQuery.ACPSummary(usage.BreakdownOptions{
-			Filters: map[string]string{"service_id": serviceID},
-		}); err == nil {
-			ws.Usage = acpSummaryFromBreakdown(summary)
-		}
-	}
-	ws.Links = map[string]string{}
-	for _, route := range ws.ACPRoutes {
-		prefix := strings.TrimRight(route.PathPrefix, "/")
-		ws.Links["sessions"] = prefix + "/sessions"
-		ws.Links["transcript"] = prefix + "/sessions/{session_id}/transcript"
-		break
-	}
-	ws.Links["admin_sessions"] = "/admin/acp/services/" + serviceID + "/sessions"
-	ws.Links["admin_runtime"] = "/admin/acp/runtime"
-}
-
-func (h *Handler) acpRoutesForService(ctx context.Context, serviceID string) []agentRouteRef {
-	if h.sharedACPRouteResolver == nil {
-		return nil
-	}
-	configs, err := h.sharedACPRouteResolver.ListConfigs(ctx, acproute.RouteListOptions{})
-	if err != nil {
-		return nil
-	}
-	var refs []agentRouteRef
-	for _, cfg := range configs {
-		if cfg.Kind != acproute.RouteKindACP {
-			continue
-		}
-		route, err := acproute.NewACPRouteFromConfig(cfg)
-		if err != nil {
-			continue
-		}
-		if route.ServiceID != serviceID {
-			continue
-		}
-		refs = append(refs, agentRouteRef{
-			ID:         route.ID,
-			PathPrefix: route.MatchPolicy.PathPrefix,
-			AgentID:    serviceID,
-		})
-	}
-	return refs
-}
-
-func (h *Handler) acpRuntimeSummaryForService(serviceID string) *agentRuntimeSummary {
+func (h *Handler) acpRuntimeSummaryForOwner(agentID string) *agentRuntimeSummary {
 	if h.acpRuntimeManager == nil {
 		return nil
 	}
 	summary := &agentRuntimeSummary{}
 	for _, inst := range h.acpRuntimeManager.ListInstances() {
-		if acpruntime.ScopeServiceID(inst.Scope) == serviceID {
+		if acpruntime.ScopeOwnerID(inst.Scope) == agentID {
 			summary.PooledInstances = append(summary.PooledInstances, inst)
 		}
 	}
 	for _, turn := range h.acpRuntimeManager.ListInFlight() {
-		if acpruntime.ScopeServiceID(turn.Scope) == serviceID {
+		if acpruntime.ScopeOwnerID(turn.Scope) == agentID {
 			summary.InFlightTurns++
 		}
 	}
 	for _, perm := range h.acpRuntimeManager.ListPendingPermissions() {
-		if perm.ServiceID == serviceID {
+		if perm.OwnerID == agentID {
 			summary.PendingPermissions = append(summary.PendingPermissions, perm)
 		}
 	}
 	return summary
-}
-
-// acpSummaryFromBreakdown collapses an ACP breakdown filtered by service into a
-// single summary. The breakdown rows already aggregate the service, so the first
-// row carries the totals.
-func acpSummaryFromBreakdown(b usage.BreakdownResponse) *usage.ACPSummary {
-	out := &usage.ACPSummary{}
-	for _, row := range b.Items {
-		out.RequestCount += intFromAny(row["request_count"])
-		out.TurnCount += intFromAny(row["turn_count"])
-		out.SuccessCount += intFromAny(row["success_count"])
-		out.FailureCount += intFromAny(row["failure_count"])
-	}
-	return out
 }
 
 // getAgentOr404 loads an agent, writing the appropriate error response and
@@ -613,7 +510,6 @@ type agentResolvedResources struct {
 	VirtualKeys []resourceRef `json:"virtual_keys"`
 	LLMRoutes   []resourceRef `json:"llm_routes"`
 	MCPRoutes   []resourceRef `json:"mcp_routes"`
-	ACPRoutes   []resourceRef `json:"acp_routes"`
 }
 
 type resourceRef struct {
@@ -643,7 +539,6 @@ func (h *Handler) resolveAgentResources(ctx context.Context, a agentpkg.Agent) *
 		VirtualKeys: []resourceRef{},
 		LLMRoutes:   []resourceRef{},
 		MCPRoutes:   []resourceRef{},
-		ACPRoutes:   []resourceRef{},
 	}
 	for _, id := range a.Resources.ProviderIDs {
 		ref := resourceRef{ID: id}
@@ -695,14 +590,6 @@ func (h *Handler) resolveAgentResources(ctx context.Context, a agentpkg.Agent) *
 			ref = routeRefFromConfig(id, cfg, err)
 		}
 		out.MCPRoutes = append(out.MCPRoutes, ref)
-	}
-	for _, id := range a.Routes.ACPRouteIDs {
-		ref := resourceRef{ID: id}
-		if h.sharedACPRouteResolver != nil {
-			cfg, err := h.sharedACPRouteResolver.GetConfig(ctx, id)
-			ref = routeRefFromConfig(id, cfg, err)
-		}
-		out.ACPRoutes = append(out.ACPRoutes, ref)
 	}
 	return out
 }
@@ -791,7 +678,7 @@ func (h *Handler) handleGetAgentHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if a.Runtime.Type == agentpkg.RuntimeTypeACP {
-		if summary := h.acpRuntimeSummaryForService(a.ID); summary != nil {
+		if summary := h.acpRuntimeSummaryForOwner(a.ID); summary != nil {
 			health["pooled_instances"] = len(summary.PooledInstances)
 			health["in_flight_turns"] = summary.InFlightTurns
 			health["pending_permissions"] = len(summary.PendingPermissions)
@@ -847,5 +734,3 @@ func successFromAny(v any) bool {
 		return false
 	}
 }
-
-var _ = acpservice.ErrServiceNotConfigured

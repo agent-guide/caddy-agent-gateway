@@ -114,12 +114,10 @@ Backend-specific runtime diagnostics and recovery remain available:
 ./agwctl gateway acp-runtime close-thread <agent-id> <thread-id>
 ./agwctl gateway builtin-runtime get
 ./agwctl gateway builtin-runtime inflight
-./agwctl gateway builtin-runtime cancel-turn <agent-id> <session-id> [--mode force|graceful]
 ```
 
-`cancel-turn` stops a running turn: `--mode force` (default) aborts
-immediately — the answer for a stuck turn — and `--mode graceful` stops after
-the current model/tool step, escalating to force after a grace period.
+Cancel logical runs with `gateway agent cancel <agent-id> <run-id>`; runtime
+diagnostic commands do not provide a second session-keyed cancellation path.
 
 ## Important Notes
 

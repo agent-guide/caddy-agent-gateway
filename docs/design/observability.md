@@ -8,7 +8,9 @@ It covers reliable capture, persistence, and query of request-level events and a
 
 - LLM routes through `agent_route_dispatcher.llm_apis.openai`, `agent_route_dispatcher.llm_apis.anthropic`, and `agent_route_dispatcher.llm_apis.cc`
 - MCP routes through `agent_route_dispatcher` with MCP enabled, `pkg/dispatcher/mcp_handler.go`, `pkg/mcp/service`, and `pkg/mcp/runtime`
-- ACP routes through `agent_route_dispatcher` with ACP enabled, `pkg/dispatcher/acp_handler.go`, and `pkg/acp/runtime`
+- ACP and builtin execution through unified AgentRoutes with Agent dispatch
+  enabled, `pkg/dispatcher/agent_handler.go`, and the runtime selected by the
+  target Agent
 
 Future protocol families such as A2A should follow the same shared interaction model, but they are not part of the implementation baseline.
 
@@ -31,7 +33,9 @@ The current implementation baseline is:
 - `Handler.Dispatch` resolves and validates the VirtualKey before dispatching by `routecore.RouteKind`
 - LLM dispatch resolves `pkg/gateway/llmroute.LLMRoute` and calls the selected LLM API handler
 - MCP dispatch resolves `pkg/gateway/mcproute.MCPRoute` and calls `pkg/mcp/service`
-- ACP dispatch resolves `pkg/gateway/acproute.ACPRoute` and calls `pkg/acp/runtime`
+- Agent dispatch resolves `pkg/gateway/agentroute.AgentRoute`, stamps the
+  target Agent directly, and selects ACP or builtin typed storage from the
+  resolved `runtime.type`
 - MCP runtime inspection uses the in-memory registry in `pkg/mcp/runtime/registry.go`
 - ACP runtime inspection uses `pkg/acp/runtime.Manager`
 - the persisted config backend is SQLite through `pkg/configstore/sqlite`
@@ -41,7 +45,7 @@ The current implementation baseline is:
 
 - Capture one structured event per completed LLM request, including request-side tool metadata and response-side tool call summary when available.
 - Capture one structured event per completed MCP JSON-RPC request.
-- Capture one structured event per completed ACP route operation.
+- Capture one structured event per completed ACP Agent operation.
 - Carry agent chain identity (`trace_id`, `span_id`, `parent_span_id`, `agent_depth`) on every persisted event from phase 1.
 - Persist events durably to SQLite so history survives restarts.
 - Expose useful summaries and recent-event inspection through the Admin API, including a unified cross-protocol view.
@@ -97,12 +101,13 @@ The existing in-memory ring buffer in `pkg/mcp/runtime/registry.go` remains a fa
 
 ### 4.3 ACP Observability
 
-Every completed ACP route operation produces one persisted usage event containing:
+Every completed ACP Agent operation produces one persisted usage event containing:
 
 - agent chain dimensions: trace ID, span ID, parent span ID, agent depth
-- routing dimensions: route, service, virtual key
+- routing dimensions: Agent route, Agent, virtual key
 - operation: `turn`, `permission`, `sessions`, or `transcript`
-- ACP dimensions: thread ID, session ID when present, agent type when available from service config, permission request ID when applicable
+- ACP dimensions: thread ID, session ID when present, adapter type from the
+  Agent-owned runtime config, and permission request ID when applicable
 - execution outcome: success, error type, status code, latency
 - turn summary: emitted event counts by event name and final usage snapshot when available
 
@@ -120,9 +125,9 @@ ACP event payloads must not store turn input, deltas, content, reasoning text, t
         ┌────────────────┼────────────────┐
         │                │                │
         ▼                ▼                ▼
-  LLM dispatch      MCP dispatch      ACP dispatch
+  LLM dispatch      MCP dispatch     Agent dispatch
  pkg/dispatcher/   pkg/dispatcher/   pkg/dispatcher/
-   llmapi/...       mcp_handler.go    acp_handler.go
+   llmapi/...       mcp_handler.go    agent_handler.go
         │                │                │
         ▼                ▼                ▼
  pkg/gateway/      pkg/mcp/service   pkg/acp/runtime
@@ -179,8 +184,8 @@ type InteractionEvent struct {
     StartedAt    time.Time
     FinishedAt   time.Time
     RouteID      string
-    RouteKind    string    // llm | mcp | acp
-    RouteProtocol string   // openai | anthropic | cc | mcp | acp
+    RouteKind    string    // llm | mcp | agent
+    RouteProtocol string   // openai | anthropic | cc | mcp | agent
     VirtualKeyID string
     Success      bool
     StatusCode   int
@@ -475,7 +480,7 @@ Result content is never stored regardless of this setting.
 
 ### 8.1 Event Model
 
-Each completed ACP route operation produces one `ACPUsageEvent`:
+Each completed ACP Agent operation produces one `ACPUsageEvent`:
 
 ```
 -- InteractionEvent base --
@@ -487,8 +492,8 @@ agent_depth
 started_at
 finished_at
 route_id
-route_kind          acp
-route_protocol      acp
+route_kind          agent
+route_protocol      agent
 virtual_key_id
 success
 status_code
@@ -496,7 +501,7 @@ error_type
 latency_ms
 
 -- ACP extension --
-service_id
+agent_id
 agent_type          codex | opencode | other registered adapter type
 operation           turn | permission | sessions | transcript
 thread_id           populated for turn and permission when available
@@ -581,7 +586,7 @@ billing must come from the LLM event path, not from ACP `usage_update`.
 
 `token_delta` is a best-effort, per-turn positive difference between this turn's
 final `context_used_tokens` and the previous turn's value for the same
-`service_id` + `session_id`. It is stamped onto the event **before the event is
+`agent_id` + `session_id`. It is stamped onto the event **before the event is
 enqueued to the pipeline**, by a small in-process per-session last-value tracker
 in the usage observer — not computed inside a sink. This is required for
 consistency: the SQLite sink and the Prometheus sink each receive a copy of the
@@ -703,7 +708,7 @@ Returns per-tool aggregated statistics. Supports `from`, `to`, `service_id`, and
 
 Returns recent ACP usage events. Supports query parameters:
 
-- `route_id`, `service_id`, `virtual_key_id`
+- `route_id`, `virtual_key_id`
 - `agent_type`
 - `operation` (`turn`, `permission`, `sessions`, `transcript`)
 - `thread_id`, `session_id`
@@ -713,7 +718,7 @@ Returns recent ACP usage events. Supports query parameters:
 
 `GET /admin/metrics/acp/summary`
 
-Returns ACP totals grouped by `route_id`, `service_id`, `agent_type`, or
+Returns ACP totals grouped by `route_id`, `agent_type`, or
 `operation`. Planned ACP context-token fields such as `context_growth_tokens`
 and `latest_context_used_tokens` are not part of the current response.
 
@@ -723,13 +728,13 @@ and `latest_context_used_tokens` are not part of the current response.
 
 Returns recent interaction events across all protocol families, backed by the shared `InteractionEvent` base fields. Supports query parameters:
 
-- `route_kind` (`llm`, `mcp`, `acp`)
+- `route_kind` (`llm`, `mcp`, `agent`)
 - `route_protocol`
 - `route_id`, `virtual_key_id`
 - `trace_id`
 - `parent_span_id`
 - `agent_depth`
-- `service_id`, `session_id`
+- `service_id` (MCP only), `session_id`
 - `from`, `to` (RFC3339)
 - `success` (bool)
 - `limit` (default 100, max 1000)
@@ -737,7 +742,7 @@ Returns recent interaction events across all protocol families, backed by the sh
 Beyond the base fields, the projection surfaces each protocol's labeling column
 so a consumer can name a span by what it did rather than falling back to
 `route_id`: `upstream_model` (LLM), `tool_name` (MCP), `operation` (ACP), plus
-`service_id` and `session_id`. LLM rows also carry the model tool-use and token
+MCP `service_id` and runtime `session_id`. LLM rows also carry the model tool-use and token
 fields `request_tool_count`, `request_tool_names`, `tool_call_count`,
 `tool_names`, `input_tokens`, `output_tokens`, `total_tokens`,
 `cached_tokens`, and `reasoning_tokens`. Columns a row
@@ -873,14 +878,14 @@ CREATE TABLE acp_usage_events (
     started_at            INTEGER NOT NULL,
     finished_at           INTEGER NOT NULL,
     route_id              TEXT,
-    route_kind            TEXT NOT NULL DEFAULT 'acp',
+    route_kind            TEXT NOT NULL DEFAULT 'agent',
     route_protocol        TEXT,
     virtual_key_id        TEXT,
     success               INTEGER NOT NULL DEFAULT 0,
     status_code           INTEGER,
     error_type            TEXT,
     latency_ms            INTEGER,
-    service_id            TEXT,
+    service_id            TEXT, -- legacy ACP column; unified writes leave it empty
     agent_type            TEXT,
     operation             TEXT,
     thread_id             TEXT,
@@ -1003,10 +1008,10 @@ The shared entry records route match, route disabled, and virtual key failures w
 
 ### 12.4 ACP Path
 
-`pkg/dispatcher/acp_handler.go`:
+`pkg/dispatcher/agent_handler.go`:
 
 - reuse the shared trace context from `Dispatch`
-- record the route-scoped operation matched by `matchACPRouteEndpoint`
+- record the route-scoped operation matched by `matchAgentRouteEndpoint`
 - for `turn`, wrap the ACP SSE sink to count emitted event names and capture the final usage snapshot when present
 - for `permission`, record permission request ID and resolution status
 - for `sessions` and `transcript`, record query shape without storing transcript content
@@ -1046,7 +1051,7 @@ Fields stored as stable identifiers only:
 - `virtual_key_id`, not the bearer key string
 - `credential_id`, not the credential secret
 - `provider_id`
-- `service_id`
+- MCP `service_id`
 - `route_id`
 
 MCP tool argument storage is off by default and must be explicitly enabled per service via `audit.capture_tool_args`. Because this is persisted configuration, the field must be part of `pkg/mcp/service.MCPServiceConfig` rather than an undocumented sidecar shape.
@@ -1067,7 +1072,7 @@ Goal: durable event capture for LLM, MCP, and ACP traffic plus a real `/admin/me
 6. Add shared trace/span/agent-depth extraction and response header emission in `pkg/dispatcher/handler.go`.
 7. Instrument LLM dispatch and `RoutedProvider`.
 8. Instrument MCP dispatch without making `CompletedRequest` the persisted event model.
-9. Instrument ACP route operations, including SSE event-count capture for turns.
+9. Instrument ACP Agent operations, including SSE event-count capture for turns.
 10. Replace `GET /admin/metrics` with a real summary from SQLite.
 11. Add `GET /admin/metrics/llm/events`, `GET /admin/metrics/mcp/events`, `GET /admin/metrics/acp/events`, and `GET /admin/metrics/interactions`.
 

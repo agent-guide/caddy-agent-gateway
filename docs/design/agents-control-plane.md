@@ -41,13 +41,13 @@ The repository already contains the protocol-level building blocks:
 It should not replace `pkg/llm`, `pkg/mcp`, or `pkg/acp`; it should organize
 them around agent management and orchestration.
 
-The implemented P0/P1 ACP model still binds an Agent to a separately persisted
-ACP service. The target breaking cutover in
-[Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md) removes
-that product concept: `Agent.runtime.acp` owns the ACP execution config,
-`agent_id` owns the runtime pool, and no `service_id` or `acp_services` family
-remains. Implementation-status sections retain the old names only to describe
-the current tree and migration source accurately.
+The released ACP model stores execution config directly under
+`Agent.runtime.acp`; `agent_id` owns the runtime pool. There is no independent
+ACP management object or store family. The breaking cutover and migration
+boundary are recorded in
+[Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md).
+Historical implementation sections below retain old names only as explicitly
+superseded context.
 
 ## 3. Explicit Non-Goal
 
@@ -182,10 +182,9 @@ Target shape after the unified-runtime cutover:
 }
 ```
 
-The current P0/P1 stored shape instead contains
-`runtime.acp.service_id`, `routes.acp_route_ids`, and optionally
-`routes.builtin_route_ids`; those are migration-source fields, not the target
-schema.
+The released stored shape is the Agent-owned schema above. Pre-unification
+databases used a second ACP identity and runtime-specific route references;
+startup detects those shapes and requires offline migration.
 
 P0 initially implemented `runtime.type = "acp"`, but the model defines three
 built-in runtime types, split by a single axis — **who owns the agent's
@@ -249,11 +248,9 @@ remain generic identity/lifecycle metadata and are not repeated inside
 `runtime.acp`. Conversely, ACP execution fields do not move into `policy`.
 This leaves one source of truth without erasing the runtime-specific schema.
 
-The current `pkg/acp/service.ServiceConfig` is the migration source for the ACP
-fields above. At the breaking cutover, reusable normalization and validation
-move to a protocol-owned `acp.RuntimeConfig` without service management fields.
-The Agent adapter converts `Agent.runtime.acp` to that type; `pkg/acp` does not
-import `pkg/agent`.
+Reusable normalization and validation live in `pkg/acp/runtimeconfig` without
+service-management fields. The Agent adapter converts `Agent.runtime.acp` to
+that type; `pkg/acp` does not import `pkg/agent`.
 
 #### Source of truth: `runtime` vs `routes`
 
@@ -274,9 +271,9 @@ Agents whose backend has not shipped may be configured in advance; capability
 and workspace views expose that state, while dispatch fails with
 `agent_disabled` or `runtime_not_executable` before backend invocation.
 
-In the current pre-unification tree, `runtime.acp.service_id` plus
-`routes.acp_route_ids`/`routes.builtin_route_ids` implement this indirectly.
-They are removed together with ACPRoute/BuiltinRoute and the ACP service store.
+The removed pre-unification tree implemented this indirectly through a second
+ACP identity and runtime-specific ingress route families. That shape is
+accepted only by the versioned offline migration helper, never at runtime.
 
 #### Cardinality: one agent, one runtime
 
@@ -370,9 +367,7 @@ unbounded in size and would entangle pagination, permissions, and performance
 into a single endpoint. Transcripts and full session lists stay behind their own
 paginated endpoints; the workspace only points at them.
 
-The list above is the target `acp` runtime view. Current P0 assembles the
-analogous data by reading through the bound service and ACPRoute; the cutover
-removes that join. The workspace is keyed off `runtime.type`: an `http`-runtime
+The workspace is keyed off `runtime.type`: an `http`-runtime
 agent has no gateway-owned pooled instances, sessions, transcripts, or ACP
 permissions, so its workspace degrades to the runtime-agnostic parts (the
 Agent object, linked resources, tasks, and metrics/interaction traces). Do not
@@ -568,7 +563,7 @@ generic `policy` block.
 P1 observability ("usage for this agent", "activity for this agent") needs a
 reliable way to map durable usage/interaction events back to an Agent. The
 implemented metrics tables carry a nullable `agent_id` alongside the legacy
-route/service/session/trace dimensions; pre-P1 rows may leave it empty.
+protocol/session/trace dimensions; pre-P1 rows may leave it empty.
 
 **Decision: stamp `agent_id` at write time, starting in P1.** Usage events are
 append-only history and cannot be backfilled, so the durable attribution tag
@@ -580,9 +575,9 @@ leave P1-era events without reliable per-agent attribution. Concretely:
    `acp_usage_events`). This is additive — existing rows and non-agent traffic
    simply leave it empty.
 
-2. **Hot-path stamping (P1).** The dispatcher / ACP runtime stamps `agent_id`
-   when the originating route or service resolves to exactly one agent. That
-   resolution must use an in-memory route/service → agent index owned by the
+2. **Hot-path stamping (P1).** The dispatcher stamps `agent_id` from the common
+   AgentRoute target, while nested resource traffic resolves from an owned
+   route. That resolution uses an in-memory resource-route → agent index owned by the
    agent manager and kept current on agent create/update/delete — never a
    per-request config-store read, consistent with the existing provider/route
    hot-path rule.
@@ -604,10 +599,9 @@ leave P1-era events without reliable per-agent attribution. Concretely:
    arrows still point `pkg/agent -> runtime`, never the reverse. When no attributor
    is wired or it returns `ok = false`, the field is simply left empty.
 
-3. **Stamp only when unambiguous.** If the originating route/service maps to zero
+3. **Stamp only when unambiguous.** If an originating resource route maps to zero
    or more than one agent, leave `agent_id` empty rather than guess. An ambiguous
-   mapping is precisely the signal that the deployment has outgrown unique
-   service/route → agent binding.
+   mapping is precisely the signal that the route is not uniquely assigned.
 
 4. **Query layer uses direct Agent identity for ingress.** Per-agent usage and
    activity filter Agent execution by the durable `agent_id`; resource route
@@ -666,26 +660,25 @@ management and UI aggregation. The unified-runtime cutover expands them with
 AgentRoute and common runtime capabilities while removing service CRUD.
 
 These endpoints are management-plane APIs. They are not the primary data-plane
-entrypoint for end-user chat or task execution. Today, end users and business
-apps call route-dispatched ACP endpoints such as:
+entrypoint for end-user chat or task execution. End users and business apps
+call unified AgentRoute endpoints:
 
 ```text
-POST /<acp-route>/turn
-POST /<acp-route>/permission
-GET  /<acp-route>/sessions
-GET  /<acp-route>/sessions/{session_id}/transcript
+POST /<agent-route>/turn
+POST /<agent-route>/permission
+GET  /<agent-route>/sessions
+GET  /<agent-route>/sessions/{session_id}/transcript
 ```
 
-After M5 the same operations live under `/<agent-route>/...`; their ACP-specific
-optional fields and capabilities continue through the adapter. Likewise,
+ACP-specific optional fields and capabilities continue through the adapter. Likewise,
 agents continue to access LLM and MCP resources through the existing LLM API
 and MCP route surfaces. `/admin/agents` coordinates and observes those
 surfaces; it does not replace them.
 
-### 6.1 P0 Endpoints (Current Pre-unification Implementation)
+### 6.1 Historical P0 Endpoints (Pre-unification, Not Current)
 
-P0 should make the frontend productive without introducing scheduling or
-multi-agent workflows.
+The remainder of this subsection records the pre-unification P0 design for
+historical context. It is not the released API or model.
 
 - `GET /admin/agents`
 - `POST /admin/agents`
@@ -713,8 +706,8 @@ P0 lifecycle and ownership semantics:
   one-runtime-one-agent rule in [5.1](#51-agent)); create/update rejects a
   `service_id` already claimed by another agent.
 - deleting an agent deletes only the `Agent` record. It must not cascade-delete
-  the backing ACP service or routes. `OwnsService` exists in the current model,
-  but no auto-create/provenance write path shipped.
+  the backing ACP service or routes. The old provenance field never acquired
+  an auto-create/provenance write path before the model was removed.
 
 ACP-backed agents should use existing ACP management endpoints for runtime
 operations:
@@ -726,9 +719,8 @@ operations:
 - `DELETE /admin/acp/runtime/threads/{service_id}/{thread_id}`
 - `POST /admin/acp/runtime/permissions/{request_id}`
 
-All service/route ownership semantics and endpoints in this subsection describe
-the implemented migration source only. M4-M7 of the unified-runtime plan
-replace them with:
+All service/route ownership semantics and endpoints in this subsection are
+historical implementation context only. M4-M7 replaced them with:
 
 - Agent CRUD storing ACP config directly under `runtime.acp`;
 - AgentRoute CRUD under `/admin/agents/routes`;
@@ -737,8 +729,8 @@ replace them with:
 - `/admin/acp/runtime/...` only for native pool/process diagnosis and recovery,
   keyed by `agent_id`.
 
-There is no `/admin/acp/services`, `service_id`, `OwnsService`, service cascade,
-or shared-service mode in the target architecture.
+The released architecture has no second ACP management object, service
+cascade, or shared-service mode.
 
 ### 6.2 P1 Endpoints
 
@@ -830,9 +822,12 @@ P0/P1 below record the service-backed implementation sequence that has already
 landed. They are retained as implementation history, not as the target ACP
 model. The breaking M4-M7 replacement is defined in
 [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md#8-delivery-sequence)
-and summarized in [§9.4](#94-remove-acp-service-as-a-product-object).
+and summarized in [§9.4](#94-acp-product-object-removal-complete).
 
-### P0: Agent Resource And ACP-Backed Workspace
+### Historical P0: Agent Resource And ACP-Backed Workspace
+
+This subsection records the pre-unification implementation sequence. It is not
+current configuration or API guidance.
 
 P0 splits into two shippable milestones so the frontend can integrate agent
 list/detail before the surrounding tooling is finished. P0a is the minimum that
@@ -1060,12 +1055,13 @@ When implementing P0, update:
 The docs should describe `agents` as the primary product surface and
 LLM/MCP/ACP as resource/runtime layers.
 
-### 9.4 Remove ACP Service As A Product Object
+### 9.4 ACP Product-object Removal (Complete)
 
-The unified-runtime cutover is deliberately breaking:
+The unified-runtime cutover was deliberately breaking and completed the
+following removals:
 
-- move reusable ACP normalization/validation out of `pkg/acp/service` into an
-  identity-free protocol runtime config;
+- reusable ACP normalization/validation now lives in the identity-free
+  protocol-owned `pkg/acp/runtimeconfig` package;
 - rename ACP-internal `Service` identifiers that represented that management
   object to runtime/owner terminology;
 - copy each bound service's execution fields into its owning
@@ -1124,7 +1120,10 @@ P0 (P0a + P0b) and P1 are **implemented**. P2 and P3 remain
 design-only. The builtin PB0, PB1, and PB1b implementation status is maintained
 in [Builtin Agent Runtime](builtin-agent-runtime.md); PB2 remains deferred.
 
-### 11.1 Landed in P0a — agent object and CRUD
+### 11.1 Historical P0a — agent object and CRUD (superseded)
+
+The names and shapes below describe the pre-unification implementation and are
+not accepted by the released API or config store.
 
 - removed the dead `pkg/llm/agent` package.
 - added `pkg/agent` (`types.go`, `manager.go`, `manager_test.go`): the `Agent`
@@ -1140,7 +1139,7 @@ in [Builtin Agent Runtime](builtin-agent-runtime.md); PB2 remains deferred.
 - wired `GET/POST/GET/PUT/DELETE /admin/agents` to real handlers, backed by
   `AgentGateway.AgentManager()`.
 
-### 11.2 Landed in P0b — workspace and config-object parity
+### 11.2 Historical P0b — workspace and config-object parity (superseded)
 
 - `GET /admin/agents/{id}/workspace` returns the summary/index read model:
   bound ACP service (read-through), matching ACP routes, runtime pooled
@@ -1157,7 +1156,7 @@ in [Builtin Agent Runtime](builtin-agent-runtime.md); PB2 remains deferred.
   "the referenced family is present in the bundle" so a partial bundle that
   references existing config-store objects still applies.
 
-### 11.3 Landed in P1 — attribution and observability views
+### 11.3 Historical P1 — attribution and observability views (superseded)
 
 - additive nullable `agent_id` on the three usage event models, the SQLite
   tables (CREATE + idempotent `ALTER … ADD COLUMN` for existing DBs), partial
@@ -1178,14 +1177,13 @@ in [Builtin Agent Runtime](builtin-agent-runtime.md); PB2 remains deferred.
   stored id lists into object summaries (provider type, MCP transport, VirtualKey
   tag, route protocol/path, `exists` flag) instead of echoing raw ids.
 
-### 11.4 Decisions taken during implementation
+### 11.4 Historical decisions taken during implementation (superseded)
 
 Three points the design left open were resolved as follows; revisit if needed:
 
-- **Auto-created backing service:** not implemented in P0. An agent references a
-  pre-existing ACP service; the `OwnsService` provenance flag exists in the model
-  but no auto-create/derived-service write path ships yet. (Open Question in §10
-  stays open.)
+- **Auto-created backing service:** not implemented in P0. An agent referenced a
+  pre-existing ACP service; the provenance flag never gained an
+  auto-create/derived-service write path before both shapes were removed.
 - **Workspace session counts:** the workspace exposes *live* runtime counts
   (pooled instances, in-flight turns, pending permissions) and an ACP usage
   rollup, plus links to `…/sessions` and `…/sessions/{id}/transcript`. It does

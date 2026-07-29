@@ -23,7 +23,7 @@
 
   <!-- Title -->
   <text x="600" y="46" text-anchor="middle" font-size="30" font-weight="800" fill="#0f172a">agent-gateway — Connect, Manage &amp; Observe Your Agents</text>
-  <text x="600" y="76" text-anchor="middle" font-size="15" fill="#475569">Consumers reach agents over HTTP / ACP; agents reach external resources over LLM / MCP — every hop proxied and observed by one gateway</text>
+  <text x="600" y="76" text-anchor="middle" font-size="15" fill="#475569">Consumers reach every runtime through one Agent route; agents reach external resources over LLM / MCP — every hop proxied and observed</text>
 
   <!-- Agents (top): external runtimes; builtin runs inside the gateway -->
   <rect x="430" y="105" width="620" height="192" rx="16" fill="#f1f5f9" stroke="#64748b" stroke-width="1.5"/>
@@ -116,7 +116,7 @@
 
   <!-- (1) Consumers -> Gateway -->
   <path d="M300,570 L416,570" stroke="#4f46e5" stroke-width="2.4" fill="none" marker-end="url(#arrowI)"/>
-  <text x="358" y="554" text-anchor="middle" font-size="12.5" font-weight="700" fill="#4338ca">① HTTP / ACP / cc</text>
+  <text x="358" y="554" text-anchor="middle" font-size="12.5" font-weight="700" fill="#4338ca">① Agent / OpenAI / Anthropic / cc</text>
 
   <!-- (2) Gateway -> Agents -->
   <path d="M680,396 L680,301" stroke="#4f46e5" stroke-width="2.4" fill="none" marker-end="url(#arrowI)"/>

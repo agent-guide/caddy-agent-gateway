@@ -84,7 +84,7 @@ type ListSessionsResponse struct {
 // call context plus the agent's permission options and their exact ids).
 type PendingPermissionInfo struct {
 	RequestID string          `json:"request_id"`
-	ServiceID string          `json:"service_id"`
+	OwnerID   string          `json:"owner_id"`
 	SessionID string          `json:"session_id,omitempty"`
 	CreatedAt time.Time       `json:"created_at"`
 	Data      json.RawMessage `json:"data,omitempty"`

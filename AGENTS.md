@@ -133,7 +133,7 @@ Read the applicable subsystem file before changing either its runtime package
 or a cross-cutting adapter for it (for example `caddy/admin`,
 `caddy/dispatcher`, `standalone/server`, `pkg/gatewaybundle`, or `cmd/agwctl`):
 
-- `pkg/gateway/` — runtime route/VirtualKey/provider resolution (`AgentGateway`) and the public route-model packages (`llmroute`, `modelcatalog`, `mcproute`, `agentroute`; `acproute`/`builtinroute` remain only as legacy source pending M7 deletion, `virtualkey`) → `pkg/gateway/AGENTS.md`
+- `pkg/gateway/` — runtime route/VirtualKey/provider resolution (`AgentGateway`) and the public route-model packages (`llmroute`, `modelcatalog`, `mcproute`, `agentroute`, `virtualkey`) → `pkg/gateway/AGENTS.md`
 - `pkg/acp/` — native ACP runtime (`codex`, `opencode`): pooling, sessions, permissions, transcripts → `pkg/acp/AGENTS.md`
 - `pkg/llm/` — provider interface/registry, built-in providers, the `einomodel` eino bridge, `credentialmgr` → `pkg/llm/AGENTS.md`
 - `pkg/mcp/` — MCP service runtime and the `einotool` eino bridge → `pkg/mcp/AGENTS.md`

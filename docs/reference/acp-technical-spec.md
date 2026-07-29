@@ -29,9 +29,10 @@ agentRoutes:
     auth_policy: {require_virtual_key: true}
 ```
 
-The persisted stores are `agents` and the shared `routes` store. There is no
-`acp_services` store and bundles do not accept `acpServices`, `acpRoutes`, or
-`builtinRoutes`. Those legacy keys fail with `legacy_agent_runtime_config`.
+The persisted stores are `agents` and the shared `routes` store. Databases or
+bundles containing pre-unification ACP service or runtime-specific route fields
+are rejected with `legacy_agent_runtime_config`; export them with the old binary,
+migrate the bundle offline, then apply it to a fresh current database.
 
 Supported ACP fields include `agent_type`, `cwd`, `allowed_roots`,
 `default_model`, `env`, `config_overrides`, `idle_ttl`, `max_instances`,

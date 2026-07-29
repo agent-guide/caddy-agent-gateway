@@ -7,10 +7,10 @@ OpenCode. Since the unified Agent runtime cutover, ACP has no public service or
 route object: process configuration lives inline in `Agent.runtime.acp`, and a
 unified AgentRoute targets the Agent's stable `agent_id`.
 
-The removed surfaces include `acp_services`, `service_id`, ACPRoute,
-`/admin/acp/services`, `/admin/acp/routes`, `acpServices`, `acpRoutes`, and the
-matching CLI commands. Legacy source packages remain only until the planned M7
-cleanup and are not registered publicly.
+The former standalone service and runtime-specific route management surfaces
+were removed in the unified runtime cutover. Old databases are rejected by a
+read-only startup preflight and must be converted with the offline migration
+helper.
 
 ## Components
 

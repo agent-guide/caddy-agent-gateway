@@ -1,6 +1,6 @@
 # Unified Agent Runtime and Routing Plan
 
-Status: implementation in progress — M0-M6 complete
+Status: implementation in progress — M0-M7 complete
 
 Source branch: `feature/unified-agent-runtime` working tree based on `bc4e739`
 
@@ -1833,6 +1833,24 @@ against the built release binary, not only a schema helper, and assert the
 documented `legacy_agent_runtime_config` error plus export/migrate/apply
 remediation. Also assert that the database is unchanged after the failed
 startup.
+
+Implemented M7 evidence:
+
+- the old ACP/Builtin route packages, ACP service management package, legacy
+  dispatcher entrypoints, and their Admin/client/CLI/bundle surfaces are
+  physically deleted;
+- ACP process settings live in `pkg/acp/runtimeconfig`, while runtime pools,
+  sessions, permissions, diagnostics, and cancellation are keyed by Agent
+  owner identity;
+- common Agent routes are the sole ACP/builtin ingress and common Agent run
+  cancellation is the sole logical cancel operation;
+- source assertions reject reintroduction of removed packages and public
+  identifiers while positive bootstrap tests retain `EnableAgent` coverage;
+- the built `agwd` release binary is exercised against a legacy SQLite fixture,
+  must return `legacy_agent_runtime_config` with export/migrate/apply guidance,
+  and must leave the fixture byte-for-byte unchanged;
+- architecture, design, reference, operator, and bilingual product-site text
+  now describe the unified Agent runtime as released behavior.
 
 Update permanent documentation in the same change that removes the old route
 surface:

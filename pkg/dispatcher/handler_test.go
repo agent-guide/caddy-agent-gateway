@@ -9,42 +9,13 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/httpcapture"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
-	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
-	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
 type stubLLMApiHandler struct{}
-
-func TestBindAgentRuntimeIdentityLeavesUnboundACPNull(t *testing.T) {
-	for _, tt := range []struct {
-		name        string
-		agentID     string
-		wantRuntime string
-	}{
-		{name: "unbound legacy ACP"},
-		{name: "Agent-bound ACP", agentID: "agent-1", wantRuntime: agentpkg.RuntimeTypeACP},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			sink := &usage.InMemorySink{}
-			observer := usage.NewObserver(sink)
-			span, ctx := observer.Begin(t.Context(), usage.InteractionDimensions{RouteKind: "acp", AgentID: tt.agentID})
-			ctx = bindAgentRuntimeIdentity(ctx, span, routecore.RouteKindACP)
-			dims, ok := usage.DimensionsFromContext(ctx)
-			if !ok || dims.AgentID != tt.agentID || dims.RuntimeType != tt.wantRuntime {
-				t.Fatalf("bound dimensions = %+v, present=%v", dims, ok)
-			}
-			span.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
-			event := sink.Events[0].(usage.ACPUsageEvent)
-			if event.AgentID != tt.agentID || event.RuntimeType != tt.wantRuntime || event.RunID != "" {
-				t.Fatalf("ACP usage identity = %+v", event.InteractionEvent)
-			}
-		})
-	}
-}
 
 func (stubLLMApiHandler) Name() string { return "stub" }
 

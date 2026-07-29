@@ -11,7 +11,7 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinhost "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
@@ -1199,7 +1199,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func cloneCodexConfig(in *acpservice.CodexConfig) *acpservice.CodexConfig {
+func cloneCodexConfig(in *runtimeconfig.CodexConfig) *runtimeconfig.CodexConfig {
 	if in == nil {
 		return nil
 	}

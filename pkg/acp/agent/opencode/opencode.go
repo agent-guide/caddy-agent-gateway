@@ -23,7 +23,7 @@ type Agent struct {
 }
 
 func New(req agentspi.OpenRequest) (agentspi.Agent, error) {
-	return &Agent{cwd: req.CWD, env: req.Service.Env}, nil
+	return &Agent{cwd: req.CWD, env: req.Config.Env}, nil
 }
 
 func (a *Agent) Name() string { return baseacp.AgentTypeOpencode }

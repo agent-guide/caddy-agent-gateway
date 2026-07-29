@@ -148,7 +148,7 @@ Today it exposes working endpoints for:
 - ACP runtime inspection and operator escape-hatch endpoints
 - metrics summary, event, timeseries, breakdown, and Prometheus exposition endpoints
 
-The `/admin/agents` family is implemented (CRUD; workspace/activity/usage/interactions/resources/health; runtime capabilities; exact-run list/cancel; one-shot permission list/decision; and capability-gated session/transcript reads). ACP and builtin still enter through their legacy route families until AgentRoute cutover; the same route table still defines memory endpoints that are not yet implemented.
+The `/admin/agents` family is implemented (CRUD; unified AgentRoute CRUD; workspace/activity/usage/interactions/resources/health; runtime capabilities; exact-run list/cancel; one-shot permission list/decision; and capability-gated session/transcript reads). ACP and builtin both enter through `kind=agent`, `protocol=agent` routes. The same route table still defines memory endpoints that are not yet implemented.
 
 This means the admin package is now the active control-plane entrypoint for LLM, MCP, ACP, agents, and metrics inspection, while the memory admin family remains future work. ACP consumer runtime APIs that should be scoped by route and VirtualKey, such as turns, permission decisions, session listing, and transcript replay, stay under the dispatcher route prefix rather than under `/admin/acp`.
 

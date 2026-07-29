@@ -148,7 +148,7 @@ func TestDecodeStoredAgentRoute(t *testing.T) {
 func TestDecodeTargetAgentIDRejectsForeignTargetKind(t *testing.T) {
 	// A foreign target-policy kind on a kind=agent route fails closed instead
 	// of silently lending its agent_id to attribution or target validation.
-	if _, err := DecodeTargetAgentID(json.RawMessage(`{"kind":"acp-service","agent_id":"reviewer"}`)); err == nil {
+	if _, err := DecodeTargetAgentID(json.RawMessage(`{"kind":"mcp-service","agent_id":"reviewer"}`)); err == nil {
 		t.Fatal("foreign target policy kind was accepted")
 	}
 	// The canonical shape and a kind-less policy still decode.
@@ -165,7 +165,7 @@ func TestDecodeTargetAgentIDRejectsForeignTargetKind(t *testing.T) {
 		ID:           "agent:reviewer:root",
 		Kind:         routecore.RouteKindAgent,
 		Protocol:     routecore.RouteProtocolAgent,
-		TargetPolicy: json.RawMessage(`{"kind":"builtin-agent","agent_id":"reviewer"}`),
+		TargetPolicy: json.RawMessage(`{"kind":"logical-model","agent_id":"reviewer"}`),
 	}
 	data, err := json.Marshal(stored)
 	if err != nil {
@@ -186,8 +186,6 @@ func TestMatcherPriorityAcrossRouteFamilies(t *testing.T) {
 	routes := []routecore.AgentRouteConfig{
 		mk("llm", routecore.RouteKindLLM, routecore.RouteProtocolOpenAI, "/v1"),
 		mk("mcp", routecore.RouteKindMCP, routecore.RouteProtocolMCP, "/mcp"),
-		mk("acp", routecore.RouteKindACP, routecore.RouteProtocolACP, "/agents"),
-		mk("builtin", routecore.RouteKindBuiltin, routecore.RouteProtocolBuiltin, "/agents/builtin"),
 		mk("agent", routecore.RouteKindAgent, routecore.RouteProtocolAgent, "/agents/reviewer"),
 	}
 	cases := []struct {
@@ -195,8 +193,6 @@ func TestMatcherPriorityAcrossRouteFamilies(t *testing.T) {
 		want string
 	}{
 		{"/agents/reviewer/turn", "agent"},
-		{"/agents/builtin/turn", "builtin"},
-		{"/agents/other/turn", "acp"},
 		{"/v1/chat/completions", "llm"},
 		{"/mcp/tools", "mcp"},
 	}

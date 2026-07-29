@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
@@ -46,7 +47,7 @@ func (h *Handler) dispatchAgent(w http.ResponseWriter, r *http.Request, next Nex
 	)
 
 	rewritten := RewriteLLMRoutePath(r, route.MatchPolicy.PathPrefix)
-	endpoint, sessionID, matched := matchACPRouteEndpoint(rewritten.URL.Path)
+	endpoint, sessionID, matched := matchAgentRouteEndpoint(rewritten.URL.Path)
 	if !matched {
 		return serveNextOrNotFound(next, w, r)
 	}
@@ -111,6 +112,30 @@ func (h *Handler) dispatchAgent(w http.ResponseWriter, r *http.Request, next Nex
 	default:
 		return serveNextOrNotFound(next, w, r)
 	}
+}
+
+func matchAgentRouteEndpoint(path string) (endpoint string, sessionID string, matched bool) {
+	switch path {
+	case "/turn":
+		return "turn", "", true
+	case "/permission":
+		return "permission", "", true
+	case "/sessions":
+		return "sessions", "", true
+	}
+	if !strings.HasPrefix(path, "/sessions/") || !strings.HasSuffix(path, "/transcript") {
+		return "", "", false
+	}
+	rawID := strings.TrimSuffix(strings.TrimPrefix(path, "/sessions/"), "/transcript")
+	rawID = strings.Trim(rawID, "/")
+	if rawID == "" || strings.Contains(rawID, "/") {
+		return "", "", false
+	}
+	id, err := url.PathUnescape(rawID)
+	if err != nil || strings.TrimSpace(id) == "" {
+		return "", "", false
+	}
+	return "transcript", strings.TrimSpace(id), true
 }
 
 func (h *Handler) serveAgentTurn(w http.ResponseWriter, r *http.Request, backend runtimeapi.Backend, a agentpkg.Agent) error {

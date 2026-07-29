@@ -322,19 +322,9 @@ func TestBuiltinValidationRules(t *testing.T) {
 			name: "acp runtime must not carry a builtin block",
 			mutate: func(a *Agent) {
 				a.Runtime.Type = RuntimeTypeACP
-				a.Runtime.ACP = &ACPRuntime{ServiceID: "svc"}
+				a.Runtime.ACP = &ACPRuntime{}
 			},
 			wantErr: "runtime.builtin must be empty",
-		},
-		{
-			name: "non-builtin runtime must not claim builtin routes",
-			mutate: func(a *Agent) {
-				a.Runtime.Type = RuntimeTypeHTTP
-				a.Runtime.HTTP = &HTTPRuntime{Endpoint: "http://agent.example"}
-				a.Runtime.Builtin = nil
-				a.Routes.BuiltinRouteIDs = []string{"builtin-route"}
-			},
-			wantErr: "builtin_route_ids is only valid for builtin runtime agents",
 		},
 	}
 	for _, tc := range cases {
@@ -409,7 +399,7 @@ func TestBuiltinCustomFactoryNameRegistryUnblocksValidation(t *testing.T) {
 
 func TestBuiltinNormalizeClearsOtherRuntimesAndDefaultsTopology(t *testing.T) {
 	a := validBuiltinAgent()
-	a.Runtime.ACP = &ACPRuntime{ServiceID: "leftover"}
+	a.Runtime.ACP = &ACPRuntime{}
 	a.Runtime.HTTP = &HTTPRuntime{Endpoint: "http://x"}
 	a.Runtime.Builtin.Topology.Kind = ""
 	a.Normalize()

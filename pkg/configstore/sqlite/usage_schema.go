@@ -59,7 +59,7 @@ func MigrateUsageTables(db *gorm.DB) error {
 		`CREATE TABLE IF NOT EXISTS acp_usage_events (
 			event_id TEXT PRIMARY KEY, trace_id TEXT, span_id TEXT NOT NULL, parent_span_id TEXT,
 			agent_depth INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL,
-			route_id TEXT, route_kind TEXT NOT NULL DEFAULT 'acp', route_protocol TEXT, virtual_key_id TEXT,
+			route_id TEXT, route_kind TEXT NOT NULL DEFAULT 'agent', route_protocol TEXT, virtual_key_id TEXT,
 			success INTEGER NOT NULL DEFAULT 0, status_code INTEGER, error_type TEXT, latency_ms INTEGER,
 			service_id TEXT, agent_type TEXT, operation TEXT, thread_id TEXT, session_id TEXT,
 			permission_request_id TEXT, fresh_session INTEGER, event_counts_json TEXT, usage_json TEXT,
@@ -68,7 +68,7 @@ func MigrateUsageTables(db *gorm.DB) error {
 		`CREATE TABLE IF NOT EXISTS builtin_usage_events (
 			event_id TEXT PRIMARY KEY, trace_id TEXT, span_id TEXT NOT NULL, parent_span_id TEXT,
 			agent_depth INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, finished_at INTEGER NOT NULL,
-			route_id TEXT, route_kind TEXT NOT NULL DEFAULT 'builtin', route_protocol TEXT, virtual_key_id TEXT,
+			route_id TEXT, route_kind TEXT NOT NULL DEFAULT 'agent', route_protocol TEXT, virtual_key_id TEXT,
 			success INTEGER NOT NULL DEFAULT 0, status_code INTEGER, error_type TEXT, latency_ms INTEGER,
 			operation TEXT, session_id TEXT, run_id TEXT, permission_request_id TEXT,
 			link_trace_id TEXT, link_span_id TEXT, topology_kind TEXT, model_steps INTEGER NOT NULL DEFAULT 0,

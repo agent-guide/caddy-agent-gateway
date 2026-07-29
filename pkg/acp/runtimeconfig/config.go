@@ -1,6 +1,11 @@
-package service
+// Package runtimeconfig defines the ACP process configuration shared by Agent
+// definitions, runtime adapters, and native agent implementations. It contains
+// no persisted service object or management lifecycle.
+package runtimeconfig
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -10,16 +15,16 @@ import (
 	baseacp "github.com/agent-guide/agent-gateway/pkg/acp"
 )
 
-var ErrServiceNotConfigured = fmt.Errorf("acp service is not configured")
-
 const (
 	CodexModeAdapter   = "adapter"
 	CodexModeAppServer = "app_server"
 )
 
-type ServiceConfig struct {
-	ID              string            `json:"id"`
-	Name            string            `json:"name"`
+// Config is the process-facing ACP runtime configuration. OwnerID is assigned
+// by the runtime adapter from the owning Agent and is never serialized as an
+// independent management identity.
+type Config struct {
+	OwnerID         string            `json:"-"`
 	AgentType       string            `json:"agent_type"`
 	CWD             string            `json:"cwd"`
 	AllowedRoots    []string          `json:"allowed_roots,omitempty"`
@@ -29,10 +34,6 @@ type ServiceConfig struct {
 	IdleTTL         time.Duration     `json:"idle_ttl,omitempty"`
 	MaxInstances    int               `json:"max_instances,omitempty"`
 	PermissionMode  string            `json:"permission_mode,omitempty"`
-	Disabled        bool              `json:"disabled"`
-	Description     string            `json:"description,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
 	Codex           *CodexConfig      `json:"codex,omitempty"`
 }
 
@@ -48,24 +49,30 @@ type CodexConfig struct {
 	RetryTurnOnCrash bool     `json:"retry_turn_on_crash,omitempty"`
 }
 
-func DecodeStoredServiceConfig(data []byte) (any, error) {
-	var cfg ServiceConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+// Fingerprint returns a canonical process-config fingerprint. The Agent owner
+// is validated but excluded from the serialized configuration.
+func (c Config) Fingerprint(ownerID string) (string, error) {
+	if strings.TrimSpace(ownerID) == "" {
+		return "", fmt.Errorf("runtime owner id is required")
 	}
-	cfg.Normalize()
-	if err := cfg.Validate(); err != nil {
-		return nil, err
+	c.OwnerID = strings.TrimSpace(ownerID)
+	c.Normalize()
+	if err := c.Validate(); err != nil {
+		return "", err
 	}
-	return &cfg, nil
+	data, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
-func (c *ServiceConfig) Normalize() {
+func (c *Config) Normalize() {
 	if c == nil {
 		return
 	}
-	c.ID = strings.TrimSpace(c.ID)
-	c.Name = strings.TrimSpace(c.Name)
+	c.OwnerID = strings.TrimSpace(c.OwnerID)
 	c.AgentType = strings.TrimSpace(c.AgentType)
 	c.CWD = strings.TrimSpace(c.CWD)
 	c.DefaultModel = strings.TrimSpace(c.DefaultModel)
@@ -73,7 +80,6 @@ func (c *ServiceConfig) Normalize() {
 	if c.PermissionMode == "" {
 		c.PermissionMode = baseacp.PermissionModeDeny
 	}
-	c.Description = strings.TrimSpace(c.Description)
 	for i := range c.AllowedRoots {
 		c.AllowedRoots[i] = strings.TrimSpace(c.AllowedRoots[i])
 	}
@@ -82,9 +88,8 @@ func (c *ServiceConfig) Normalize() {
 	}
 	if len(c.Env) > 0 {
 		normalized := make(map[string]string, len(c.Env))
-		for k, v := range c.Env {
-			k = strings.TrimSpace(k)
-			normalized[k] = v
+		for key, value := range c.Env {
+			normalized[strings.TrimSpace(key)] = value
 		}
 		c.Env = normalized
 	}
@@ -103,13 +108,7 @@ func (c *ServiceConfig) Normalize() {
 	}
 }
 
-func (c ServiceConfig) Validate() error {
-	if c.ID == "" {
-		return fmt.Errorf("id is required")
-	}
-	if c.Name == "" {
-		return fmt.Errorf("name is required")
-	}
+func (c Config) Validate() error {
 	switch c.AgentType {
 	case baseacp.AgentTypeCodex, baseacp.AgentTypeOpencode:
 	default:
@@ -135,15 +134,15 @@ func (c ServiceConfig) Validate() error {
 	if c.MaxInstances < 0 {
 		return fmt.Errorf("max_instances must be non-negative")
 	}
-	for k := range c.Env {
-		if strings.TrimSpace(k) == "" {
+	for key, value := range c.Env {
+		if strings.TrimSpace(key) == "" {
 			return fmt.Errorf("env key must not be empty")
 		}
-		if strings.ContainsAny(k, "=\x00") {
-			return fmt.Errorf("env key %q must not contain '=' or NUL", k)
+		if strings.ContainsAny(key, "=\x00") {
+			return fmt.Errorf("env key %q must not contain '=' or NUL", key)
 		}
-		if strings.ContainsRune(c.Env[k], '\x00') {
-			return fmt.Errorf("env value for key %q must not contain NUL", k)
+		if strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("env value for key %q must not contain NUL", key)
 		}
 	}
 	if c.AgentType == baseacp.AgentTypeCodex && c.Codex != nil {
@@ -159,16 +158,6 @@ func (c ServiceConfig) Validate() error {
 		}
 	}
 	return nil
-}
-
-func (c *ServiceConfig) NormalizeTimestamps(now time.Time) {
-	if c == nil {
-		return
-	}
-	if c.CreatedAt.IsZero() {
-		c.CreatedAt = now
-	}
-	c.UpdatedAt = now
 }
 
 func ValidateCWDAllowed(cwd string, roots []string) error {

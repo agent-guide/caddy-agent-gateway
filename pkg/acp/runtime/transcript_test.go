@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/agent-guide/agent-gateway/pkg/acp/agentspi"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	acptransport "github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
@@ -118,7 +118,7 @@ func TestLoadAgentTranscriptCollectsAndCoalesces(t *testing.T) {
 	transcriptTestTransport.subs = nil
 	transcriptTestTransport.requests = nil
 
-	result, err := loadAgentTranscript(context.Background(), acpservice.ServiceConfig{
+	result, err := loadAgentTranscript(context.Background(), runtimeconfig.Config{
 		AgentType: "transcript",
 		CWD:       "/tmp/project",
 	}, TranscriptRequest{SessionID: "s1"})
@@ -149,7 +149,7 @@ func TestLoadAgentTranscriptRequiresLoadCapability(t *testing.T) {
 	transcriptTestTransport.subs = nil
 	transcriptTestTransport.requests = nil
 
-	_, err := loadAgentTranscript(context.Background(), acpservice.ServiceConfig{
+	_, err := loadAgentTranscript(context.Background(), runtimeconfig.Config{
 		AgentType: "transcript",
 		CWD:       "/tmp/project",
 	}, TranscriptRequest{SessionID: "s1"})
@@ -159,7 +159,7 @@ func TestLoadAgentTranscriptRequiresLoadCapability(t *testing.T) {
 }
 
 func TestLoadAgentTranscriptRequiresSessionID(t *testing.T) {
-	_, err := loadAgentTranscript(context.Background(), acpservice.ServiceConfig{
+	_, err := loadAgentTranscript(context.Background(), runtimeconfig.Config{
 		AgentType: "transcript",
 		CWD:       "/tmp/project",
 	}, TranscriptRequest{})
@@ -169,7 +169,7 @@ func TestLoadAgentTranscriptRequiresSessionID(t *testing.T) {
 }
 
 func TestLoadAgentTranscriptUsesLoaderOverride(t *testing.T) {
-	result, err := loadAgentTranscript(context.Background(), acpservice.ServiceConfig{
+	result, err := loadAgentTranscript(context.Background(), runtimeconfig.Config{
 		AgentType: "transcript-loader-override",
 		CWD:       "/tmp/project",
 	}, TranscriptRequest{SessionID: "s9"})

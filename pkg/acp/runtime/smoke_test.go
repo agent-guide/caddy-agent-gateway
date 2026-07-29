@@ -13,7 +13,7 @@ import (
 	baseacp "github.com/agent-guide/agent-gateway/pkg/acp"
 	_ "github.com/agent-guide/agent-gateway/pkg/acp/agent/codex"
 	_ "github.com/agent-guide/agent-gateway/pkg/acp/agent/opencode"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 )
 
 // These tests exercise a real ACP agent binary. They are opt-in: set
@@ -34,7 +34,7 @@ func requireSmoke(t *testing.T, bin string) {
 	}
 }
 
-func smokeHandshake(t *testing.T, cfg acpservice.ServiceConfig) {
+func smokeHandshake(t *testing.T, cfg runtimeconfig.Config) {
 	t.Helper()
 	cfg.Normalize()
 	m := newTestManager()
@@ -55,9 +55,8 @@ func smokeHandshake(t *testing.T, cfg acpservice.ServiceConfig) {
 func TestSmokeOpencodeHandshake(t *testing.T) {
 	requireSmoke(t, "opencode")
 	cwd := t.TempDir()
-	smokeHandshake(t, acpservice.ServiceConfig{
-		ID:           "opencode-smoke",
-		Name:         "opencode",
+	smokeHandshake(t, runtimeconfig.Config{
+		OwnerID:      "opencode-smoke",
 		AgentType:    baseacp.AgentTypeOpencode,
 		CWD:          cwd,
 		AllowedRoots: []string{cwd},
@@ -72,9 +71,8 @@ func TestSmokeOpencodeHandshake(t *testing.T) {
 func TestSmokeOpencodeSessionLifecycle(t *testing.T) {
 	requireSmoke(t, "opencode")
 	cwd := t.TempDir()
-	cfg := acpservice.ServiceConfig{
-		ID:           "opencode-smoke",
-		Name:         "opencode",
+	cfg := runtimeconfig.Config{
+		OwnerID:      "opencode-smoke",
 		AgentType:    baseacp.AgentTypeOpencode,
 		CWD:          cwd,
 		AllowedRoots: []string{cwd},
@@ -131,13 +129,12 @@ func TestSmokeOpencodeSessionLifecycle(t *testing.T) {
 func TestSmokeCodexSessionLifecycle(t *testing.T) {
 	requireSmoke(t, "codex-acp")
 	cwd := t.TempDir()
-	cfg := acpservice.ServiceConfig{
-		ID:           "codex-smoke",
-		Name:         "codex",
+	cfg := runtimeconfig.Config{
+		OwnerID:      "codex-smoke",
 		AgentType:    baseacp.AgentTypeCodex,
 		CWD:          cwd,
 		AllowedRoots: []string{cwd},
-		Codex:        &acpservice.CodexConfig{Mode: acpservice.CodexModeAdapter},
+		Codex:        &runtimeconfig.CodexConfig{Mode: runtimeconfig.CodexModeAdapter},
 	}
 	cfg.Normalize()
 	m := newTestManager()
@@ -190,7 +187,7 @@ func requirePromptSmoke(t *testing.T, bin string) {
 // transcript, verifying the full prompt path (streaming deltas, stop reason)
 // and that the replayed transcript carries the real user and assistant
 // messages.
-func smokePromptTurn(t *testing.T, cfg acpservice.ServiceConfig) {
+func smokePromptTurn(t *testing.T, cfg runtimeconfig.Config) {
 	t.Helper()
 	cfg.Normalize()
 	m := newTestManager()
@@ -267,9 +264,8 @@ func smokePromptTurn(t *testing.T, cfg acpservice.ServiceConfig) {
 func TestSmokeOpencodePromptTurn(t *testing.T) {
 	requirePromptSmoke(t, "opencode")
 	cwd := t.TempDir()
-	smokePromptTurn(t, acpservice.ServiceConfig{
-		ID:           "opencode-prompt-smoke",
-		Name:         "opencode",
+	smokePromptTurn(t, runtimeconfig.Config{
+		OwnerID:      "opencode-prompt-smoke",
 		AgentType:    baseacp.AgentTypeOpencode,
 		CWD:          cwd,
 		AllowedRoots: []string{cwd},
@@ -289,9 +285,8 @@ func TestSmokeOpencodeInteractivePermission(t *testing.T) {
 	if err := os.WriteFile(cwd+"/opencode.json", []byte(`{"$schema":"https://opencode.ai/config.json","permission":{"edit":"ask","bash":"ask"}}`), 0o644); err != nil {
 		t.Fatalf("write opencode.json: %v", err)
 	}
-	cfg := acpservice.ServiceConfig{
-		ID:             "opencode-perm-smoke",
-		Name:           "opencode",
+	cfg := runtimeconfig.Config{
+		OwnerID:        "opencode-perm-smoke",
 		AgentType:      baseacp.AgentTypeOpencode,
 		CWD:            cwd,
 		AllowedRoots:   []string{cwd},
@@ -360,17 +355,16 @@ func TestSmokeOpencodeInteractivePermission(t *testing.T) {
 func TestSmokeCodexPromptTurn(t *testing.T) {
 	requirePromptSmoke(t, "codex-acp")
 	cwd := t.TempDir()
-	smokePromptTurn(t, acpservice.ServiceConfig{
-		ID:           "codex-prompt-smoke",
-		Name:         "codex",
+	smokePromptTurn(t, runtimeconfig.Config{
+		OwnerID:      "codex-prompt-smoke",
 		AgentType:    baseacp.AgentTypeCodex,
 		CWD:          cwd,
 		AllowedRoots: []string{cwd},
-		Codex:        &acpservice.CodexConfig{Mode: acpservice.CodexModeAdapter},
+		Codex:        &runtimeconfig.CodexConfig{Mode: runtimeconfig.CodexModeAdapter},
 	})
 }
 
-func smokeExactRunCancel(t *testing.T, cfg acpservice.ServiceConfig) {
+func smokeExactRunCancel(t *testing.T, cfg runtimeconfig.Config) {
 	t.Helper()
 	cfg.MaxInstances = 2
 	cfg.Normalize()
@@ -418,12 +412,12 @@ func smokeExactRunCancel(t *testing.T, cfg acpservice.ServiceConfig) {
 			t.Fatalf("both turns did not start: %+v", seen)
 		}
 	}
-	active := m.ListActiveRuns(cfg.ID)
+	active := m.ListActiveRuns(cfg.OwnerID)
 	if len(active) != 2 || active[0].RunID != runA || active[1].RunID != runB || active[0].SessionID == "" || active[1].SessionID == "" {
 		t.Fatalf("active runs missing native session bindings: %+v", active)
 	}
 	sessions := map[string]string{active[0].RunID: active[0].SessionID, active[1].RunID: active[1].SessionID}
-	if err := m.CancelRun(cfg.ID, runA); err != nil {
+	if err := m.CancelRun(cfg.OwnerID, runA); err != nil {
 		t.Fatalf("CancelRun: %v", err)
 	}
 	assertNativeCancelFrame(t, cancelFrames, sessions[runA])
@@ -436,13 +430,13 @@ func smokeExactRunCancel(t *testing.T, cfg acpservice.ServiceConfig) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("native cancellation did not terminate promptly")
 	}
-	if got := m.ListActiveRuns(cfg.ID); len(got) != 1 || got[0].RunID != runB {
+	if got := m.ListActiveRuns(cfg.OwnerID); len(got) != 1 || got[0].RunID != runB {
 		t.Fatalf("unrelated run was affected by exact cancel: %+v", got)
 	}
 	if len(m.ListInstances()) != 2 {
 		t.Fatalf("exact cancellation removed or replaced a pool entry")
 	}
-	if err := m.CancelRun(cfg.ID, runB); err != nil {
+	if err := m.CancelRun(cfg.OwnerID, runB); err != nil {
 		t.Fatalf("cleanup CancelRun: %v", err)
 	}
 	assertNativeCancelFrame(t, cancelFrames, sessions[runB])
@@ -460,23 +454,22 @@ func smokeExactRunCancel(t *testing.T, cfg acpservice.ServiceConfig) {
 func TestSmokeOpencodeExactRunCancel(t *testing.T) {
 	requireSmoke(t, "opencode")
 	cwd := t.TempDir()
-	smokeExactRunCancel(t, acpservice.ServiceConfig{ID: "opencode-cancel-smoke", Name: "opencode", AgentType: baseacp.AgentTypeOpencode, CWD: cwd, AllowedRoots: []string{cwd}})
+	smokeExactRunCancel(t, runtimeconfig.Config{OwnerID: "opencode-cancel-smoke", AgentType: baseacp.AgentTypeOpencode, CWD: cwd, AllowedRoots: []string{cwd}})
 }
 func TestSmokeCodexExactRunCancel(t *testing.T) {
 	requireSmoke(t, "codex-acp")
 	cwd := t.TempDir()
-	smokeExactRunCancel(t, acpservice.ServiceConfig{ID: "codex-cancel-smoke", Name: "codex", AgentType: baseacp.AgentTypeCodex, CWD: cwd, AllowedRoots: []string{cwd}, Codex: &acpservice.CodexConfig{Mode: acpservice.CodexModeAdapter}})
+	smokeExactRunCancel(t, runtimeconfig.Config{OwnerID: "codex-cancel-smoke", AgentType: baseacp.AgentTypeCodex, CWD: cwd, AllowedRoots: []string{cwd}, Codex: &runtimeconfig.CodexConfig{Mode: runtimeconfig.CodexModeAdapter}})
 }
 
 func TestSmokeCodexHandshake(t *testing.T) {
 	requireSmoke(t, "codex-acp")
 	cwd := t.TempDir()
-	smokeHandshake(t, acpservice.ServiceConfig{
-		ID:           "codex-smoke",
-		Name:         "codex",
+	smokeHandshake(t, runtimeconfig.Config{
+		OwnerID:      "codex-smoke",
 		AgentType:    baseacp.AgentTypeCodex,
 		CWD:          cwd,
 		AllowedRoots: []string{cwd},
-		Codex:        &acpservice.CodexConfig{Mode: acpservice.CodexModeAdapter},
+		Codex:        &runtimeconfig.CodexConfig{Mode: runtimeconfig.CodexModeAdapter},
 	})
 }

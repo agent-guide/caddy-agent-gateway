@@ -8,7 +8,7 @@ import (
 
 	"github.com/agent-guide/agent-gateway/pkg/acp/agentspi"
 	"github.com/agent-guide/agent-gateway/pkg/acp/runtime/acpupdate"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	acptransport "github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
@@ -18,7 +18,7 @@ import (
 // session/load response, so the collector consumes updates concurrently with
 // the request and drains anything still buffered once the response arrives.
 // An agent implementing agentspi.TranscriptLoader overrides this generic path.
-func loadAgentTranscript(ctx context.Context, cfg acpservice.ServiceConfig, req TranscriptRequest) (TranscriptResponse, error) {
+func loadAgentTranscript(ctx context.Context, cfg runtimeconfig.Config, req TranscriptRequest) (TranscriptResponse, error) {
 	sessionID := strings.TrimSpace(req.SessionID)
 	if sessionID == "" {
 		return TranscriptResponse{}, fmt.Errorf("%w: session_id is required", ErrInvalidRequest)
@@ -27,7 +27,7 @@ func loadAgentTranscript(ctx context.Context, cfg acpservice.ServiceConfig, req 
 	if openCWD == "" {
 		openCWD = cfg.CWD
 	}
-	agent, err := agentspi.New(cfg.AgentType, agentspi.OpenRequest{Service: cfg, CWD: openCWD})
+	agent, err := agentspi.New(cfg.AgentType, agentspi.OpenRequest{Config: cfg, CWD: openCWD})
 	if err != nil {
 		return TranscriptResponse{}, err
 	}

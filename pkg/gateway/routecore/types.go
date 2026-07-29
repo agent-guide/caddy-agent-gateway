@@ -9,10 +9,8 @@ import (
 type RouteKind string
 
 const (
-	RouteKindLLM     RouteKind = "llm"
-	RouteKindMCP     RouteKind = "mcp"
-	RouteKindACP     RouteKind = "acp"
-	RouteKindBuiltin RouteKind = "builtin"
+	RouteKindLLM RouteKind = "llm"
+	RouteKindMCP RouteKind = "mcp"
 	// RouteKindAgent is the unified Agent ingress route kind. It targets an
 	// agent_id and stays runtime-neutral: the resolved Agent's runtime.type
 	// selects the execution backend (docs/plans/unified-agent-runtime.md §6).
@@ -26,8 +24,6 @@ const (
 	RouteProtocolAnthropic RouteProtocol = "anthropic"
 	RouteProtocolCC        RouteProtocol = "cc"
 	RouteProtocolMCP       RouteProtocol = "mcp"
-	RouteProtocolACP       RouteProtocol = "acp"
-	RouteProtocolBuiltin   RouteProtocol = "builtin"
 	RouteProtocolAgent     RouteProtocol = "agent"
 )
 
@@ -37,8 +33,6 @@ const (
 	RouteTargetPolicyKindDirectProvider RouteTargetPolicyKind = "direct-provider"
 	RouteTargetPolicyKindLogicalModel   RouteTargetPolicyKind = "logical-model"
 	RouteTargetPolicyKindMCPService     RouteTargetPolicyKind = "mcp-service"
-	RouteTargetPolicyKindACPService     RouteTargetPolicyKind = "acp-service"
-	RouteTargetPolicyKindBuiltinAgent   RouteTargetPolicyKind = "builtin-agent"
 	RouteTargetPolicyKindAgent          RouteTargetPolicyKind = "agent"
 )
 

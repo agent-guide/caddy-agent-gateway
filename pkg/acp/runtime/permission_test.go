@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	acptransport "github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
@@ -18,7 +18,7 @@ func TestPermissionBrokerResolveIsOneShot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if got := b.list(); len(got) != 1 || got[0].RequestID != pending.info.RequestID || got[0].ServiceID != "svc" {
+	if got := b.list(); len(got) != 1 || got[0].RequestID != pending.info.RequestID || got[0].OwnerID != "svc" {
 		t.Fatalf("list = %+v, want the pending entry", got)
 	}
 
@@ -74,7 +74,7 @@ func TestManagerResolvePermissionValidatesDecision(t *testing.T) {
 
 func interactiveInstance(broker *permissionBroker) *instance {
 	return &instance{
-		cfg:         acpservice.ServiceConfig{ID: "svc", PermissionMode: "interactive"},
+		cfg:         runtimeconfig.Config{OwnerID: "svc", PermissionMode: "interactive"},
 		sessionID:   "s1",
 		agent:       stubAgent{},
 		permissions: broker,
@@ -151,12 +151,12 @@ func TestInteractivePermissionFailsClosedOnTimeout(t *testing.T) {
 func TestPermissionFuncUsesConfiguredDecisionForNonInteractiveModes(t *testing.T) {
 	params := json.RawMessage(`{"options":[{"id":"allow-once","kind":"allow_once","name":"Allow once"}]}`)
 
-	deny := &instance{cfg: acpservice.ServiceConfig{PermissionMode: "deny"}}
+	deny := &instance{cfg: runtimeconfig.Config{PermissionMode: "deny"}}
 	if resp := deny.permissionFunc()(context.Background(), params); resp.Outcome != acptransport.PermissionOutcomeCancelled {
 		t.Fatalf("deny outcome = %q, want cancelled", resp.Outcome)
 	}
 
-	auto := &instance{cfg: acpservice.ServiceConfig{PermissionMode: "auto_approve"}}
+	auto := &instance{cfg: runtimeconfig.Config{PermissionMode: "auto_approve"}}
 	if resp := auto.permissionFunc()(context.Background(), params); resp.Outcome != acptransport.PermissionOutcomeSelected || resp.SelectedOptionID != "allow-once" {
 		t.Fatalf("auto_approve response = %+v, want selected allow-once", resp)
 	}

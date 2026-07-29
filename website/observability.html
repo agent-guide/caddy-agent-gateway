@@ -55,9 +55,9 @@
       <h2>Four event families, one attribution model.</h2>
       <p class="lede">
         LLM, MCP, ACP, and builtin traffic each produce persisted, typed usage events.
-        Agent-bound events carry an agent id when ownership is unambiguous; builtin
-        turns are stamped explicitly. Unbound gateway traffic remains visible without
-        inventing an owner.
+        Unified AgentRoute ingress stamps the target agent id and selected runtime
+        directly for both ACP and builtin turns. Direct LLM and MCP traffic remains
+        visible without inventing an owner.
       </p>
 
       <div class="table-scroll">

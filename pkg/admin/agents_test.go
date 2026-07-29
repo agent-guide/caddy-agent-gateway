@@ -302,7 +302,7 @@ func TestAgentInteractionsAllowsDiagnosticFilters(t *testing.T) {
 		ID:   "coding-agent",
 		Name: "Coding Agent",
 		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
-			ServiceID: "codex-main",
+			AgentType: "codex", CWD: "/tmp", AllowedRoots: []string{"/tmp"},
 		}},
 	}); err != nil {
 		t.Fatalf("create agent: %v", err)
@@ -354,7 +354,7 @@ func TestMetricInteractionsResolvesAgentAttribution(t *testing.T) {
 		ID:   "coding-agent",
 		Name: "Coding Agent",
 		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
-			ServiceID: "codex-main",
+			AgentType: "codex", CWD: "/tmp", AllowedRoots: []string{"/tmp"},
 		}},
 		Routes: agentpkg.Routes{LLMRouteIDs: []string{"llm-route"}},
 	}); err != nil {
@@ -363,7 +363,7 @@ func TestMetricInteractionsResolvesAgentAttribution(t *testing.T) {
 	query := &recordingUsageQuery{}
 	h := &Handler{agentManager: manager, usageQuery: query}
 	// agent_id on the generic interactions endpoint must resolve to full attribution
-	// (tag OR owned routes/ACP service), not a literal agent_id filter — unified with
+	// (tag OR declared resource routes), not a literal agent_id filter — unified with
 	// the per-agent interactions read and the metrics endpoints.
 	req := httptest.NewRequest(http.MethodGet, "/admin/metrics/interactions?agent_id=coding-agent&route_kind=llm", nil)
 	rec := httptest.NewRecorder()
@@ -443,7 +443,7 @@ func TestAgentUsageIncludesAttributedLLMTimeseries(t *testing.T) {
 		ID:   "coding-agent",
 		Name: "Coding Agent",
 		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
-			ServiceID: "codex-main",
+			AgentType: "codex", CWD: "/tmp", AllowedRoots: []string{"/tmp"},
 		}},
 		Routes: agentpkg.Routes{LLMRouteIDs: []string{"llm-route"}},
 	}); err != nil {
@@ -478,7 +478,7 @@ func TestMetricsTimeseriesResolvesAgentAttribution(t *testing.T) {
 		ID:   "coding-agent",
 		Name: "Coding Agent",
 		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
-			ServiceID: "codex-main",
+			AgentType: "codex", CWD: "/tmp", AllowedRoots: []string{"/tmp"},
 		}},
 		Routes: agentpkg.Routes{LLMRouteIDs: []string{"llm-route"}},
 	}); err != nil {
@@ -487,7 +487,7 @@ func TestMetricsTimeseriesResolvesAgentAttribution(t *testing.T) {
 	query := &recordingUsageQuery{}
 	h := &Handler{agentManager: manager, usageQuery: query}
 	// The generic metrics endpoints must resolve agent_id into the FULL attribution
-	// (durable tag OR owned routes/ACP service), not a literal agent_id filter — this
+	// (durable tag OR declared resource routes), not a literal agent_id filter — this
 	// is what makes an agent-filtered read a superset of the per-agent usage rollup.
 	req := httptest.NewRequest(http.MethodGet, "/admin/metrics/llm/timeseries?agent_id=coding-agent", nil)
 	rec := httptest.NewRecorder()
@@ -551,7 +551,7 @@ func TestAgentUsageReturnsBadRequestOnMetricQueryError(t *testing.T) {
 		ID:   "coding-agent",
 		Name: "Coding Agent",
 		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
-			ServiceID: "codex-main",
+			AgentType: "codex", CWD: "/tmp", AllowedRoots: []string{"/tmp"},
 		}},
 	}); err != nil {
 		t.Fatalf("create agent: %v", err)

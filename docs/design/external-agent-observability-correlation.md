@@ -27,7 +27,7 @@ The current implementation provides different levels for each runtime:
 | Runtime | Agent attribution | Session and turn visibility | Inner LLM/MCP call tree |
 |---------|-------------------|-----------------------------|-------------------------|
 | `builtin` | Direct and explicit | Session and turn event are visible | Complete in-process parent/child spans |
-| `acp` | Route/service attribution | ACP `thread_id`, `session_id`, turn events, session listing, and transcript are visible | Not automatically correlated across the process boundary |
+| `acp` | Direct `agent_id` attribution | ACP `thread_id`, `session_id`, turn events, session listing, and transcript are visible | Not automatically correlated across the process boundary |
 | `http` | Owned-route attribution for traffic that passes through the gateway | Not visible to the gateway today | Not automatically correlated; runtime dispatch is not implemented yet |
 
 ### 2.1 Builtin Runtime
@@ -50,9 +50,10 @@ builtin agent session
 ### 2.2 ACP Runtime
 
 The gateway owns the ACP process pool and records ACP operations with
-`service_id`, `agent_type`, `thread_id`, `session_id`, event counts, permission
-information, and the final usage payload when available. Session listing and
-transcript replay are also available.
+`agent_id`, `agent_type`, `thread_id`, `session_id`, event counts, permission
+information, and the final usage payload when available. The persisted
+`service_id` column is retained only for historical rows; unified Agent runtime
+writes leave it empty. Session listing and transcript replay are also available.
 
 This is enough to inspect ACP conversations and group ACP turns. It is not
 enough to associate an LLM or MCP callback made by the external ACP process

@@ -12,16 +12,9 @@ import (
 type RateLimitDimension string
 
 const (
-	RateLimitDimensionLLM     RateLimitDimension = "llm"
-	RateLimitDimensionMCP     RateLimitDimension = "mcp"
-	RateLimitDimensionACP     RateLimitDimension = "acp"
-	RateLimitDimensionBuiltin RateLimitDimension = "builtin"
-	// RateLimitDimensionAgent is the unified kind=agent ingress bucket. It
-	// draws from the same agent rate-limit policy as the runtime-specific
-	// dimensions but keys its own bucket, matching the runtime-neutral route.
-	// During the internal M4-to-M5 overlap, using both legacy and unified ingress
-	// for one runtime can therefore consume twice the policy allowance; M5 removes
-	// the legacy ingress instead of retaining that migration-only overlap.
+	RateLimitDimensionLLM RateLimitDimension = "llm"
+	RateLimitDimensionMCP RateLimitDimension = "mcp"
+	// RateLimitDimensionAgent is the unified kind=agent ingress bucket.
 	RateLimitDimensionAgent RateLimitDimension = "agent"
 )
 
@@ -125,7 +118,7 @@ func rateLimitForDimension(limits *VirtualKeyRateLimits, dimension RateLimitDime
 		return limits.LLM, nil
 	case RateLimitDimensionMCP:
 		return limits.MCP, nil
-	case RateLimitDimensionACP, RateLimitDimensionBuiltin, RateLimitDimensionAgent:
+	case RateLimitDimensionAgent:
 		return limits.Agent, nil
 	default:
 		return nil, fmt.Errorf("unsupported rate limit dimension %q", dimension)

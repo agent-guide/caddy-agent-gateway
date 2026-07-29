@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	acptransport "github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
@@ -29,7 +29,6 @@ var ErrTurnCancelled = errors.New("acp turn cancelled")
 var ErrRuntimeConfigRetired = errors.New("acp runtime config is retired")
 
 type Manager struct {
-	services    *acpservice.Manager
 	active      *ActivityTracker
 	permissions *permissionBroker
 	runs        *activeRunRegistry
@@ -59,9 +58,8 @@ type managedInstance struct {
 	retired bool
 }
 
-func NewManager(services *acpservice.Manager) *Manager {
+func NewManager() *Manager {
 	m := &Manager{
-		services:          services,
 		active:            NewActivityTracker(),
 		permissions:       newPermissionBroker(),
 		runs:              newActiveRunRegistry(),
@@ -97,22 +95,22 @@ func (m *Manager) Close() {
 
 const scopeSep = "\x00"
 
-// buildScope assembles the pool key. Fields: serviceID, cwd, threadID,
+// buildScope assembles the pool key. Fields: ownerID, cwd, threadID,
 // sessionID, model.
-func buildScope(serviceID, cwd, threadID, sessionID, model string) string {
-	return strings.Join([]string{serviceID, cwd, threadID, sessionID, model}, scopeSep)
+func buildScope(ownerID, cwd, threadID, sessionID, model string) string {
+	return strings.Join([]string{ownerID, cwd, threadID, sessionID, model}, scopeSep)
 }
 
-func scopeMatchesThread(scope, serviceID, threadID string) bool {
+func scopeMatchesThread(scope, ownerID, threadID string) bool {
 	parts := strings.Split(scope, scopeSep)
-	return len(parts) == 5 && parts[0] == serviceID && parts[2] == threadID
+	return len(parts) == 5 && parts[0] == ownerID && parts[2] == threadID
 }
 
-// ScopeServiceID extracts the service id encoded as the first segment of a
+// ScopeOwnerID extracts the Agent owner id encoded as the first segment of a
 // pooled-instance scope, or "" if the scope is malformed. It lets callers map a
-// PooledInstanceInfo / InFlightTurn back to its owning service without exposing
+// PooledInstanceInfo / InFlightTurn back to its owning Agent without exposing
 // the scope-encoding format.
-func ScopeServiceID(scope string) string {
+func ScopeOwnerID(scope string) string {
 	parts := strings.Split(scope, scopeSep)
 	if len(parts) == 5 {
 		return parts[0]
@@ -142,11 +140,11 @@ func (m *Manager) CloseScope(scope string) bool {
 
 // CloseThread tears down every pooled instance for a service+thread and returns
 // the count closed. Intended as an operator escape hatch for a wedged thread.
-func (m *Manager) CloseThread(serviceID, threadID string) int {
+func (m *Manager) CloseThread(ownerID, threadID string) int {
 	if m == nil {
 		return 0
 	}
-	serviceID = strings.TrimSpace(serviceID)
+	ownerID = strings.TrimSpace(ownerID)
 	threadID = strings.TrimSpace(threadID)
 	var victims []*instance
 	m.mu.Lock()
@@ -155,7 +153,7 @@ func (m *Manager) CloseThread(serviceID, threadID string) int {
 			delete(m.instances, scope)
 			continue
 		}
-		if scopeMatchesThread(scope, serviceID, threadID) {
+		if scopeMatchesThread(scope, ownerID, threadID) {
 			victims = append(victims, item.instance)
 			delete(m.instances, scope)
 		}
@@ -167,14 +165,13 @@ func (m *Manager) CloseThread(serviceID, threadID string) int {
 	return len(victims)
 }
 
-// CloseService tears down every pooled instance for a service and returns the
-// count closed. This is used after process-affecting service config changes so
-// the next turn starts an agent with the latest launch environment.
-func (m *Manager) CloseService(serviceID string) int {
+// CloseOwner tears down every pooled instance for an Agent owner and returns
+// the count closed.
+func (m *Manager) CloseOwner(ownerID string) int {
 	if m == nil {
 		return 0
 	}
-	serviceID = strings.TrimSpace(serviceID)
+	ownerID = strings.TrimSpace(ownerID)
 	var victims []*instance
 	m.mu.Lock()
 	for scope, item := range m.instances {
@@ -183,7 +180,7 @@ func (m *Manager) CloseService(serviceID string) int {
 			continue
 		}
 		parts := strings.Split(scope, scopeSep)
-		if len(parts) == 5 && parts[0] == serviceID {
+		if len(parts) == 5 && parts[0] == ownerID {
 			victims = append(victims, item.instance)
 			delete(m.instances, scope)
 		}
@@ -234,7 +231,7 @@ func (m *Manager) RetireOwnerDeferred(ownerID, keepFingerprint string) (int, fun
 			delete(m.instances, scope)
 			continue
 		}
-		if ScopeServiceID(scope) != ownerID {
+		if ScopeOwnerID(scope) != ownerID {
 			continue
 		}
 		if keepFingerprint != "" && item.fingerprint == keepFingerprint && !item.retired {
@@ -259,20 +256,6 @@ func (m *Manager) RetireOwnerDeferred(ownerID, keepFingerprint string) (int, fun
 	return len(victims) + marked, cleanup
 }
 
-func (m *Manager) ServeTurn(ctx context.Context, serviceID string, req TurnRequest, emit EventSink) error {
-	if m == nil || m.services == nil {
-		return fmt.Errorf("acp runtime manager is not configured")
-	}
-	cfg, err := m.services.Get(ctx, strings.TrimSpace(serviceID))
-	if err != nil {
-		return err
-	}
-	if cfg.Disabled {
-		return fmt.Errorf("acp service %q is disabled", cfg.ID)
-	}
-	return m.serveTurn(ctx, cfg, req, emit, false)
-}
-
 // ServeConfiguredTurn executes an Agent-owned ACP runtime from an
 // identity-free snapshot. It performs no service-store lookup; ownerID is the
 // pool/permission ownership key and is never exposed through the common SPI.
@@ -280,14 +263,14 @@ func (m *Manager) ServeConfiguredTurn(ctx context.Context, ownerID string, runti
 	if m == nil {
 		return fmt.Errorf("acp runtime manager is not configured")
 	}
-	cfg, err := runtimeCfg.serviceConfig(ownerID)
+	cfg, err := ownerRuntimeConfig(runtimeCfg, ownerID)
 	if err != nil {
 		return err
 	}
 	return m.serveTurn(ctx, cfg, req, emit, true)
 }
 
-func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequest, emit EventSink, enforceOwnerFingerprint bool) error {
+func (m *Manager) serveTurn(ctx context.Context, cfg runtimeconfig.Config, req TurnRequest, emit EventSink, enforceOwnerFingerprint bool) error {
 	req.ThreadID = strings.TrimSpace(req.ThreadID)
 	req.SessionID = strings.TrimSpace(req.SessionID)
 	req.Input = strings.TrimSpace(req.Input)
@@ -300,7 +283,7 @@ func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, r
 	var run *activeRun
 	if strings.TrimSpace(req.RunID) != "" {
 		var runCtx context.Context
-		runCtx, run = m.runs.begin(ctx, cfg.ID, strings.TrimSpace(req.RunID), req.SessionID)
+		runCtx, run = m.runs.begin(ctx, cfg.OwnerID, strings.TrimSpace(req.RunID), req.SessionID)
 		if run == nil {
 			return fmt.Errorf("%w: duplicate run_id %q", ErrInvalidRequest, req.RunID)
 		}
@@ -311,7 +294,7 @@ func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, r
 	if cwd == "" {
 		cwd = cfg.CWD
 	}
-	if err := acpservice.ValidateCWDAllowed(cwd, cfg.AllowedRoots); err != nil {
+	if err := runtimeconfig.ValidateCWDAllowed(cwd, cfg.AllowedRoots); err != nil {
 		return err
 	}
 
@@ -319,7 +302,7 @@ func (m *Manager) serveTurn(ctx context.Context, cfg acpservice.ServiceConfig, r
 	if model == "" {
 		model = cfg.DefaultModel
 	}
-	scope := buildScope(cfg.ID, cwd, req.ThreadID, req.SessionID, model)
+	scope := buildScope(cfg.OwnerID, cwd, req.ThreadID, req.SessionID, model)
 	release, err := m.active.Begin(scope)
 	if err != nil {
 		return err
@@ -374,32 +357,13 @@ func (m *Manager) ListActiveRuns(ownerID string) []ActiveRunInfo {
 	return m.runs.list(strings.TrimSpace(ownerID))
 }
 
-func (m *Manager) ListSessions(ctx context.Context, serviceID string, req ListSessionsRequest) (ListSessionsResponse, error) {
-	if m == nil || m.services == nil {
-		return ListSessionsResponse{}, fmt.Errorf("acp runtime manager is not configured")
-	}
-	cfg, err := m.services.Get(ctx, strings.TrimSpace(serviceID))
-	if err != nil {
-		return ListSessionsResponse{}, err
-	}
-	if cfg.Disabled {
-		return ListSessionsResponse{}, fmt.Errorf("%w: acp service %q is disabled", ErrInvalidRequest, cfg.ID)
-	}
-	if req.CWD = strings.TrimSpace(req.CWD); req.CWD != "" {
-		if err := acpservice.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
-			return ListSessionsResponse{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
-		}
-	}
-	return listAgentSessions(ctx, cfg, req)
-}
-
 func (m *Manager) ListConfiguredSessions(ctx context.Context, ownerID string, runtimeCfg RuntimeConfig, req ListSessionsRequest) (ListSessionsResponse, error) {
-	cfg, err := runtimeCfg.serviceConfig(strings.TrimSpace(ownerID))
+	cfg, err := ownerRuntimeConfig(runtimeCfg, ownerID)
 	if err != nil {
 		return ListSessionsResponse{}, err
 	}
 	if req.CWD = strings.TrimSpace(req.CWD); req.CWD != "" {
-		if err := acpservice.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
+		if err := runtimeconfig.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
 			return ListSessionsResponse{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 		}
 	}
@@ -439,32 +403,13 @@ func (m *Manager) ListPendingPermissions() []PendingPermissionInfo {
 	return m.permissions.list()
 }
 
-func (m *Manager) LoadTranscript(ctx context.Context, serviceID string, req TranscriptRequest) (TranscriptResponse, error) {
-	if m == nil || m.services == nil {
-		return TranscriptResponse{}, fmt.Errorf("acp runtime manager is not configured")
-	}
-	cfg, err := m.services.Get(ctx, strings.TrimSpace(serviceID))
-	if err != nil {
-		return TranscriptResponse{}, err
-	}
-	if cfg.Disabled {
-		return TranscriptResponse{}, fmt.Errorf("%w: acp service %q is disabled", ErrInvalidRequest, cfg.ID)
-	}
-	if req.CWD = strings.TrimSpace(req.CWD); req.CWD != "" {
-		if err := acpservice.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
-			return TranscriptResponse{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
-		}
-	}
-	return loadAgentTranscript(ctx, cfg, req)
-}
-
 func (m *Manager) LoadConfiguredTranscript(ctx context.Context, ownerID string, runtimeCfg RuntimeConfig, req TranscriptRequest) (TranscriptResponse, error) {
-	cfg, err := runtimeCfg.serviceConfig(strings.TrimSpace(ownerID))
+	cfg, err := ownerRuntimeConfig(runtimeCfg, ownerID)
 	if err != nil {
 		return TranscriptResponse{}, err
 	}
 	if req.CWD = strings.TrimSpace(req.CWD); req.CWD != "" {
-		if err := acpservice.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
+		if err := runtimeconfig.ValidateCWDAllowed(req.CWD, cfg.AllowedRoots); err != nil {
 			return TranscriptResponse{}, fmt.Errorf("%w: %v", ErrInvalidRequest, err)
 		}
 	}
@@ -506,31 +451,31 @@ func (m *Manager) ListInstances() []PooledInstanceInfo {
 }
 
 // ListOwnerInstances keeps pool-scope encoding inside the ACP runtime while
-// exposing the instances owned by one Agent/service identity to adapters.
+// exposing the instances owned by one Agent to adapters.
 func (m *Manager) ListOwnerInstances(ownerID string) []PooledInstanceInfo {
 	ownerID = strings.TrimSpace(ownerID)
 	out := make([]PooledInstanceInfo, 0)
 	for _, inst := range m.ListInstances() {
-		if ScopeServiceID(inst.Scope) == ownerID {
+		if ScopeOwnerID(inst.Scope) == ownerID {
 			out = append(out, inst)
 		}
 	}
 	return out
 }
 
-func (m *Manager) resolveInstance(ctx context.Context, scope string, cfg acpservice.ServiceConfig, req TurnRequest) (*instance, error) {
+func (m *Manager) resolveInstance(ctx context.Context, scope string, cfg runtimeconfig.Config, req TurnRequest) (*instance, error) {
 	return m.resolveInstanceForOwner(ctx, scope, cfg, req, false)
 }
 
-func (m *Manager) resolveInstanceForOwner(ctx context.Context, scope string, cfg acpservice.ServiceConfig, req TurnRequest, enforceOwnerFingerprint bool) (*instance, error) {
+func (m *Manager) resolveInstanceForOwner(ctx context.Context, scope string, cfg runtimeconfig.Config, req TurnRequest, enforceOwnerFingerprint bool) (*instance, error) {
 	fingerprint := configFingerprint(cfg)
 	// ServeTurn holds the per-scope activity lock for the whole turn, so only one
 	// turn resolves a given scope at a time and the janitor skips active scopes;
 	// no other goroutine mutates this scope's pool entry while we are here.
 	m.mu.Lock()
-	if enforceOwnerFingerprint && !m.ownerFingerprintCurrentLocked(cfg.ID, fingerprint) {
+	if enforceOwnerFingerprint && !m.ownerFingerprintCurrentLocked(cfg.OwnerID, fingerprint) {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("%w: owner %q", ErrRuntimeConfigRetired, cfg.ID)
+		return nil, fmt.Errorf("%w: owner %q", ErrRuntimeConfigRetired, cfg.OwnerID)
 	}
 	if item := m.instances[scope]; item != nil && item.instance != nil {
 		// Reuse only a live instance created under the current config
@@ -550,9 +495,9 @@ func (m *Manager) resolveInstanceForOwner(ctx context.Context, scope string, cfg
 		m.mu.Unlock()
 		return inst, nil
 	} else {
-		if cfg.MaxInstances > 0 && m.serviceInstanceCountLocked(cfg.ID) >= cfg.MaxInstances {
+		if cfg.MaxInstances > 0 && m.ownerInstanceCountLocked(cfg.OwnerID) >= cfg.MaxInstances {
 			m.mu.Unlock()
-			return nil, fmt.Errorf("%w: service %q reached max_instances %d", ErrCapacityExceeded, cfg.ID, cfg.MaxInstances)
+			return nil, fmt.Errorf("%w: owner %q reached max_instances %d", ErrCapacityExceeded, cfg.OwnerID, cfg.MaxInstances)
 		}
 		m.mu.Unlock()
 	}
@@ -563,15 +508,15 @@ func (m *Manager) resolveInstanceForOwner(ctx context.Context, scope string, cfg
 	}
 
 	m.mu.Lock()
-	if enforceOwnerFingerprint && !m.ownerFingerprintCurrentLocked(cfg.ID, fingerprint) {
+	if enforceOwnerFingerprint && !m.ownerFingerprintCurrentLocked(cfg.OwnerID, fingerprint) {
 		m.mu.Unlock()
 		_ = inst.close()
-		return nil, fmt.Errorf("%w: owner %q", ErrRuntimeConfigRetired, cfg.ID)
+		return nil, fmt.Errorf("%w: owner %q", ErrRuntimeConfigRetired, cfg.OwnerID)
 	}
-	if cfg.MaxInstances > 0 && m.serviceInstanceCountLocked(cfg.ID) >= cfg.MaxInstances {
+	if cfg.MaxInstances > 0 && m.ownerInstanceCountLocked(cfg.OwnerID) >= cfg.MaxInstances {
 		m.mu.Unlock()
 		_ = inst.close()
-		return nil, fmt.Errorf("%w: service %q reached max_instances %d", ErrCapacityExceeded, cfg.ID, cfg.MaxInstances)
+		return nil, fmt.Errorf("%w: owner %q reached max_instances %d", ErrCapacityExceeded, cfg.OwnerID, cfg.MaxInstances)
 	}
 	m.instances[scope] = &managedInstance{instance: inst, idleTTL: cfg.IdleTTL, lastUsed: time.Now().UTC(), fingerprint: fingerprint}
 	m.mu.Unlock()
@@ -583,14 +528,14 @@ func (m *Manager) ownerFingerprintCurrentLocked(ownerID, fingerprint string) boo
 	return ok && current != "" && current == fingerprint
 }
 
-func (m *Manager) serviceInstanceCountLocked(serviceID string) int {
+func (m *Manager) ownerInstanceCountLocked(ownerID string) int {
 	count := 0
 	for scope, item := range m.instances {
 		if item == nil || item.instance == nil {
 			continue
 		}
 		parts := strings.Split(scope, scopeSep)
-		if len(parts) == 5 && parts[0] == serviceID {
+		if len(parts) == 5 && parts[0] == ownerID {
 			count++
 		}
 	}
@@ -604,7 +549,7 @@ func (m *Manager) serviceInstanceCountLocked(serviceID string) int {
 // session_id) to explicit session addressing (later turns echo back the
 // session id from the session event), instead of spawning a second process and
 // replaying session/load. The caller must hold m.mu.
-func (m *Manager) adoptSessionInstanceLocked(scope string, fingerprint string, cfg acpservice.ServiceConfig, req TurnRequest) *instance {
+func (m *Manager) adoptSessionInstanceLocked(scope string, fingerprint string, cfg runtimeconfig.Config, req TurnRequest) *instance {
 	if req.FreshSession || req.SessionID == "" {
 		return nil
 	}
@@ -616,7 +561,7 @@ func (m *Manager) adoptSessionInstanceLocked(scope string, fingerprint string, c
 	if model == "" {
 		model = cfg.DefaultModel
 	}
-	from := buildScope(cfg.ID, cwd, req.ThreadID, "", model)
+	from := buildScope(cfg.OwnerID, cwd, req.ThreadID, "", model)
 	item := m.instances[from]
 	if item == nil || item.instance == nil || item.instance.sessionID != req.SessionID {
 		return nil

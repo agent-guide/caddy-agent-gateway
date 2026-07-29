@@ -7,13 +7,13 @@ import (
 	"strings"
 	"sync"
 
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	"github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
 type OpenRequest struct {
-	Service acpservice.ServiceConfig
-	CWD     string
+	Config runtimeconfig.Config
+	CWD    string
 }
 
 type Factory func(OpenRequest) (Agent, error)

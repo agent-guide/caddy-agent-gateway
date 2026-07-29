@@ -54,8 +54,8 @@
       <h2>四类事件，一套归因模型。</h2>
       <p class="lede">
         LLM、MCP、ACP 与 builtin 流量各自产生持久化的类型化用量事件。
-        归属明确的 Agent 流量携带 agent id，builtin 轮次显式写入身份；
-        未绑定的网关流量仍然可见，但不会虚构归属。
+        统一 AgentRoute 入口会为 ACP 与 builtin 轮次直接写入目标 agent id 和所选运行时；
+        直接 LLM 与 MCP 流量仍然可见，但不会虚构归属。
       </p>
 
       <div class="table-scroll">

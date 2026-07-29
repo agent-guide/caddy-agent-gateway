@@ -13,7 +13,7 @@ import (
 
 	"github.com/agent-guide/agent-gateway/pkg/acp/agentspi"
 	"github.com/agent-guide/agent-gateway/pkg/acp/runtime/acpupdate"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	acptransport "github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
@@ -298,10 +298,10 @@ func paramField(t *testing.T, params any, key string) string {
 	return v
 }
 
-func TestInitializeAppliesServiceConfigOverrides(t *testing.T) {
+func TestInitializeAppliesRuntimeConfigOverrides(t *testing.T) {
 	tr := &scriptedTransport{updates: make(chan acptransport.Message, 1)}
 	inst := &instance{
-		cfg:   acpservice.ServiceConfig{ConfigOverrides: map[string]string{"mode": "plan"}},
+		cfg:   runtimeconfig.Config{ConfigOverrides: map[string]string{"mode": "plan"}},
 		agent: stubAgent{},
 		t:     tr,
 	}
@@ -324,7 +324,7 @@ func TestInitializeInvokesModelSelector(t *testing.T) {
 	tr := &scriptedTransport{updates: make(chan acptransport.Message, 1)}
 	agent := &modelSelectorAgent{}
 	inst := &instance{
-		cfg:   acpservice.ServiceConfig{},
+		cfg:   runtimeconfig.Config{},
 		model: "anthropic/claude-3-5-haiku-latest",
 		agent: agent,
 		t:     tr,
@@ -456,7 +456,7 @@ func (s *missingSessionListCapabilityTransport) Request(_ context.Context, metho
 }
 
 func TestListAgentSessionsCallsSessionList(t *testing.T) {
-	result, err := listAgentSessions(context.Background(), acpservice.ServiceConfig{
+	result, err := listAgentSessions(context.Background(), runtimeconfig.Config{
 		AgentType: "session-list",
 		CWD:       "/tmp/project",
 	}, ListSessionsRequest{CWD: "/tmp/project", Cursor: "cur"})
@@ -479,7 +479,7 @@ func TestListAgentSessionsCallsSessionList(t *testing.T) {
 }
 
 func TestListAgentSessionsOmitsCWDFilterWhenAbsent(t *testing.T) {
-	_, err := listAgentSessions(context.Background(), acpservice.ServiceConfig{
+	_, err := listAgentSessions(context.Background(), runtimeconfig.Config{
 		AgentType: "session-list",
 		CWD:       "/tmp/project",
 	}, ListSessionsRequest{Cursor: "cur"})
@@ -522,7 +522,7 @@ func TestListAgentSessionsFiltersCWDGatewaySide(t *testing.T) {
 	)
 	defer func() { sessionListPayload = "" }()
 
-	result, err := listAgentSessions(context.Background(), acpservice.ServiceConfig{
+	result, err := listAgentSessions(context.Background(), runtimeconfig.Config{
 		AgentType: "session-list",
 		CWD:       link,
 	}, ListSessionsRequest{CWD: link})
@@ -549,7 +549,7 @@ func TestListAgentSessionsFiltersCWDGatewaySide(t *testing.T) {
 }
 
 func TestListAgentSessionsRequiresAdvertisedCapability(t *testing.T) {
-	_, err := listAgentSessions(context.Background(), acpservice.ServiceConfig{
+	_, err := listAgentSessions(context.Background(), runtimeconfig.Config{
 		AgentType: "session-list-missing-cap",
 		CWD:       "/tmp/project",
 	}, ListSessionsRequest{})
@@ -559,7 +559,7 @@ func TestListAgentSessionsRequiresAdvertisedCapability(t *testing.T) {
 }
 
 func TestListAgentSessionsRequiresSPI(t *testing.T) {
-	_, err := listAgentSessions(context.Background(), acpservice.ServiceConfig{
+	_, err := listAgentSessions(context.Background(), runtimeconfig.Config{
 		AgentType: "session-list-no-spi",
 		CWD:       "/tmp/project",
 	}, ListSessionsRequest{})

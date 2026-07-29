@@ -12,12 +12,12 @@ import (
 	baseacp "github.com/agent-guide/agent-gateway/pkg/acp"
 	"github.com/agent-guide/agent-gateway/pkg/acp/agentspi"
 	"github.com/agent-guide/agent-gateway/pkg/acp/runtime/acpupdate"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	acptransport "github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
 type instance struct {
-	cfg   acpservice.ServiceConfig
+	cfg   runtimeconfig.Config
 	cwd   string
 	model string
 	agent agentspi.Agent
@@ -126,7 +126,7 @@ func (c *sessionMetaCache) turnStartEvents() []TurnEvent {
 	return events
 }
 
-func newInstance(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequest, permissions *permissionBroker, observers ...func(string, json.RawMessage)) (*instance, error) {
+func newInstance(ctx context.Context, cfg runtimeconfig.Config, req TurnRequest, permissions *permissionBroker, observers ...func(string, json.RawMessage)) (*instance, error) {
 	cwd := strings.TrimSpace(req.CWD)
 	if cwd == "" {
 		cwd = cfg.CWD
@@ -135,7 +135,7 @@ func newInstance(ctx context.Context, cfg acpservice.ServiceConfig, req TurnRequ
 	if model == "" {
 		model = cfg.DefaultModel
 	}
-	agent, err := agentspi.New(cfg.AgentType, agentspi.OpenRequest{Service: cfg, CWD: cwd})
+	agent, err := agentspi.New(cfg.AgentType, agentspi.OpenRequest{Config: cfg, CWD: cwd})
 	if err != nil {
 		return nil, err
 	}
@@ -310,12 +310,12 @@ func (i *instance) cacheNewSessionConfigOptions(result json.RawMessage) {
 	i.meta.store(acpupdate.KindConfigOptions, synthesized)
 }
 
-func listAgentSessions(ctx context.Context, cfg acpservice.ServiceConfig, req ListSessionsRequest) (ListSessionsResponse, error) {
+func listAgentSessions(ctx context.Context, cfg runtimeconfig.Config, req ListSessionsRequest) (ListSessionsResponse, error) {
 	openCWD := strings.TrimSpace(req.CWD)
 	if openCWD == "" {
 		openCWD = cfg.CWD
 	}
-	agent, err := agentspi.New(cfg.AgentType, agentspi.OpenRequest{Service: cfg, CWD: openCWD})
+	agent, err := agentspi.New(cfg.AgentType, agentspi.OpenRequest{Config: cfg, CWD: openCWD})
 	if err != nil {
 		return ListSessionsResponse{}, err
 	}
@@ -728,7 +728,7 @@ func (i *instance) interactivePermission(ctx context.Context, params json.RawMes
 		// No streaming turn client to ask — fail closed.
 		return cancelled
 	}
-	pending, err := i.permissions.create(i.cfg.ID, i.sessionID, params)
+	pending, err := i.permissions.create(i.cfg.OwnerID, i.sessionID, params)
 	if err != nil {
 		return cancelled
 	}

@@ -184,7 +184,7 @@
           <li><b>Declared capabilities</b> Model and tool bindings are part of the agent's definition — discoverable, not tribal knowledge.</li>
           <li><b>Live state</b> Materialization status, pooled instances, in-flight turns, pending approvals.</li>
           <li><b>Health &amp; activity</b> Per-agent health, usage rollups, and interaction history.</li>
-          <li><b>Unambiguous ownership</b> A route or runtime service belongs to at most one agent — attribution can't blur.</li>
+          <li><b>Stable runtime switches</b> One AgentRoute keeps its URL, route id, and VirtualKey allowlist when the runtime changes.</li>
         </ul>
       </div>
 
@@ -193,7 +193,7 @@
           <span class="kicker">agent as a product</span>
           <h3>Publish an agent like an API</h3>
           <p>
-            A builtin or ACP agent behind a route is an enterprise capability with a stable
+            A builtin or ACP agent behind one runtime-neutral AgentRoute is an enterprise capability with a stable
             endpoint: consumers get a URL and a virtual key; you keep versioned
             definitions, per-consumer metering, and the power to revoke access in
             one place. Ship agents to internal teams the way you ship services.

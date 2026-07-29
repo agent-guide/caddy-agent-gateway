@@ -15,7 +15,7 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	"github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinhost "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
@@ -23,21 +23,12 @@ import (
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
 )
 
-type staticACPServices struct{ cfg acpservice.ServiceConfig }
-
-func inlineACPRuntime(cfg acpservice.ServiceConfig) *agent.ACPRuntime {
+func inlineACPRuntime(cfg runtimeconfig.Config) *agent.ACPRuntime {
 	return &agent.ACPRuntime{
 		AgentType: cfg.AgentType, CWD: cfg.CWD, AllowedRoots: append([]string(nil), cfg.AllowedRoots...),
 		DefaultModel: cfg.DefaultModel, Env: cloneStringMap(cfg.Env), ConfigOverrides: cloneStringMap(cfg.ConfigOverrides),
 		IdleTTL: cfg.IdleTTL, MaxInstances: cfg.MaxInstances, PermissionMode: cfg.PermissionMode, Codex: cloneCodexConfig(cfg.Codex),
 	}
-}
-
-func (s staticACPServices) Get(_ context.Context, id string) (acpservice.ServiceConfig, error) {
-	if id != s.cfg.ID {
-		return acpservice.ServiceConfig{}, acpservice.ErrServiceNotConfigured
-	}
-	return s.cfg, nil
 }
 
 type captureACPRuntime struct {
@@ -78,18 +69,16 @@ func (r *captureACPRuntime) ServeConfiguredTurn(ctx context.Context, owner strin
 	return emit(acpruntime.TurnEvent{Event: runtimeapi.EventDone, StopReason: "end_turn"})
 }
 
-func TestACPBackendTranslatesLegacyOptionsIntoIdentityFreeRuntime(t *testing.T) {
-	service := acpservice.ServiceConfig{
-		ID: "svc-1", Name: "Service", AgentType: "opencode", CWD: "/workspace",
+func TestACPBackendTranslatesOptionsIntoIdentityFreeRuntime(t *testing.T) {
+	config := runtimeconfig.Config{
+		AgentType: "opencode", CWD: "/workspace",
 		AllowedRoots: []string{"/workspace"}, DefaultModel: "model-a", Env: map[string]string{"A": "B"},
 		ConfigOverrides: map[string]string{"base": "true"}, PermissionMode: "interactive",
 	}
 	native := &captureACPRuntime{t: t}
-	services := &countingACPServiceSource{source: staticACPServices{cfg: service}}
 	backend := NewACPBackend(native)
-	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(service)}}
+	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(config)}}
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
-	refreshReads := services.gets
 	raw := json.RawMessage(`{"thread_id":"thread-1","cwd":"/workspace/repo","model":"model-b","fresh_session":true,"config_overrides":{"turn":"yes"}}`)
 	req := runtimeapi.TurnRequest{Input: "hello", SessionID: "session-1", Options: runtimeapi.TurnOptions{Version: runtimeapi.TurnOptionsVersionV1, Runtime: raw}}
 	run, err := runtimeapi.NewTurnSequencer(t.Context(), backend, a, req)
@@ -102,7 +91,7 @@ func TestACPBackendTranslatesLegacyOptionsIntoIdentityFreeRuntime(t *testing.T) 
 	if _, err := run.ServeSegment(ctx, backend, a, req, func(ev runtimeapi.TurnEvent) error { events = append(events, ev); return nil }); err != nil {
 		t.Fatalf("ServeSegment: %v", err)
 	}
-	if native.owner != a.ID || native.cfg.AgentType != service.AgentType || native.cfg.CWD != service.CWD {
+	if native.owner != a.ID || native.cfg.AgentType != config.AgentType || native.cfg.CWD != config.CWD {
 		t.Fatalf("native owner/config = %q %+v", native.owner, native.cfg)
 	}
 	if native.req.ThreadID != "thread-1" || native.req.SessionID != "session-1" || native.req.CWD != "/workspace/repo" || native.req.Model != "model-b" || !native.req.FreshSession || native.req.ConfigOverrides["turn"] != "yes" {
@@ -117,39 +106,20 @@ func TestACPBackendTranslatesLegacyOptionsIntoIdentityFreeRuntime(t *testing.T) 
 	if err := json.Unmarshal(events[2].Data, &terminal); err != nil || terminal.StopReason != "end_turn" {
 		t.Fatalf("terminal data = %s, err=%v", events[2].Data, err)
 	}
-	service.Env["A"] = "changed"
+	config.Env["A"] = "changed"
 	if native.cfg.Env["A"] != "B" {
-		t.Fatal("runtime config aliases service map")
-	}
-	if services.gets != refreshReads {
-		t.Fatalf("turn dispatch read the service store: gets=%d, want %d (refresh only)", services.gets, refreshReads)
+		t.Fatal("runtime config aliases Agent definition map")
 	}
 	if _, err := backend.Capabilities(t.Context(), a); err != nil {
 		t.Fatalf("Capabilities: %v", err)
 	}
-	if services.gets != refreshReads {
-		t.Fatalf("capability discovery read the service store: gets=%d, want %d", services.gets, refreshReads)
-	}
-}
-
-// countingACPServiceSource is a legacy source probe: M5 must never consult it.
-type countingACPServiceSource struct {
-	source interface {
-		Get(context.Context, string) (acpservice.ServiceConfig, error)
-	}
-	gets int
-}
-
-func (s *countingACPServiceSource) Get(ctx context.Context, id string) (acpservice.ServiceConfig, error) {
-	s.gets++
-	return s.source.Get(ctx, id)
 }
 
 func TestACPBackendCancelBeforeNativeRegistrationIsRetryable(t *testing.T) {
-	service := acpservice.ServiceConfig{ID: "svc-1", Name: "Service", AgentType: "opencode", CWD: "/workspace", AllowedRoots: []string{"/workspace"}}
+	config := runtimeconfig.Config{AgentType: "opencode", CWD: "/workspace", AllowedRoots: []string{"/workspace"}}
 	native := &preNativeRegistrationACPRuntime{entered: make(chan struct{}), release: make(chan struct{})}
 	backend := NewACPBackend(native, RuntimeControls{Runs: runtimeapi.NewRunRegistry()})
-	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(service)}}
+	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(config)}}
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	done := make(chan error, 1)
@@ -423,15 +393,7 @@ func TestBuiltinResumeMapsMissingRunToPermissionNotFound(t *testing.T) {
 	}
 }
 
-type countingACPServices struct{ gets int }
-
-func (s *countingACPServices) Get(context.Context, string) (acpservice.ServiceConfig, error) {
-	s.gets++
-	return acpservice.ServiceConfig{}, errors.New("unexpected service read")
-}
-
 func TestACPSummaryAndHealthDoNotReadServiceStore(t *testing.T) {
-	services := &countingACPServices{}
 	backend := NewACPBackend(&captureACPRuntime{})
 	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: &agent.ACPRuntime{AgentType: "codex", CWD: "/workspace"}}}
 	if _, err := backend.RuntimeSummary(t.Context(), a); err != nil {
@@ -439,9 +401,6 @@ func TestACPSummaryAndHealthDoNotReadServiceStore(t *testing.T) {
 	}
 	if _, err := backend.Health(t.Context(), a); err != nil {
 		t.Fatal(err)
-	}
-	if services.gets != 0 {
-		t.Fatalf("service reads=%d, want 0", services.gets)
 	}
 }
 
@@ -790,28 +749,6 @@ func TestBuiltinBackendRealCheckpointResumePreservesCommonSequenceAndSpanLink(t 
 	}
 }
 
-// mutableACPServices lets a test change the "persisted" service record between
-// snapshot refreshes without touching the backend's loaded snapshot.
-type mutableACPServices struct {
-	mu  sync.Mutex
-	cfg acpservice.ServiceConfig
-}
-
-func (s *mutableACPServices) Get(_ context.Context, id string) (acpservice.ServiceConfig, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if id != s.cfg.ID {
-		return acpservice.ServiceConfig{}, acpservice.ErrServiceNotConfigured
-	}
-	return s.cfg, nil
-}
-
-func (s *mutableACPServices) set(cfg acpservice.ServiceConfig) {
-	s.mu.Lock()
-	s.cfg = cfg
-	s.mu.Unlock()
-}
-
 type retireRecordingACPRuntime struct {
 	captureACPRuntime
 	retirements []string
@@ -854,15 +791,15 @@ func (r *retireRecordingACPRuntime) RetireOwnerDeferred(ownerID, keep string) (i
 }
 
 func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
-	service := acpservice.ServiceConfig{
-		ID: "svc-1", Name: "Service", AgentType: "opencode", CWD: "/workspace",
+	config := runtimeconfig.Config{
+		AgentType: "opencode", CWD: "/workspace",
 		AllowedRoots: []string{"/workspace"}, DefaultModel: "model-a",
 	}
 	native := &retireRecordingACPRuntime{captureACPRuntime: captureACPRuntime{t: t}}
 	permissions := runtimeapi.NewPermissionBroker()
 	defer permissions.Close(context.Background())
 	backend := NewACPBackend(native, RuntimeControls{Permissions: permissions})
-	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(service)}}
+	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(config)}}
 
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	if len(native.retirements) != 1 {

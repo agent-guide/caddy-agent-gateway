@@ -12,19 +12,14 @@ import (
 	"time"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
-	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configstoreschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
 	dispatcherpkg "github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
-	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
 	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
-	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -43,32 +38,9 @@ type testConfigStore struct {
 	providerStore   configstore.ConfigStore
 	routeStore      configstore.ConfigStore
 	mcpServiceStore configstore.ConfigStore
-	acpServiceStore configstore.ConfigStore
 	virtualKeyStore configstore.ConfigStore
 	modelStore      configstore.ConfigStore
 	agentStore      configstore.ConfigStore
-}
-
-type recordingObserver struct {
-	span *recordingSpan
-}
-
-func (o *recordingObserver) Begin(ctx context.Context, _ usage.InteractionDimensions) (usage.InteractionSpan, context.Context) {
-	o.span = &recordingSpan{}
-	return o.span, ctx
-}
-
-type recordingSpan struct {
-	outcome usage.InteractionOutcome
-}
-
-func (s *recordingSpan) SetExtension(any)             {}
-func (s *recordingSpan) AddAnnotation(string, string) {}
-func (s *recordingSpan) Discard()                     {}
-func (s *recordingSpan) Finish(outcome usage.InteractionOutcome) {
-	if s.outcome.StatusCode == 0 {
-		s.outcome = outcome
-	}
 }
 
 type adminCaptureSink struct {
@@ -79,16 +51,6 @@ func (s *adminCaptureSink) Enqueue(v any) bool {
 	s.events = append(s.events, v)
 	return true
 }
-
-type adminPermissionContinuation struct{}
-
-func (adminPermissionContinuation) ValidateContinuationDecision(string, runtimeapi.PendingPermission, runtimeapi.PermissionDecision) error {
-	return nil
-}
-func (adminPermissionContinuation) ResolveContinuation(context.Context, string, runtimeapi.PermissionDecision, time.Time) error {
-	return nil
-}
-func (adminPermissionContinuation) ExpireContinuation(context.Context, string) error { return nil }
 
 func newTestAgentGateway(configStoreBackend configstore.ConfigStoreBackend, cliauthMgr *cliauth.Manager, cliauthRefresher *cliauth.AutoRefresher, staticRoutes []llmroutepkg.LLMRoute, _ []virtualkeypkg.VirtualKey, staticProviders ...map[string]provider.Provider) *gateway.AgentGateway {
 	var providers map[string]provider.Provider
@@ -128,8 +90,6 @@ func (s *testConfigStore) Get(name string) (configstore.ConfigStore, error) {
 		return s.routeStore, nil
 	case configstoreschema.StoreMCPServices:
 		return s.mcpServiceStore, nil
-	case configstoreschema.StoreACPServices:
-		return s.acpServiceStore, nil
 	case configstoreschema.StoreVirtualKeys:
 		return s.virtualKeyStore, nil
 	case configstoreschema.StoreManagedModels:
@@ -1030,210 +990,6 @@ func TestMCPRouteCreateRejectsSlashID(t *testing.T) {
 	handler.ServeHTTP(createRec, createReq)
 	if createRec.Code != http.StatusBadRequest {
 		t.Fatalf("expected slash id to be rejected with 400, got status %d", createRec.Code)
-	}
-}
-
-// TestACPRouteAutoIDIsSlashFreeAndAddressable mirrors the MCP guard for ACP: an
-// auto-generated id must be slash-free and addressable through the "{id}"
-// pattern.
-func TestACPRouteAutoIDIsSlashFreeAndAddressable(t *testing.T) {
-	t.Skip("legacy ACP route Admin surface removed by M5")
-	handler := NewHandler(newTestAgentGateway(&testConfigStore{
-		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
-	}, nil, nil, nil, nil), nil)
-	token := loginForTest(t, handler, "admin", "secret-pass")
-
-	createBody, err := json.Marshal(acproute.ACPRouteConfig{
-		AgentRouteConfig: acproute.AgentRouteConfig{
-			MatchPolicy: acproute.RouteMatch{PathPrefix: "/acp/opencode"},
-		},
-		ServiceID: "opencode-main",
-	})
-	if err != nil {
-		t.Fatalf("marshal acp route: %v", err)
-	}
-
-	createReq := httptest.NewRequest(http.MethodPost, "/admin/acp/routes", bytes.NewReader(createBody))
-	createReq.Header.Set("Authorization", "Bearer "+token)
-	createRec := httptest.NewRecorder()
-	handler.ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("unexpected create status: got %d want %d", createRec.Code, http.StatusCreated)
-	}
-
-	var created ACPRouteView
-	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
-		t.Fatalf("decode created acp route: %v", err)
-	}
-	if strings.ContainsAny(created.ID, "/\\") {
-		t.Fatalf("auto-generated route id must be slash-free: %q", created.ID)
-	}
-	if created.ID != "acp:opencode-main:acp-opencode" {
-		t.Fatalf("unexpected auto-generated route id: %q", created.ID)
-	}
-
-	getReq := httptest.NewRequest(http.MethodGet, "/admin/acp/routes/"+created.ID, nil)
-	getReq.Header.Set("Authorization", "Bearer "+token)
-	getRec := httptest.NewRecorder()
-	handler.ServeHTTP(getRec, getReq)
-	if getRec.Code != http.StatusOK {
-		t.Fatalf("unexpected get status: got %d want %d", getRec.Code, http.StatusOK)
-	}
-
-	delReq := httptest.NewRequest(http.MethodDelete, "/admin/acp/routes/"+created.ID, nil)
-	delReq.Header.Set("Authorization", "Bearer "+token)
-	delRec := httptest.NewRecorder()
-	handler.ServeHTTP(delRec, delReq)
-	if delRec.Code != http.StatusOK {
-		t.Fatalf("unexpected delete status: got %d want %d", delRec.Code, http.StatusOK)
-	}
-}
-
-// TestACPRouteCreateRejectsSlashID ensures an explicit slash-bearing ACP route
-// id is rejected with a 400 client error, not a 500.
-func TestACPRouteCreateRejectsSlashID(t *testing.T) {
-	t.Skip("legacy ACP route Admin surface removed by M5")
-	handler := NewHandler(newTestAgentGateway(&testConfigStore{
-		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
-	}, nil, nil, nil, nil), nil)
-	token := loginForTest(t, handler, "admin", "secret-pass")
-
-	createBody, err := json.Marshal(acproute.ACPRouteConfig{
-		AgentRouteConfig: acproute.AgentRouteConfig{
-			ID:          "acp/with/slash",
-			MatchPolicy: acproute.RouteMatch{PathPrefix: "/acp"},
-		},
-		ServiceID: "opencode-main",
-	})
-	if err != nil {
-		t.Fatalf("marshal acp route: %v", err)
-	}
-
-	createReq := httptest.NewRequest(http.MethodPost, "/admin/acp/routes", bytes.NewReader(createBody))
-	createReq.Header.Set("Authorization", "Bearer "+token)
-	createRec := httptest.NewRecorder()
-	handler.ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusBadRequest {
-		t.Fatalf("expected slash id to be rejected with 400, got status %d", createRec.Code)
-	}
-}
-
-// TestBuiltinRouteAutoIDIsSlashFreeAndAddressable mirrors the ACP guard for
-// builtin routes: an auto-generated id must be slash-free and addressable
-// through the "{id}" pattern.
-func TestBuiltinRouteAutoIDIsSlashFreeAndAddressable(t *testing.T) {
-	t.Skip("legacy builtin route Admin surface removed by M5")
-	handler := NewHandler(newTestAgentGateway(&testConfigStore{
-		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
-	}, nil, nil, nil, nil), nil)
-	token := loginForTest(t, handler, "admin", "secret-pass")
-
-	createBody, err := json.Marshal(builtinroute.BuiltinRouteConfig{
-		AgentRouteConfig: builtinroute.AgentRouteConfig{
-			MatchPolicy: builtinroute.RouteMatch{PathPrefix: "/agents/helper"},
-		},
-		AgentID: "helper-agent",
-	})
-	if err != nil {
-		t.Fatalf("marshal builtin route: %v", err)
-	}
-
-	createReq := httptest.NewRequest(http.MethodPost, "/admin/builtin/routes", bytes.NewReader(createBody))
-	createReq.Header.Set("Authorization", "Bearer "+token)
-	createRec := httptest.NewRecorder()
-	handler.ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusCreated {
-		t.Fatalf("unexpected create status: got %d want %d", createRec.Code, http.StatusCreated)
-	}
-
-	var created BuiltinRouteView
-	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
-		t.Fatalf("decode created builtin route: %v", err)
-	}
-	if strings.ContainsAny(created.ID, "/\\") {
-		t.Fatalf("auto-generated route id must be slash-free: %q", created.ID)
-	}
-	if created.ID != "builtin:helper-agent:agents-helper" {
-		t.Fatalf("unexpected auto-generated route id: %q", created.ID)
-	}
-	if created.AgentID != "helper-agent" {
-		t.Fatalf("created route agent_id = %q, want helper-agent", created.AgentID)
-	}
-
-	getReq := httptest.NewRequest(http.MethodGet, "/admin/builtin/routes/"+created.ID, nil)
-	getReq.Header.Set("Authorization", "Bearer "+token)
-	getRec := httptest.NewRecorder()
-	handler.ServeHTTP(getRec, getReq)
-	if getRec.Code != http.StatusOK {
-		t.Fatalf("unexpected get status: got %d want %d", getRec.Code, http.StatusOK)
-	}
-
-	delReq := httptest.NewRequest(http.MethodDelete, "/admin/builtin/routes/"+created.ID, nil)
-	delReq.Header.Set("Authorization", "Bearer "+token)
-	delRec := httptest.NewRecorder()
-	handler.ServeHTTP(delRec, delReq)
-	if delRec.Code != http.StatusOK {
-		t.Fatalf("unexpected delete status: got %d want %d", delRec.Code, http.StatusOK)
-	}
-}
-
-// TestBuiltinRouteCreateRejectsSlashID ensures an explicit slash-bearing
-// builtin route id is rejected with a 400 client error, not a 500.
-func TestBuiltinRouteCreateRejectsSlashID(t *testing.T) {
-	t.Skip("legacy builtin route Admin surface removed by M5")
-	handler := NewHandler(newTestAgentGateway(&testConfigStore{
-		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
-	}, nil, nil, nil, nil), nil)
-	token := loginForTest(t, handler, "admin", "secret-pass")
-
-	createBody, err := json.Marshal(builtinroute.BuiltinRouteConfig{
-		AgentRouteConfig: builtinroute.AgentRouteConfig{
-			ID:          "builtin/with/slash",
-			MatchPolicy: builtinroute.RouteMatch{PathPrefix: "/agents"},
-		},
-		AgentID: "helper-agent",
-	})
-	if err != nil {
-		t.Fatalf("marshal builtin route: %v", err)
-	}
-
-	createReq := httptest.NewRequest(http.MethodPost, "/admin/builtin/routes", bytes.NewReader(createBody))
-	createReq.Header.Set("Authorization", "Bearer "+token)
-	createRec := httptest.NewRecorder()
-	handler.ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusBadRequest {
-		t.Fatalf("expected slash id to be rejected with 400, got status %d", createRec.Code)
-	}
-}
-
-// TestBuiltinRouteCreateRequiresAgentID ensures a builtin route without an
-// agent_id target is rejected with a 400 client error.
-func TestBuiltinRouteCreateRequiresAgentID(t *testing.T) {
-	t.Skip("legacy builtin route Admin surface removed by M5")
-	handler := NewHandler(newTestAgentGateway(&testConfigStore{
-		routeStore: &testMCPRouteStore{items: map[string]*routecore.AgentRouteConfig{}},
-	}, nil, nil, nil, nil), nil)
-	token := loginForTest(t, handler, "admin", "secret-pass")
-
-	createBody, err := json.Marshal(builtinroute.BuiltinRouteConfig{
-		AgentRouteConfig: builtinroute.AgentRouteConfig{
-			ID:          "builtin-helper",
-			MatchPolicy: builtinroute.RouteMatch{PathPrefix: "/agents/helper"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal builtin route: %v", err)
-	}
-
-	createReq := httptest.NewRequest(http.MethodPost, "/admin/builtin/routes", bytes.NewReader(createBody))
-	createReq.Header.Set("Authorization", "Bearer "+token)
-	createRec := httptest.NewRecorder()
-	handler.ServeHTTP(createRec, createReq)
-	if createRec.Code != http.StatusBadRequest {
-		t.Fatalf("expected missing agent_id to be rejected with 400, got status %d", createRec.Code)
-	}
-	if !strings.Contains(createRec.Body.String(), "agent_id is required") {
-		t.Fatalf("error should name agent_id, got: %s", createRec.Body.String())
 	}
 }
 
@@ -2556,31 +2312,6 @@ func TestUpdateManagedModelReturnsNotFoundWhenMissing(t *testing.T) {
 	}
 }
 
-func TestResolveACPPermissionDecodeErrorRecordsFailedAudit(t *testing.T) {
-	observer := &recordingObserver{}
-	runtimeManager := acpruntime.NewManager(acpservice.NewManager(nil))
-	defer runtimeManager.Close()
-	handler := &Handler{acpRuntimeManager: runtimeManager, usageObserver: observer}
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/acp/runtime/permissions/perm-1", strings.NewReader(`{`))
-	req.SetPathValue("request_id", "perm-1")
-	rec := httptest.NewRecorder()
-	handler.handleResolveACPPermission(rec, req)
-
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
-	}
-	if observer.span == nil {
-		t.Fatal("usage span was not started")
-	}
-	if observer.span.outcome.Success {
-		t.Fatalf("audit success = true, want false")
-	}
-	if observer.span.outcome.StatusCode != http.StatusBadRequest || observer.span.outcome.ErrorType != "invalid_request" {
-		t.Fatalf("audit outcome = %+v, want status=400 error_type=invalid_request", observer.span.outcome)
-	}
-}
-
 func TestACPAdminAuditRecordsTraceID(t *testing.T) {
 	sink := &adminCaptureSink{}
 	observer := usage.NewObserver(sink)
@@ -2623,34 +2354,6 @@ func TestACPAdminAuditUsesDirectAgentIdentityWithoutServiceID(t *testing.T) {
 	ev, ok := sink.events[0].(usage.ACPUsageEvent)
 	if !ok || ev.RouteID != "/admin/acp" || ev.RouteKind != "acp" || ev.RouteProtocol != "admin" || ev.AgentID != "acp-agent" || ev.RuntimeType != agentpkg.RuntimeTypeACP || ev.ServiceID != "" || ev.Operation != "thread_close" || ev.ThreadID != "thread-1" || ev.ResultStatus != "error" {
 		t.Fatalf("ACP Admin audit = %#v", sink.events[0])
-	}
-}
-
-func TestACPAdminPermissionAuditCarriesBrokerCorrelation(t *testing.T) {
-	sink := &adminCaptureSink{}
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
-	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	if _, err := broker.Register(runtimeapi.PendingPermission{
-		RequestID: "perm-1", AgentID: "acp-agent", RuntimeType: agentpkg.RuntimeTypeACP,
-		RunID: runID, SessionID: "session-1", ExpiresAt: time.Now().Add(time.Minute),
-	}, "cont-1", adminPermissionContinuation{}); err != nil {
-		t.Fatal(err)
-	}
-	runtimeManager := acpruntime.NewManager(acpservice.NewManager(nil))
-	t.Cleanup(runtimeManager.Close)
-	handler := &Handler{acpRuntimeManager: runtimeManager, permissionBroker: broker, usageObserver: usage.NewObserver(sink)}
-	req := httptest.NewRequest(http.MethodPost, "/admin/acp/runtime/permissions/perm-1", strings.NewReader(`{"outcome":"allow"}`))
-	req.SetPathValue("request_id", "perm-1")
-	rec := httptest.NewRecorder()
-	handler.handleResolveACPPermission(rec, req)
-
-	if rec.Code != http.StatusOK || len(sink.events) != 1 {
-		t.Fatalf("status/events = %d/%#v; body=%s", rec.Code, sink.events, rec.Body.String())
-	}
-	ev, ok := sink.events[0].(usage.ACPUsageEvent)
-	if !ok || ev.AgentID != "acp-agent" || ev.RuntimeType != agentpkg.RuntimeTypeACP || ev.RunID != runID || ev.ServiceID != "" || ev.Operation != "permission" || ev.SessionID != "session-1" || ev.PermissionRequestID != "perm-1" || ev.ResultStatus != "success" {
-		t.Fatalf("ACP permission audit = %#v", sink.events[0])
 	}
 }
 

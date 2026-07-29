@@ -140,7 +140,6 @@ func (h *Handler) Routes() []Route {
 		// Runtime-specific builtin operator details remain under /admin/builtin/runtime.
 		{Method: http.MethodGet, Path: "/admin/builtin/runtime", Handler: h.handleGetBuiltinRuntime},
 		{Method: http.MethodGet, Path: "/admin/builtin/runtime/inflight", Handler: h.handleListBuiltinInFlight},
-		{Method: http.MethodDelete, Path: "/admin/builtin/runtime/turns/{agent_id}/{session_id}", Handler: h.handleCancelBuiltinTurn},
 
 		// Memory
 		{Method: http.MethodGet, Path: "/admin/memory/config", Handler: h.handleGetMemoryConfig},
@@ -861,12 +860,12 @@ func (h *Handler) handleMCPMetricsToolsSummary(w http.ResponseWriter, r *http.Re
 
 func (h *Handler) handleListACPMetricsEvents(w http.ResponseWriter, r *http.Request) {
 	h.handleListMetricsEvents(w, r, "acp", []string{
-		"route_id", "route_protocol", "service_id", "virtual_key_id", "agent_type", "operation", "thread_id", "session_id",
+		"route_id", "route_protocol", "virtual_key_id", "agent_type", "operation", "thread_id", "session_id",
 	})
 }
 
 func (h *Handler) handleACPMetricsTimeseries(w http.ResponseWriter, r *http.Request) {
-	opts := metricTimeseriesOptions(r, []string{"route_id", "route_protocol", "service_id", "virtual_key_id", "agent_type", "operation"})
+	opts := metricTimeseriesOptions(r, []string{"route_id", "route_protocol", "virtual_key_id", "agent_type", "operation"})
 	attribution, ok := h.agentAttributionFromRequest(w, r)
 	if !ok {
 		return
@@ -885,7 +884,7 @@ func (h *Handler) handleACPMetricsTimeseries(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) handleACPMetricsBreakdown(w http.ResponseWriter, r *http.Request) {
-	opts, err := metricBreakdownOptions(r, []string{"route_id", "route_protocol", "service_id", "virtual_key_id", "agent_type", "operation"})
+	opts, err := metricBreakdownOptions(r, []string{"route_id", "route_protocol", "virtual_key_id", "agent_type", "operation"})
 	if err != nil {
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return
@@ -911,7 +910,7 @@ func (h *Handler) handleACPMetricsBreakdown(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *Handler) handleACPMetricsSummary(w http.ResponseWriter, r *http.Request) {
-	opts, err := metricBreakdownOptions(r, []string{"route_id", "route_protocol", "service_id", "agent_type", "operation"})
+	opts, err := metricBreakdownOptions(r, []string{"route_id", "route_protocol", "agent_type", "operation"})
 	if err != nil {
 		_ = httpjson.Error(w, http.StatusBadRequest, err.Error())
 		return

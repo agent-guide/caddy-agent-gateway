@@ -38,7 +38,7 @@ func newPermissionBroker() *permissionBroker {
 	return &permissionBroker{pending: map[string]*pendingPermission{}}
 }
 
-func (b *permissionBroker) create(serviceID, sessionID string, data json.RawMessage) (*pendingPermission, error) {
+func (b *permissionBroker) create(ownerID, sessionID string, data json.RawMessage) (*pendingPermission, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
 		return nil, fmt.Errorf("generate permission request id: %w", err)
@@ -46,7 +46,7 @@ func (b *permissionBroker) create(serviceID, sessionID string, data json.RawMess
 	entry := &pendingPermission{
 		info: PendingPermissionInfo{
 			RequestID: "perm-" + hex.EncodeToString(raw),
-			ServiceID: serviceID,
+			OwnerID:   ownerID,
 			SessionID: sessionID,
 			CreatedAt: time.Now().UTC(),
 			Data:      data,

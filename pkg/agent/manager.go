@@ -17,7 +17,7 @@ type AgentRouteLookup interface {
 }
 
 // Manager owns agent CRUD, the deep-cloned definition snapshot used by
-// per-request dispatch, and the in-memory route/service -> agent index used
+// per-request dispatch, and the in-memory resource-route -> agent index used
 // for write-time attribution. The snapshot and index are rebuilt on every
 // mutation and never read from the config store on the hot path.
 type Manager struct {
@@ -40,19 +40,15 @@ type Manager struct {
 	generation     uint64
 	listeners      []DefinitionListener
 
-	mu sync.RWMutex
-	// byService is the legacy ACP service id -> Agent id attribution index
-	// retained only until the M7 source cleanup.
-	byService map[string]string
-	byRoute   map[string]string // route id -> agent id
+	mu      sync.RWMutex
+	byRoute map[string]string // route id -> agent id
 }
 
 func NewManager(store configstore.ConfigStore) *Manager {
 	return &Manager{
-		store:     store,
-		snapshot:  map[string]Agent{},
-		byService: map[string]string{},
-		byRoute:   map[string]string{},
+		store:    store,
+		snapshot: map[string]Agent{},
+		byRoute:  map[string]string{},
 	}
 }
 
@@ -110,13 +106,9 @@ func (m *Manager) Create(ctx context.Context, a Agent) error {
 	if err := a.Validate(); err != nil {
 		return err
 	}
-	if err := m.checkServiceUniqueness(ctx, a, ""); err != nil {
-		return err
-	}
 	if err := m.checkRouteUniqueness(ctx, a, ""); err != nil {
 		return err
 	}
-	a.OwnsService = false
 	a.NormalizeTimestamps(time.Now().UTC())
 	cloned, err := cloneAgent(a)
 	if err != nil {
@@ -150,12 +142,8 @@ func (m *Manager) Update(ctx context.Context, id string, a Agent) error {
 	}
 	a.ID = id
 	a.CreatedAt = current.CreatedAt
-	a.OwnsService = current.OwnsService
 	a.Normalize()
 	if err := a.Validate(); err != nil {
-		return err
-	}
-	if err := m.checkServiceUniqueness(ctx, a, id); err != nil {
 		return err
 	}
 	if err := m.checkRouteUniqueness(ctx, a, id); err != nil {
@@ -176,25 +164,6 @@ func (m *Manager) Update(ctx context.Context, id string, a Agent) error {
 		return err
 	}
 	m.commitGeneration(ctx, prospective)
-	return nil
-}
-
-// checkServiceUniqueness is retained for the unreachable pre-M5 service_id
-// adapter source and will be deleted with that source in M7.
-func (m *Manager) checkServiceUniqueness(ctx context.Context, a Agent, excludeID string) error {
-	serviceID := a.ACPServiceID()
-	if serviceID == "" {
-		return nil
-	}
-	existing, err := m.List(ctx)
-	if err != nil {
-		return err
-	}
-	for _, other := range existing {
-		if other.ID != excludeID && other.ID != a.ID && other.ACPServiceID() == serviceID {
-			return fmt.Errorf("acp service %q is already bound by agent %q", serviceID, other.ID)
-		}
-	}
 	return nil
 }
 
@@ -254,12 +223,9 @@ func (m *Manager) checkRouteUniqueness(ctx context.Context, a Agent, excludeID s
 	return nil
 }
 
-// checkRouteConsistency enforces that every acp_route_id resolves to the agent's
-// runtime service, and that every builtin_route_id targets this agent. Each
-// check is skipped when the corresponding lookup is not wired.
 // Refresh decodes and deep-clones the complete store result into a fresh
 // definition generation, then commits it atomically. The derived
-// route/service -> agent attribution index is rebuilt as part of the commit.
+// resource-route -> agent attribution index is rebuilt as part of the commit.
 func (m *Manager) Refresh(ctx context.Context) error {
 	if m == nil || m.store == nil {
 		return nil
@@ -316,11 +282,12 @@ func (m *Manager) Recommit(ctx context.Context) error {
 	return nil
 }
 
-// ResolveAgentID maps an originating route/service back to a single agent for
-// write-time usage attribution. It implements usage.AgentAttributor. It returns
-// ok=false when the mapping is empty (the caller then leaves agent_id empty).
+// ResolveAgentID maps an originating resource route back to a single agent for
+// write-time usage attribution. The service/session arguments remain part of
+// the protocol-neutral usage seam for MCP callers but do not identify an Agent.
+// It returns ok=false when the route mapping is empty.
 func (m *Manager) ResolveAgentID(routeID, serviceID, sessionID string) (string, bool) {
-	_ = sessionID
+	_, _ = serviceID, sessionID
 	if m == nil {
 		return "", false
 	}
@@ -328,11 +295,6 @@ func (m *Manager) ResolveAgentID(routeID, serviceID, sessionID string) (string, 
 	defer m.mu.RUnlock()
 	if routeID != "" {
 		if id, ok := m.byRoute[routeID]; ok {
-			return id, true
-		}
-	}
-	if serviceID != "" {
-		if id, ok := m.byService[serviceID]; ok {
 			return id, true
 		}
 	}
@@ -361,22 +323,12 @@ func decodeAgentItem(id string, item any) (Agent, error) {
 
 func agentRouteIDs(a Agent) map[string]struct{} {
 	out := map[string]struct{}{}
-	for _, routeID := range a.Routes.ACPRouteIDs {
-		if routeID != "" {
-			out[routeID] = struct{}{}
-		}
-	}
 	for _, routeID := range a.Routes.LLMRouteIDs {
 		if routeID != "" {
 			out[routeID] = struct{}{}
 		}
 	}
 	for _, routeID := range a.Routes.MCPRouteIDs {
-		if routeID != "" {
-			out[routeID] = struct{}{}
-		}
-	}
-	for _, routeID := range a.Routes.BuiltinRouteIDs {
 		if routeID != "" {
 			out[routeID] = struct{}{}
 		}

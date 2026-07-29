@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
@@ -26,6 +27,53 @@ import (
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
+
+type builtinFakeProvider struct{}
+
+func (builtinFakeProvider) Chat(_ context.Context, _ *provider.ChatRequest) (*provider.ChatResponse, error) {
+	msg := schema.AssistantMessage("builtin says hi", nil)
+	msg.ResponseMeta = &schema.ResponseMeta{
+		FinishReason: "stop",
+		Usage:        &schema.TokenUsage{PromptTokens: 5, CompletionTokens: 4, TotalTokens: 9},
+	}
+	return &provider.ChatResponse{Message: msg}, nil
+}
+
+func (p builtinFakeProvider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*schema.StreamReader[*schema.Message], error) {
+	resp, err := p.Chat(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	sr, sw := schema.Pipe[*schema.Message](1)
+	sw.Send(resp.Message, nil)
+	sw.Close()
+	return sr, nil
+}
+
+func (builtinFakeProvider) ListModels(context.Context) ([]provider.ModelInfo, error) { return nil, nil }
+func (builtinFakeProvider) Capabilities() provider.ProviderCapabilities {
+	return provider.ProviderCapabilities{}
+}
+func (builtinFakeProvider) Config() provider.ProviderConfig {
+	return provider.ProviderConfig{Id: "fake", ProviderType: "fake"}
+}
+
+type builtinCaptureSink struct{ events []any }
+
+func (s *builtinCaptureSink) Enqueue(v any) bool {
+	s.events = append(s.events, v)
+	return true
+}
+
+func eventsOfType[T any](events []any) []T {
+	var out []T
+	for _, ev := range events {
+		if typed, ok := ev.(T); ok {
+			out = append(out, typed)
+		}
+	}
+	return out
+}
 
 type agentHandlerCapabilityBackend struct {
 	*runtimeapitest.Backend
@@ -265,9 +313,11 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	// the same request now selects the ACP backend using inline runtime config,
 	// without touching the route or key.
 	if err := gw.AgentManager().Update(ctx, "unified", agentpkg.Agent{
-		ID:      "unified",
-		Name:    "Unified",
-		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{ServiceID: "svc-missing"}},
+		ID:   "unified",
+		Name: "Unified",
+		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeACP, ACP: &agentpkg.ACPRuntime{
+			AgentType: baseacp.AgentTypeCodex, CWD: "/tmp", AllowedRoots: []string{"/tmp"},
+		}},
 	}); err != nil {
 		t.Fatalf("switch runtime type: %v", err)
 	}

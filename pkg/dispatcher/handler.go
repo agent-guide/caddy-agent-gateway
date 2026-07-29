@@ -11,10 +11,8 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
-	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	agentroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
-	builtinroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
@@ -193,12 +191,6 @@ func (h *Handler) routeInteractionDimensions(cfg routecore.AgentRouteConfig, tra
 		TraceID: traceCtx.TraceID, SpanID: traceCtx.SpanID, ParentSpanID: traceCtx.ParentSpanID, AgentDepth: traceCtx.AgentDepth,
 		RouteID: cfg.ID, RouteKind: string(cfg.Kind), RouteProtocol: string(cfg.Protocol), VirtualKeyID: virtualKeyID,
 	}
-	if cfg.Kind == routecore.RouteKindBuiltin {
-		if agentID, err := builtinroutepkg.DecodeTargetAgentID(cfg.TargetPolicy); err == nil && agentID != "" {
-			dims.AgentID, dims.RuntimeType = agentID, agentpkg.RuntimeTypeBuiltin
-		}
-		return dims
-	}
 	if cfg.Kind != routecore.RouteKindAgent {
 		return dims
 	}
@@ -216,19 +208,13 @@ func (h *Handler) routeInteractionDimensions(cfg routecore.AgentRouteConfig, tra
 }
 
 // bindAgentRuntimeIdentity adds a runtime type only after Agent attribution is
-// known. In particular, an unbound legacy ACP route is direct non-Agent
-// traffic and must keep agent_id, run_id, and runtime_type empty.
+// known.
 func bindAgentRuntimeIdentity(ctx context.Context, span usage.InteractionSpan, kind routecore.RouteKind) context.Context {
 	dims, ok := usage.DimensionsFromContext(ctx)
 	if !ok || dims.AgentID == "" {
 		return ctx
 	}
-	switch kind {
-	case routecore.RouteKindACP:
-		dims.RuntimeType = agentpkg.RuntimeTypeACP
-	case routecore.RouteKindBuiltin:
-		dims.RuntimeType = agentpkg.RuntimeTypeBuiltin
-	default:
+	if kind != routecore.RouteKindAgent {
 		return ctx
 	}
 	span.SetExtension(usage.CommonExtension{AgentID: dims.AgentID, RuntimeType: dims.RuntimeType})
@@ -241,10 +227,6 @@ func rateLimitDimension(kind routecore.RouteKind) (virtualkeypkg.RateLimitDimens
 		return virtualkeypkg.RateLimitDimensionLLM, nil
 	case routecore.RouteKindMCP:
 		return virtualkeypkg.RateLimitDimensionMCP, nil
-	case routecore.RouteKindACP:
-		return virtualkeypkg.RateLimitDimensionACP, nil
-	case routecore.RouteKindBuiltin:
-		return virtualkeypkg.RateLimitDimensionBuiltin, nil
 	case routecore.RouteKindAgent:
 		return virtualkeypkg.RateLimitDimensionAgent, nil
 	default:

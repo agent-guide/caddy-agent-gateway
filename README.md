@@ -372,7 +372,7 @@ GET /admin/metrics/interactions/summary  # cross-protocol breakdown
 `limit`, `group_by`, and the protocol's filter keys (LLM:
 `route_id`/`provider_id`/`virtual_key_id`/`upstream_model`/`llm_api`; MCP:
 `route_id`/`service_id`/`virtual_key_id`/`method`/`tool_name`/`result_status`;
-ACP: `route_id`/`service_id`/`virtual_key_id`/`agent_type`/`operation`).
+ACP: `route_id`/`route_protocol`/`virtual_key_id`/`agent_type`/`operation`).
 `timeseries` also takes `bucket` (`minute|hour|day`, short forms like `m`/`h`/`d`,
 or Grafana-style durations like `3h`/`5m`/`1d`; empty defaults to `hour`). See
 [docs/reference/admin-api-reference.md](docs/reference/admin-api-reference.md)

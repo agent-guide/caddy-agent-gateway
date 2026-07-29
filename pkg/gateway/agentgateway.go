@@ -9,16 +9,13 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
-	acproutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
 	agentroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
-	builtinroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -60,35 +57,32 @@ type BootstrapOptions struct {
 type AgentGateway struct {
 	mu sync.RWMutex
 
-	configured           bool
-	configStoreBackend   configstore.ConfigStoreBackend
-	routeConfigManager   *routecore.AgentRouteConfigManager
-	llmRouteResolver     *llmroutepkg.LLMRouteResolver
-	mcpRouteResolver     *mcproutepkg.MCPRouteResolver
-	acpRouteResolver     *acproutepkg.ACPRouteResolver
-	builtinRouteResolver *builtinroutepkg.BuiltinRouteResolver
-	agentRouteResolver   *agentroutepkg.AgentRouteResolver
-	builtinHost          *builtinpkg.Host
-	virtualKeyManager    *virtualkeypkg.VirtualKeyManager
-	providerManager      *ProviderManager
-	cliauthManager       *cliauth.Manager
-	cliauthRefresher     *cliauth.AutoRefresher
-	credentialManager    *credentialmgr.Manager
-	credentialScheduler  credentialmgrscheduler.CredentialScheduler
-	modelCatalog         modelcatalog.Service
-	mcpServiceManager    *mcpservice.Manager
-	mcpRuntimeRegistry   *mcpruntime.Registry
-	acpServiceManager    *acpservice.Manager
-	acpRuntimeManager    *acpruntime.Manager
-	agentManager         *agentpkg.Manager
-	runtimeRegistry      *runtimeapi.Registry
-	runRegistry          *runtimeapi.RunRegistry
-	permissionBroker     *runtimeapi.PermissionBroker
-	usageObserver        usage.InteractionObserver
-	usageQuery           usage.QueryService
-	usageStats           usage.RuntimeStats
-	usagePrometheus      usage.PrometheusProvider
-	usageConfig          usage.Config
+	configured          bool
+	configStoreBackend  configstore.ConfigStoreBackend
+	routeConfigManager  *routecore.AgentRouteConfigManager
+	llmRouteResolver    *llmroutepkg.LLMRouteResolver
+	mcpRouteResolver    *mcproutepkg.MCPRouteResolver
+	agentRouteResolver  *agentroutepkg.AgentRouteResolver
+	builtinHost         *builtinpkg.Host
+	virtualKeyManager   *virtualkeypkg.VirtualKeyManager
+	providerManager     *ProviderManager
+	cliauthManager      *cliauth.Manager
+	cliauthRefresher    *cliauth.AutoRefresher
+	credentialManager   *credentialmgr.Manager
+	credentialScheduler credentialmgrscheduler.CredentialScheduler
+	modelCatalog        modelcatalog.Service
+	mcpServiceManager   *mcpservice.Manager
+	mcpRuntimeRegistry  *mcpruntime.Registry
+	acpRuntimeManager   *acpruntime.Manager
+	agentManager        *agentpkg.Manager
+	runtimeRegistry     *runtimeapi.Registry
+	runRegistry         *runtimeapi.RunRegistry
+	permissionBroker    *runtimeapi.PermissionBroker
+	usageObserver       usage.InteractionObserver
+	usageQuery          usage.QueryService
+	usageStats          usage.RuntimeStats
+	usagePrometheus     usage.PrometheusProvider
+	usageConfig         usage.Config
 }
 
 func NewAgentGateway() *AgentGateway {
@@ -117,7 +111,7 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	if err := g.configureMCPServiceManager(opts.ConfigStoreBackend); err != nil {
 		return err
 	}
-	g.acpRuntimeManager = acpruntime.NewManager(nil)
+	g.acpRuntimeManager = acpruntime.NewManager()
 	if err := g.configureAgentManager(ctx, opts.ConfigStoreBackend); err != nil {
 		return err
 	}
@@ -206,8 +200,6 @@ func (g *AgentGateway) Reset() {
 	g.routeConfigManager = nil
 	g.llmRouteResolver = nil
 	g.mcpRouteResolver = nil
-	g.acpRouteResolver = nil
-	g.builtinRouteResolver = nil
 	g.agentRouteResolver = nil
 	g.builtinHost = nil
 	g.virtualKeyManager = nil
@@ -222,7 +214,6 @@ func (g *AgentGateway) Reset() {
 	if g.acpRuntimeManager != nil {
 		g.acpRuntimeManager.Close()
 	}
-	g.acpServiceManager = nil
 	g.acpRuntimeManager = nil
 	g.agentManager = nil
 	g.runtimeRegistry = runtimeapi.NewRegistry()
@@ -293,26 +284,8 @@ func (g *AgentGateway) MCPRouteResolver() *mcproutepkg.MCPRouteResolver {
 	return g.mcpRouteResolver
 }
 
-func (g *AgentGateway) ACPRouteConfigManager() *routecore.AgentRouteConfigManager {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.routeConfigManager
-}
-
-func (g *AgentGateway) ACPRouteResolver() *acproutepkg.ACPRouteResolver {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.acpRouteResolver
-}
-
-func (g *AgentGateway) BuiltinRouteResolver() *builtinroutepkg.BuiltinRouteResolver {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.builtinRouteResolver
-}
-
 // AgentRouteResolver resolves the unified kind=agent ingress routes. The
-// route surface stays internal (tests/fixtures) until the M5 public cutover.
+// route surface is the only public Agent ingress.
 func (g *AgentGateway) AgentRouteResolver() *agentroutepkg.AgentRouteResolver {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
@@ -354,12 +327,6 @@ func (g *AgentGateway) MCPRuntimeRegistry() *mcpruntime.Registry {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.mcpRuntimeRegistry
-}
-
-func (g *AgentGateway) ACPServiceManager() *acpservice.Manager {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.acpServiceManager
 }
 
 func (g *AgentGateway) ACPRuntimeManager() *acpruntime.Manager {
@@ -534,7 +501,7 @@ func (g *AgentGateway) configureConfigStoreBackend(configStoreBackend configstor
 
 func (g *AgentGateway) configureRouteResolver(ctx context.Context, configStoreBackend configstore.ConfigStoreBackend, staticRoutes []routecore.AgentRouteConfig) error {
 	_ = ctx
-	if g.routeConfigManager != nil || g.llmRouteResolver != nil || g.mcpRouteResolver != nil || g.acpRouteResolver != nil {
+	if g.routeConfigManager != nil || g.llmRouteResolver != nil || g.mcpRouteResolver != nil || g.agentRouteResolver != nil {
 		return fmt.Errorf("route config manager and resolvers are already configured")
 	}
 

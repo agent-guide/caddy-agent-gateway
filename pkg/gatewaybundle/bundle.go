@@ -9,12 +9,9 @@ import (
 	"strings"
 	"time"
 
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/cliauth"
-	acproute "github.com/agent-guide/agent-gateway/pkg/gateway/acproute"
 	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
-	builtinroute "github.com/agent-guide/agent-gateway/pkg/gateway/builtinroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
@@ -33,20 +30,17 @@ const (
 var envVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 type GatewayBundle struct {
-	APIVersion            string                            `json:"apiVersion"`
-	Kind                  string                            `json:"kind"`
-	Providers             []provider.ProviderConfig         `json:"providers,omitempty"`
-	ManagedModels         []modelcatalog.ManagedModel       `json:"managedModels,omitempty"`
-	LLMRoutes             []routecore.AgentRouteConfig      `json:"llmRoutes,omitempty"`
-	VirtualKeys           []BundleVirtualKey                `json:"virtualKeys,omitempty"`
-	CLIAuthAuthenticators []CLIAuthAuthenticator            `json:"cliAuthAuthenticators,omitempty"`
-	MCPServices           []mcpservice.MCPServiceConfig     `json:"mcpServices,omitempty"`
-	MCPRoutes             []mcproute.MCPRouteConfig         `json:"mcpRoutes,omitempty"`
-	AgentRoutes           []agentroute.AgentRouteConfig     `json:"agentRoutes,omitempty"`
-	ACPServices           []acpservice.ServiceConfig        `json:"-"`
-	ACPRoutes             []acproute.ACPRouteConfig         `json:"-"`
-	BuiltinRoutes         []builtinroute.BuiltinRouteConfig `json:"-"`
-	Agents                []agentpkg.Agent                  `json:"agents,omitempty"`
+	APIVersion            string                        `json:"apiVersion"`
+	Kind                  string                        `json:"kind"`
+	Providers             []provider.ProviderConfig     `json:"providers,omitempty"`
+	ManagedModels         []modelcatalog.ManagedModel   `json:"managedModels,omitempty"`
+	LLMRoutes             []routecore.AgentRouteConfig  `json:"llmRoutes,omitempty"`
+	VirtualKeys           []BundleVirtualKey            `json:"virtualKeys,omitempty"`
+	CLIAuthAuthenticators []CLIAuthAuthenticator        `json:"cliAuthAuthenticators,omitempty"`
+	MCPServices           []mcpservice.MCPServiceConfig `json:"mcpServices,omitempty"`
+	MCPRoutes             []mcproute.MCPRouteConfig     `json:"mcpRoutes,omitempty"`
+	AgentRoutes           []agentroute.AgentRouteConfig `json:"agentRoutes,omitempty"`
+	Agents                []agentpkg.Agent              `json:"agents,omitempty"`
 }
 
 type BundleVirtualKey struct {

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/agent-guide/agent-gateway/pkg/acp/agentspi"
-	acpservice "github.com/agent-guide/agent-gateway/pkg/acp/service"
+	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
 	acptransport "github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
@@ -93,9 +93,9 @@ func newTestManager() *Manager {
 	}
 }
 
-func testServiceConfig(t *testing.T) acpservice.ServiceConfig {
+func testRuntimeConfig(t *testing.T) runtimeconfig.Config {
 	t.Helper()
-	return acpservice.ServiceConfig{ID: "svc", AgentType: fakePoolAgent, CWD: t.TempDir()}
+	return runtimeconfig.Config{OwnerID: "svc", AgentType: fakePoolAgent, CWD: t.TempDir()}
 }
 
 func transportOf(t *testing.T, inst *instance) *fakePoolTransport {
@@ -110,7 +110,7 @@ func transportOf(t *testing.T, inst *instance) *fakePoolTransport {
 func TestResolveInstanceReusesLiveInstance(t *testing.T) {
 	atomic.StoreInt32(&fakeOpenCount, 0)
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	first, err := m.resolveInstance(ctx, "scope-a", cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
@@ -129,19 +129,19 @@ func TestResolveInstanceReusesLiveInstance(t *testing.T) {
 	}
 }
 
-func TestResolveInstanceEnforcesServiceMaxInstances(t *testing.T) {
+func TestResolveInstanceEnforcesRuntimeMaxInstances(t *testing.T) {
 	atomic.StoreInt32(&fakeOpenCount, 0)
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	cfg.MaxInstances = 1
 	ctx := context.Background()
 
-	firstScope := buildScope(cfg.ID, cfg.CWD, "t1", "", "")
+	firstScope := buildScope(cfg.OwnerID, cfg.CWD, "t1", "", "")
 	if _, err := m.resolveInstance(ctx, firstScope, cfg, TurnRequest{ThreadID: "t1", Input: "hi"}); err != nil {
 		t.Fatalf("first resolveInstance: %v", err)
 	}
 
-	secondScope := buildScope(cfg.ID, cfg.CWD, "t2", "", "")
+	secondScope := buildScope(cfg.OwnerID, cfg.CWD, "t2", "", "")
 	_, err := m.resolveInstance(ctx, secondScope, cfg, TurnRequest{ThreadID: "t2", Input: "hi"})
 	if !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("second resolveInstance error = %v, want ErrCapacityExceeded", err)
@@ -160,7 +160,7 @@ func TestResolveInstanceEnforcesServiceMaxInstances(t *testing.T) {
 func TestResolveInstanceFreshSessionReplacesInstance(t *testing.T) {
 	atomic.StoreInt32(&fakeOpenCount, 0)
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	first, err := m.resolveInstance(ctx, "scope-a", cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
@@ -187,7 +187,7 @@ func TestResolveInstanceFreshSessionReplacesInstance(t *testing.T) {
 func TestResolveInstanceEvictsDeadInstance(t *testing.T) {
 	atomic.StoreInt32(&fakeOpenCount, 0)
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	first, err := m.resolveInstance(ctx, "scope-a", cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
@@ -213,10 +213,10 @@ func TestResolveInstanceEvictsDeadInstance(t *testing.T) {
 func TestResolveInstanceAdoptsSessionScopedInstance(t *testing.T) {
 	atomic.StoreInt32(&fakeOpenCount, 0)
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
-	threadScope := buildScope(cfg.ID, cfg.CWD, "t1", "", "")
+	threadScope := buildScope(cfg.OwnerID, cfg.CWD, "t1", "", "")
 	first, err := m.resolveInstance(ctx, threadScope, cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
 	if err != nil {
 		t.Fatalf("first resolveInstance: %v", err)
@@ -225,7 +225,7 @@ func TestResolveInstanceAdoptsSessionScopedInstance(t *testing.T) {
 		t.Fatalf("unexpected fake session id %q", first.sessionID)
 	}
 
-	sessionScope := buildScope(cfg.ID, cfg.CWD, "t1", "sess-1", "")
+	sessionScope := buildScope(cfg.OwnerID, cfg.CWD, "t1", "sess-1", "")
 	second, err := m.resolveInstance(ctx, sessionScope, cfg, TurnRequest{ThreadID: "t1", SessionID: "sess-1", Input: "hi"})
 	if err != nil {
 		t.Fatalf("session-addressed resolveInstance: %v", err)
@@ -249,16 +249,16 @@ func TestResolveInstanceAdoptsSessionScopedInstance(t *testing.T) {
 func TestResolveInstanceDoesNotAdoptMismatchedSession(t *testing.T) {
 	atomic.StoreInt32(&fakeOpenCount, 0)
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
-	threadScope := buildScope(cfg.ID, cfg.CWD, "t1", "", "")
+	threadScope := buildScope(cfg.OwnerID, cfg.CWD, "t1", "", "")
 	first, err := m.resolveInstance(ctx, threadScope, cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
 	if err != nil {
 		t.Fatalf("first resolveInstance: %v", err)
 	}
 
-	otherScope := buildScope(cfg.ID, cfg.CWD, "t1", "other-session", "")
+	otherScope := buildScope(cfg.OwnerID, cfg.CWD, "t1", "other-session", "")
 	second, err := m.resolveInstance(ctx, otherScope, cfg, TurnRequest{ThreadID: "t1", SessionID: "other-session", Input: "hi"})
 	if err != nil {
 		t.Fatalf("second resolveInstance: %v", err)
@@ -274,16 +274,16 @@ func TestResolveInstanceDoesNotAdoptMismatchedSession(t *testing.T) {
 func TestResolveInstanceDoesNotAdoptActiveOrDeadInstance(t *testing.T) {
 	atomic.StoreInt32(&fakeOpenCount, 0)
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
-	threadScope := buildScope(cfg.ID, cfg.CWD, "t1", "", "")
+	threadScope := buildScope(cfg.OwnerID, cfg.CWD, "t1", "", "")
 	first, err := m.resolveInstance(ctx, threadScope, cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
 	if err != nil {
 		t.Fatalf("first resolveInstance: %v", err)
 	}
 
-	sessionScope := buildScope(cfg.ID, cfg.CWD, "t1", "sess-1", "")
+	sessionScope := buildScope(cfg.OwnerID, cfg.CWD, "t1", "sess-1", "")
 	release, err := m.active.Begin(threadScope)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
@@ -310,7 +310,7 @@ func TestResolveInstanceDoesNotAdoptActiveOrDeadInstance(t *testing.T) {
 
 func TestRebindLocked(t *testing.T) {
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	if _, err := m.resolveInstance(ctx, "scope-a", cfg, TurnRequest{ThreadID: "t1", Input: "hi"}); err != nil {
@@ -344,7 +344,7 @@ func TestRebindLocked(t *testing.T) {
 
 func TestReapIdleClosesIdleInstance(t *testing.T) {
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	inst, err := m.resolveInstance(ctx, "scope-idle", cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
@@ -371,7 +371,7 @@ func TestReapIdleClosesIdleInstance(t *testing.T) {
 
 func TestReapIdleSkipsActiveScope(t *testing.T) {
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	if _, err := m.resolveInstance(ctx, "scope-busy", cfg, TurnRequest{ThreadID: "t1", Input: "hi"}); err != nil {
@@ -399,8 +399,8 @@ func TestReapIdleSkipsActiveScope(t *testing.T) {
 }
 
 func TestManagerCloseTearsDownInstances(t *testing.T) {
-	m := NewManager(nil)
-	cfg := testServiceConfig(t)
+	m := NewManager()
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	inst, err := m.resolveInstance(ctx, "scope-a", cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
@@ -417,7 +417,7 @@ func TestManagerCloseTearsDownInstances(t *testing.T) {
 
 func TestCloseThreadTearsDownMatchingInstances(t *testing.T) {
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	keep, err := m.resolveInstance(ctx, buildScope("svc", cfg.CWD, "other", "", ""), cfg, TurnRequest{ThreadID: "other", Input: "hi"})
@@ -444,13 +444,13 @@ func TestCloseThreadTearsDownMatchingInstances(t *testing.T) {
 	}
 }
 
-func TestCloseServiceTearsDownMatchingInstances(t *testing.T) {
+func TestCloseOwnerTearsDownMatchingInstances(t *testing.T) {
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
 
 	keepCfg := cfg
-	keepCfg.ID = "other"
+	keepCfg.OwnerID = "other"
 	keep, err := m.resolveInstance(ctx, buildScope("other", keepCfg.CWD, "t1", "", ""), keepCfg, TurnRequest{ThreadID: "t1", Input: "hi"})
 	if err != nil {
 		t.Fatalf("resolveInstance keep: %v", err)
@@ -464,14 +464,14 @@ func TestCloseServiceTearsDownMatchingInstances(t *testing.T) {
 		t.Fatalf("resolveInstance b: %v", err)
 	}
 
-	if closed := m.CloseService("svc"); closed != 2 {
-		t.Fatalf("CloseService closed %d instances, want 2", closed)
+	if closed := m.CloseOwner("svc"); closed != 2 {
+		t.Fatalf("CloseOwner closed %d instances, want 2", closed)
 	}
 	if transportOf(t, a).Alive() || transportOf(t, b).Alive() {
-		t.Fatal("service instances were not torn down")
+		t.Fatal("owner instances were not torn down")
 	}
 	if !transportOf(t, keep).Alive() {
-		t.Fatal("an instance from a different service was torn down")
+		t.Fatal("an instance from a different owner was torn down")
 	}
 }
 
@@ -511,7 +511,7 @@ func TestInitializeTimesOut(t *testing.T) {
 	defer func() { initializeTimeout = prev }()
 
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	cfg.AgentType = "slow-init"
 
 	_, err := m.resolveInstance(context.Background(), "scope", cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
@@ -551,9 +551,9 @@ func TestShouldReap(t *testing.T) {
 
 func TestResolveInstanceEvictsStaleConfigFingerprint(t *testing.T) {
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
-	scope := buildScope(cfg.ID, cfg.CWD, "t1", "", "")
+	scope := buildScope(cfg.OwnerID, cfg.CWD, "t1", "", "")
 	first, err := m.resolveInstance(ctx, scope, cfg, TurnRequest{ThreadID: "t1", Input: "hi"})
 	if err != nil {
 		t.Fatalf("first resolveInstance: %v", err)
@@ -582,10 +582,10 @@ func TestResolveInstanceEvictsStaleConfigFingerprint(t *testing.T) {
 
 func TestConfiguredResolveRejectsRetiredOwnerFingerprint(t *testing.T) {
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	oldFingerprint := configFingerprint(cfg)
-	m.RetireOwner(cfg.ID, oldFingerprint)
-	oldScope := buildScope(cfg.ID, cfg.CWD, "old", "", "")
+	m.RetireOwner(cfg.OwnerID, oldFingerprint)
+	oldScope := buildScope(cfg.OwnerID, cfg.CWD, "old", "", "")
 	old, err := m.resolveInstanceForOwner(context.Background(), oldScope, cfg, TurnRequest{ThreadID: "old", Input: "hi"}, true)
 	if err != nil {
 		t.Fatalf("resolve current fingerprint: %v", err)
@@ -594,27 +594,27 @@ func TestConfiguredResolveRejectsRetiredOwnerFingerprint(t *testing.T) {
 	changed := cfg
 	changed.DefaultModel = "model-b"
 	newFingerprint := configFingerprint(changed)
-	m.RetireOwner(cfg.ID, newFingerprint)
+	m.RetireOwner(cfg.OwnerID, newFingerprint)
 	if transportOf(t, old).Alive() {
 		t.Fatal("old idle instance survived owner fingerprint retirement")
 	}
-	staleScope := buildScope(cfg.ID, cfg.CWD, "stale-after-retire", "", "")
+	staleScope := buildScope(cfg.OwnerID, cfg.CWD, "stale-after-retire", "", "")
 	if _, err := m.resolveInstanceForOwner(context.Background(), staleScope, cfg, TurnRequest{ThreadID: "stale-after-retire", Input: "hi"}, true); !errors.Is(err, ErrRuntimeConfigRetired) {
 		t.Fatalf("stale configured resolve error = %v, want ErrRuntimeConfigRetired", err)
 	}
-	freshScope := buildScope(cfg.ID, cfg.CWD, "fresh", "", "")
+	freshScope := buildScope(cfg.OwnerID, cfg.CWD, "fresh", "", "")
 	if _, err := m.resolveInstanceForOwner(context.Background(), freshScope, changed, TurnRequest{ThreadID: "fresh", Input: "hi"}, true); err != nil {
 		t.Fatalf("resolve replacement fingerprint: %v", err)
 	}
 
-	m.RetireOwner(cfg.ID, "")
+	m.RetireOwner(cfg.OwnerID, "")
 	m.mu.Lock()
-	_, retained := m.ownerFingerprints[cfg.ID]
+	_, retained := m.ownerFingerprints[cfg.OwnerID]
 	m.mu.Unlock()
 	if retained {
 		t.Fatal("retire-all retained an empty owner fingerprint entry")
 	}
-	removedScope := buildScope(cfg.ID, cfg.CWD, "removed", "", "")
+	removedScope := buildScope(cfg.OwnerID, cfg.CWD, "removed", "", "")
 	if _, err := m.resolveInstanceForOwner(context.Background(), removedScope, changed, TurnRequest{ThreadID: "removed", Input: "hi"}, true); !errors.Is(err, ErrRuntimeConfigRetired) {
 		t.Fatalf("removed owner resolve error = %v, want ErrRuntimeConfigRetired", err)
 	}
@@ -622,13 +622,13 @@ func TestConfiguredResolveRejectsRetiredOwnerFingerprint(t *testing.T) {
 
 func TestRetireOwnerClosesIdleAndDrainsActive(t *testing.T) {
 	m := newTestManager()
-	cfg := testServiceConfig(t)
+	cfg := testRuntimeConfig(t)
 	ctx := context.Background()
-	idleScope := buildScope(cfg.ID, cfg.CWD, "idle", "", "")
-	activeScope := buildScope(cfg.ID, cfg.CWD, "active", "", "")
-	otherCfg := testServiceConfig(t)
-	otherCfg.ID = "other"
-	otherScope := buildScope(otherCfg.ID, otherCfg.CWD, "t1", "", "")
+	idleScope := buildScope(cfg.OwnerID, cfg.CWD, "idle", "", "")
+	activeScope := buildScope(cfg.OwnerID, cfg.CWD, "active", "", "")
+	otherCfg := testRuntimeConfig(t)
+	otherCfg.OwnerID = "other"
+	otherScope := buildScope(otherCfg.OwnerID, otherCfg.CWD, "t1", "", "")
 
 	idle, err := m.resolveInstance(ctx, idleScope, cfg, TurnRequest{ThreadID: "idle", Input: "hi"})
 	if err != nil {
@@ -650,7 +650,7 @@ func TestRetireOwnerClosesIdleAndDrainsActive(t *testing.T) {
 	changed := cfg
 	changed.DefaultModel = "model-b"
 	keep := configFingerprint(changed)
-	if n := m.RetireOwner(cfg.ID, keep); n != 2 {
+	if n := m.RetireOwner(cfg.OwnerID, keep); n != 2 {
 		t.Fatalf("RetireOwner = %d, want 2 (one closed, one marked)", n)
 	}
 	if transportOf(t, idle).Alive() {

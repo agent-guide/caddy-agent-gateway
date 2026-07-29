@@ -1,6 +1,6 @@
 # pkg/acp — AGENTS.md
 
-Scope: native ACP service configuration and runtime integration. The root
+Scope: native ACP runtime configuration and protocol integration. The root
 `AGENTS.md` rules apply. Architecture, endpoint inventories, and implementation
 status belong in `docs/architecture/acp-architecture.md`.
 
@@ -11,8 +11,8 @@ status belong in `docs/architecture/acp-architecture.md`.
 - Supported runtime adapters are registered through `pkg/acp/agentspi`; shared
   wire parsing belongs in `pkg/acp/runtime`, with `session/update` parsing in
   `pkg/acp/runtime/acpupdate`.
-- At the gateway adapter boundary, snapshot an Agent-bound service into an
-  identity-free `pkg/acp/runtime.RuntimeConfig` and use `agent_id` as the
+- At the gateway adapter boundary, pass the Agent-owned ACP config as an
+  identity-free `pkg/acp/runtimeconfig.Config` and use `agent_id` as the
   runtime owner key. Keep Agent identity and control-plane dependencies out of
   `pkg/acp`.
 - Pooled instances record the config content fingerprint they were created
@@ -48,7 +48,7 @@ status belong in `docs/architecture/acp-architecture.md`.
 - Check advertised ACP capabilities before calling session list or load.
 - Apply the optional session-list `cwd` filter in the gateway after
   symlink-canonicalizing both sides; never forward that filter to the agent.
-- Preserve the shared HTTP error contract: missing service is `404`,
+- Preserve the shared HTTP error contract: missing Agent is `404`,
   client-correctable input represented by `acpruntime.ErrInvalidRequest` is
   `400`, and agent/transport failure is `502`.
 - Pool changes must preserve dead-instance eviction, idle cleanup, instance
@@ -57,7 +57,7 @@ status belong in `docs/architecture/acp-architecture.md`.
 - Agent-bound turns register their exact common `run_id` in the native runtime.
   Force cancellation must send ACP `session/cancel` through that run's live
   instance and cancel only its context; never implement ordinary run cancel by
-  closing a scope, thread, service, or pooled process. Before the live instance
+  closing an owner scope, thread, or pooled process. Before the live instance
   and protocol session id are bound, cancellation must return a retryable error
   and leave the run context alive; it must never silently skip the native frame.
   Agent deletion/runtime retirement is distinct from an operator exact-run

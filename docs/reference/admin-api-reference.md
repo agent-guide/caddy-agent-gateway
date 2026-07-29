@@ -254,20 +254,14 @@ endpoints. Consumer-facing session endpoints resolve through the matched
 
 - `GET /admin/builtin/runtime`
 - `GET /admin/builtin/runtime/inflight`
-- `DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}`
 
 `GET /admin/builtin/runtime` reports the ADK host state: per-agent
 materializations, pending interactive tool permissions, and in-flight turns.
 `GET /admin/builtin/runtime/inflight` lists the running turns (agent id,
 session id, operation, topology kind, started at).
-`DELETE /admin/builtin/runtime/turns/{agent_id}/{session_id}` cancels the
-running turn for that session; the optional `mode` query parameter is `force`
-(default — abort immediately, for stuck turns) or `graceful` (stop after the
-current model/tool step, escalating to force after a grace period). The
-cancelled turn's own SSE stream emits a `done` event with
-`stop_reason: "cancelled"`; the operator call returns `404` when no matching
-turn is in flight. Pending permissions are listed and decided through the
-common Agent endpoints; resume follows the runtime's advertised capability.
+Logical run cancellation and permission decisions use the common Agent
+endpoints. The builtin runtime family is diagnostic only; it does not expose a
+second session-keyed control operation.
 
 ## Metrics
 
@@ -302,18 +296,18 @@ session, and trace identifiers. Aggregate endpoints support `from`, `to`,
 protocol's `group_by` dimensions and filter keys (LLM:
 `route_id`/`provider_id`/`virtual_key_id`/`upstream_model`/`llm_api`; MCP:
 `route_id`/`service_id`/`virtual_key_id`/`method`/`tool_name`/`result_status`;
-ACP: `route_id`/`route_protocol`/`service_id`/`virtual_key_id`/`agent_type`/`operation`).
-The ACP `route_protocol` filter separates data-plane turns (`route_protocol=acp`)
+ACP: `route_id`/`route_protocol`/`virtual_key_id`/`agent_type`/`operation`).
+The ACP `route_protocol` filter separates data-plane turns (`route_protocol=agent`)
 from the admin-plane audit spans the manager records when polling `/admin/acp`
 (`route_protocol=admin`).
 
 The LLM/MCP/ACP `breakdown`, `timeseries`, and `events` endpoints — and
 `interactions`/`interactions/summary` — also accept an `agent_id` filter. Unlike a
 plain column filter, `agent_id` resolves the agent server-side and scopes results
-by its full attribution — the durable `agent_id` tag **OR** the routes/ACP service
+by its full attribution — the durable `agent_id` tag **OR** the resource routes
 the agent currently owns — matching `GET /admin/agents/{id}/usage`. This lets
 untagged-but-mappable events (pre-tag history, or events written before a
-route/service was assigned to the agent) still surface, so an `agent_id`-filtered
+resource route was assigned to the agent) still surface, so an `agent_id`-filtered
 read is a strict superset of the per-agent rollup. An unknown `agent_id` returns
 `404`. The durable-tag arm is indexed by `(agent_id, started_at)`.
 
@@ -355,7 +349,8 @@ startup and by a periodic background janitor.
 - `GET /admin/agents/{id}/sessions/{session_id}/transcript`
 
 Agents are first-class management objects that bind an operator-facing identity
-to one runtime backend, currently an ACP service for managed local agents.
+to one runtime backend. Managed local Agents own ACP runtime config directly;
+builtin Agents are materialized in process.
 Pending permission responses contain runtime-neutral identity, expiry,
 resume-mode, allowlisted action id/display-name fields, and exact ACP option
 id/kind/display-name fields. They never expose

@@ -250,19 +250,15 @@ lower protocol layers still never import `pkg/agent`.
 
 ## 7. Execution surface
 
-- **Data-plane ingress**: a builtin agent is exposed through a
-  route-dispatched turn endpoint mirroring the ACP shape —
-  `POST /<builtin-route>/turn` streaming SSE — so clients and the frontend
-  keep one turn interaction language. The event vocabulary is mapped from ADK
+- **Data-plane ingress**: a builtin agent is exposed through the unified
+  `POST /<agent-route>/turn` streaming SSE endpoint, so clients and the
+  frontend keep one turn interaction language across runtimes. The event vocabulary is mapped from ADK
   Runner events onto the existing turn event names where semantics align
   (`delta`, `content`, `tool_call`, `usage`, `done`, `error`); whether the
   vocabulary is exactly the ACP set or a marked subset is an open question
   (see [§13](#13-open-questions)).
-- **Unified turn adapter**: before the AgentRoute cutover, the unified runtime
-  plan registers builtin as a turn-first `runtimeapi.Backend` and makes the
-  existing BuiltinRoute call it. AgentRoute later becomes the only public
-  ingress; this document continues to describe BuiltinRoute as current behavior
-  until that breaking milestone lands.
+- **Unified turn adapter**: builtin is registered as a turn-first
+  `runtimeapi.Backend`; AgentRoute is its only public ingress.
 - **Durable task layer (PB2)**: the Workflow `agent` task reuses that same
   turn adapter. PB2 adds durable Runner session/checkpoint integration rather
   than a second backend SPI, following the dependency gate in
@@ -367,7 +363,7 @@ subset of the ACP vocabulary). When a gated call interrupts:
    and appear as one list;
 2. the stream then ends with `done`, `stop_reason: "permission_required"`
    (the turn is suspended, not failed);
-3. the client resumes with `POST /<builtin-route>/turn` carrying
+3. the client resumes with `POST /<agent-route>/turn` carrying
    `session_id` and a `permission` field instead of `input`:
 
 ```json
@@ -389,7 +385,7 @@ subset of the ACP vocabulary). When a gated call interrupts:
    the checkpoint and ends the turn with `done`, `stop_reason: "cancelled"`,
    committing nothing.
 
-There is no separate `POST /<builtin-route>/permission` endpoint: for ACP that
+There is no separate builtin `POST /<agent-route>/permission` operation: for ACP that
 endpoint delivers a decision into a still-open stream, but for builtin the
 decision *is* the continuation request and produces the continuation stream.
 Reusing `/turn` keeps one ingress per route; `input` and `permission` are
@@ -483,15 +479,14 @@ released, never committed, so history is untouched). A checkpoint saved on
 cancel of an interactive turn is deleted along the existing cleanup path. The
 turn span records `result_status: "cancelled"`.
 
-**Admin surface.** `GET /admin/builtin/runtime` now also carries an
+**Admin surface.** `GET /admin/builtin/runtime` also carries an
 `in_flight` slice (agent id, session id, operation, topology kind, started
 at); `GET /admin/builtin/runtime/inflight` is the dedicated list (mirroring
-`/admin/acp/runtime/inflight`), and `DELETE
-/admin/builtin/runtime/turns/{agent_id}/{session_id}?mode=force|graceful`
-requests the cancel, reporting whether a turn was in flight (`404` when none
-matches). The turn's streaming client sees the cancelled terminal; the
-operator call is a fire-and-report request that does not block on teardown.
-agwctl exposes `builtin-runtime inflight` and `builtin-runtime cancel-turn`.
+`/admin/acp/runtime/inflight`). Logical cancellation uses
+`DELETE /admin/agents/{agent_id}/runs/{run_id}` with the backend's advertised
+force/graceful modes. The builtin runtime family remains diagnostic and does
+not duplicate common run control. agwctl exposes `builtin-runtime inflight`
+for diagnostics and `agent cancel` for logical cancellation.
 
 **Non-goals.** Resumable pause (a paused-then-resumed turn) is not in scope:
 graceful stop ends the turn, it does not suspend it for later continuation.
@@ -523,8 +518,8 @@ Workflow session/checkpoint integration.
   check for `topology.kind = "custom"`
 - the generic ADK host (`pkg/agent/builtin`): materialization cache, panic
   containment, limits, disabled semantics
-- route-dispatched turn ingress (`POST /<builtin-route>/turn`, SSE) through
-  `pkg/gateway/builtinroute` and the dispatcher `builtin` enablement
+- route-dispatched turn ingress (`POST /<agent-route>/turn`, SSE) through
+  `pkg/gateway/agentroute` and dispatcher `agent` enablement
 - the `builtin` usage event family and explicit `AgentID` span stamping; inner
   model/tool calls get child spans (kinds `llm`/`mcp`) parented under the turn
 - workspace view keyed off `runtime.type = "builtin"` (definition summary,
@@ -539,9 +534,8 @@ agent's own model), `agentsmd` (over inline virtual documents served by an
 in-memory backend — the file-backend gap that originally deferred it), and
 `reduction` (clear-only; truncation/offload waits for a workspace design,
 per [§4](#4-definition-schema)). Sessions are in-memory
-per the PB1 restart-loss semantics. The dispatcher `builtin` enablement exists
-in the Caddy binary (`agw`); `agwd` does not expose builtin ingress, matching
-its ACP posture.
+per the PB1 restart-loss semantics. Dispatcher `agent` enablement is wired in
+both Caddy and standalone bootstrap paths.
 
 **PB1b — interrupt and human-in-the-loop tool permissions:** implemented
 ([§9](#9-interrupt-and-human-in-the-loop-tool-permissions)).
@@ -549,7 +543,7 @@ its ACP posture.
 - root-level `permissions` block (`auto_approve` default / `interactive`),
   approval gate over the `einotool` bridge, ADK Runner
   checkpoint/interrupt/resume with an in-memory `CheckPointStore`
-- `permission` turn event + resume via `POST /<builtin-route>/turn` with a
+- `permission` turn event + resume via `POST /<agent-route>/turn` with a
   `permission` field; every lifecycle edge (TTL, definition update, capacity,
   unanswered calls) fails closed
 - `GET /admin/builtin/runtime` pending-permission view
