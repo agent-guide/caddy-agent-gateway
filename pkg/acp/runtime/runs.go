@@ -2,16 +2,19 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 	"time"
 )
 
+var errNativeCancelSent = errors.New("native session cancel sent")
+
 type activeRun struct {
 	ownerID, runID, sessionID string
 	startedAt                 time.Time
-	cancel                    context.CancelFunc
+	cancel                    context.CancelCauseFunc
 	instance                  *instance
 	cancelRequested           bool
 }
@@ -33,7 +36,7 @@ func (r *activeRunRegistry) begin(parent context.Context, ownerID, runID, sessio
 	if r.runs[key] != nil {
 		return parent, nil
 	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	run := &activeRun{ownerID: ownerID, runID: runID, sessionID: sessionID, startedAt: time.Now().UTC(), cancel: cancel}
 	r.runs[key] = run
 	return ctx, run
@@ -57,7 +60,7 @@ func (r *activeRunRegistry) bind(run *activeRun, inst *instance) error {
 	if err := inst.cancel(); err != nil {
 		return fmt.Errorf("%w: session/cancel: %v", ErrRunNotReady, err)
 	}
-	run.cancel()
+	run.cancel(errNativeCancelSent)
 	return ErrTurnCancelled
 }
 
@@ -85,7 +88,7 @@ func (r *activeRunRegistry) finish(run *activeRun) {
 		delete(r.runs, activeRunKey(run.ownerID, run.runID))
 	}
 	r.mu.Unlock()
-	run.cancel()
+	run.cancel(nil)
 }
 func (r *activeRunRegistry) cancel(ownerID, runID string) error {
 	r.mu.Lock()
@@ -107,7 +110,7 @@ func (r *activeRunRegistry) cancel(ownerID, runID string) error {
 	if err := inst.cancel(); err != nil {
 		return fmt.Errorf("%w: session/cancel: %v", ErrRunNotReady, err)
 	}
-	cancel()
+	cancel(errNativeCancelSent)
 	return nil
 }
 func (r *activeRunRegistry) list(ownerID string) []ActiveRunInfo {

@@ -310,6 +310,22 @@ func TestExactRunCancelBeforeInstanceBindIsRetryable(t *testing.T) {
 	runs.finish(run)
 }
 
+func TestExactRunCancelMarksNativeFrameAsSent(t *testing.T) {
+	runs := newActiveRunRegistry()
+	ctx, run := runs.begin(t.Context(), "owner", "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")
+	inst := &instance{agent: stubAgent{}, t: &scriptedTransport{}, rawSessionID: "sess-1", sessionID: "sess-1"}
+	if err := runs.bind(run, inst); err != nil {
+		t.Fatal(err)
+	}
+	if err := runs.cancel("owner", run.runID); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(context.Cause(ctx), errNativeCancelSent) {
+		t.Fatalf("cancel cause=%v, want errNativeCancelSent", context.Cause(ctx))
+	}
+	runs.finish(run)
+}
+
 func TestRetirementCancelBeforeBindStopsRunBeforePrompt(t *testing.T) {
 	runs := newActiveRunRegistry()
 	ctx, run := runs.begin(t.Context(), "owner", "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "")

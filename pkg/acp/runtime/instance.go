@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -561,7 +562,13 @@ func (i *instance) prompt(ctx context.Context, req TurnRequest, emit EventSink) 
 	for {
 		select {
 		case <-ctx.Done():
-			i.cancel()
+			// Exact-run cancellation writes session/cancel before cancelling
+			// the context. Do not emit a second native frame when that marked
+			// cancellation reaches the prompt loop. Ordinary parent timeout or
+			// disconnect still needs to propagate cancellation to the agent.
+			if !errors.Is(context.Cause(ctx), errNativeCancelSent) {
+				i.cancel()
+			}
 			return "cancelled", nil
 		case res := <-done:
 			if res.err != nil {

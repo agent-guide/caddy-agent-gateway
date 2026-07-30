@@ -416,11 +416,20 @@ func smokeExactRunCancel(t *testing.T, cfg runtimeconfig.Config) {
 	if len(active) != 2 || active[0].RunID != runA || active[1].RunID != runB || active[0].SessionID == "" || active[1].SessionID == "" {
 		t.Fatalf("active runs missing native session bindings: %+v", active)
 	}
-	sessions := map[string]string{active[0].RunID: active[0].SessionID, active[1].RunID: active[1].SessionID}
+	// ListActiveRuns exposes host-bound stable session ids. Native
+	// session/cancel must use the corresponding raw protocol id, which differs
+	// for real Codex and OpenCode adapters. Snapshot the protocol ids from each
+	// exact run binding so this acceptance test verifies the wire frame targets
+	// the intended run without conflating the two id domains.
+	protocolSessions := activeRunProtocolSessions(m, cfg.OwnerID)
+	if protocolSessions[runA] == "" || protocolSessions[runB] == "" {
+		t.Fatalf("active runs missing protocol session bindings: %+v", protocolSessions)
+	}
+	t.Logf("active protocol sessions: %s=%q %s=%q", runA, protocolSessions[runA], runB, protocolSessions[runB])
 	if err := m.CancelRun(cfg.OwnerID, runA); err != nil {
 		t.Fatalf("CancelRun: %v", err)
 	}
-	assertNativeCancelFrame(t, cancelFrames, sessions[runA])
+	assertNativeCancelFrame(t, cancelFrames, protocolSessions[runA])
 	close(releases[runA])
 	select {
 	case result := <-done:
@@ -436,10 +445,15 @@ func smokeExactRunCancel(t *testing.T, cfg runtimeconfig.Config) {
 	if len(m.ListInstances()) != 2 {
 		t.Fatalf("exact cancellation removed or replaced a pool entry")
 	}
+	select {
+	case raw := <-cancelFrames:
+		t.Fatalf("exact cancellation wrote a duplicate session/cancel frame: %s", raw)
+	default:
+	}
 	if err := m.CancelRun(cfg.OwnerID, runB); err != nil {
 		t.Fatalf("cleanup CancelRun: %v", err)
 	}
-	assertNativeCancelFrame(t, cancelFrames, sessions[runB])
+	assertNativeCancelFrame(t, cancelFrames, protocolSessions[runB])
 	close(releases[runB])
 	select {
 	case result := <-done:
@@ -449,6 +463,18 @@ func smokeExactRunCancel(t *testing.T, cfg runtimeconfig.Config) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("unrelated run did not terminate during cleanup")
 	}
+}
+
+func activeRunProtocolSessions(m *Manager, ownerID string) map[string]string {
+	out := map[string]string{}
+	m.runs.mu.Lock()
+	defer m.runs.mu.Unlock()
+	for _, run := range m.runs.runs {
+		if run.ownerID == ownerID && run.instance != nil {
+			out[run.runID] = run.instance.protocolSessionID()
+		}
+	}
+	return out
 }
 
 func TestSmokeOpencodeExactRunCancel(t *testing.T) {
