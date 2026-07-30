@@ -170,6 +170,12 @@ Common top-level sections:
 - `cliAuthAuthenticators`
 - `mcpServices`
 - `mcpRoutes`
+- `agents`
+- `agentRoutes`
+
+Managed credentials are not included in bundle apply/export. Treat an exported
+bundle as gateway configuration, not as a complete backup: back up and restore
+credentials separately through the credentials Admin API or manager UI.
 
 ## Current Caveat
 

@@ -22,7 +22,17 @@ import (
 
 type AgentView struct {
 	agentpkg.Agent
-	Source string `json:"source"`
+	Source        string                     `json:"source"`
+	RuntimeStatus *runtimeapi.RuntimeSummary `json:"runtime_status,omitempty"`
+	Capabilities  *runtimeapi.Capabilities   `json:"capabilities,omitempty"`
+}
+
+func (h *Handler) agentView(ctx context.Context, a agentpkg.Agent, source string) AgentView {
+	view := AgentView{Agent: a, Source: source}
+	if summary, caps, err := h.agentRuntimeRead(ctx, a); err == nil {
+		view.RuntimeStatus, view.Capabilities = summary, caps
+	}
+	return view
 }
 
 func (h *Handler) agentManagerOrError() (*agentpkg.Manager, error) {
@@ -45,7 +55,7 @@ func (h *Handler) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	}
 	views := make([]AgentView, 0, len(items))
 	for _, item := range items {
-		views = append(views, AgentView{Agent: item, Source: "config_store"})
+		views = append(views, h.agentView(r.Context(), item, "config_store"))
 	}
 	_ = httpjson.Write(w, http.StatusOK, map[string]any{"items": views})
 }
@@ -71,7 +81,7 @@ func (h *Handler) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = httpjson.Write(w, http.StatusCreated, AgentView{Agent: created, Source: "config_store"})
+	_ = httpjson.Write(w, http.StatusCreated, h.agentView(r.Context(), created, "config_store"))
 }
 
 func (h *Handler) handleGetAgent(w http.ResponseWriter, r *http.Request) {
@@ -89,7 +99,7 @@ func (h *Handler) handleGetAgent(w http.ResponseWriter, r *http.Request) {
 		_ = httpjson.Error(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = httpjson.Write(w, http.StatusOK, AgentView{Agent: cfg, Source: "config_store"})
+	_ = httpjson.Write(w, http.StatusOK, h.agentView(r.Context(), cfg, "config_store"))
 }
 
 func (h *Handler) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +137,7 @@ func (h *Handler) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 			h.logger.Error("cancel Agent runs after runtime change", zap.String("agent_id", id), zap.Error(err))
 		}
 	}
-	_ = httpjson.Write(w, http.StatusOK, AgentView{Agent: updated, Source: "config_store"})
+	_ = httpjson.Write(w, http.StatusOK, h.agentView(r.Context(), updated, "config_store"))
 }
 
 func (h *Handler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {

@@ -94,17 +94,26 @@ Configuration-type objects are:
 
 - `providers`
 - `managedModels`
-- `routes`
+- `llmRoutes`
 - `virtualKeys`
-- `credentials`
+- `mcpServices`
+- `mcpRoutes`
+- `agents`
+- `agentRoutes`
+- `cliAuthAuthenticators`
 
 These objects are expected to converge on one declarative workflow centered on gateway bundle YAML.
+
+Managed `credentials` are also configuration-type objects, but they are the
+one current exception: bundle apply/export does not include them. An exported
+bundle is therefore not a complete backup of gateway authentication state.
 
 ### 5.2 Operational-Type Objects
 
 Operational-type objects are:
 
-- `cliauth`
+- CLI-auth login sessions, login status, and refresher runtime state
+- ephemeral provider, MCP, Agent, and dispatcher runtime state
 
 These remain command-oriented runtime operations and should continue to use explicit CLI arguments and subcommands rather than bundle YAML.
 
@@ -177,8 +186,8 @@ managedModels:
 
 llmRoutes:
   - id: chat-prod
-    llm_api: openai
-    match:
+    protocol: openai
+    match_policy:
       path_prefix: /
       methods:
         - POST
@@ -192,6 +201,38 @@ virtualKeys:
   - id: vk-local-test
     allowed_route_ids:
       - chat-prod
+
+mcpServices:
+  - id: tools
+    name: Tools
+    transport: stdio
+    command: ./tools-server
+
+mcpRoutes:
+  - id: mcp-tools
+    kind: mcp
+    service_id: tools
+    match_policy:
+      path_prefix: /mcp/tools
+
+agents:
+  - id: assistant
+    name: Assistant
+    runtime:
+      type: http
+      http:
+        endpoint: https://example.com/agent
+
+agentRoutes:
+  - id: assistant
+    kind: agent
+    agent_id: assistant
+    match_policy:
+      path_prefix: /agents/assistant
+
+cliAuthAuthenticators:
+  - name: codex
+    enabled: true
 ```
 
 `virtualKeys[].id` is the declarative identifier for config-store bundle workflows such as `agwctl gateway apply`. Standalone `--static-config` does not support `virtualKeys`.
@@ -204,14 +245,19 @@ The current implemented bundle path covers:
 
 - `providers`
 - `managedModels`
-- `routes`
+- `llmRoutes`
 - `virtualKeys`
+- `cliAuthAuthenticators`
+- `mcpServices`
+- `mcpRoutes`
+- `agents`
+- `agentRoutes`
 
 The current implemented bundle path does not yet cover:
 
 - `credentials`
-- local `agwctl cliauth` state
 - remote CLI login sessions and login status
+- CLI-auth refresher runtime state
 - ephemeral runtime state
 
 That means `credentials` are already classified as configuration-type objects, but are not yet represented in the current bundle implementation.
@@ -246,9 +292,14 @@ Current validation includes:
 - duplicate managed model keys
 - duplicate route IDs
 - duplicate virtual key keys
+- duplicate MCP service IDs
+- duplicate Agent IDs
+- duplicate CLI-authenticator names
 - provider type existence checks
 - route target references to provider IDs inside the bundle
 - virtual key route references inside the bundle
+- Agent resource/route references inside the bundle
+- AgentRoute references to Agents inside the bundle
 - route normalization and route definition validation through existing route helpers
 
 Validation is implemented in `pkg/gatewaybundle.Validate()`.
@@ -270,8 +321,13 @@ Current object application order:
 
 1. `providers`
 2. `managedModels`
-3. `routes`
-4. `virtualKeys`
+3. `llmRoutes`
+4. `mcpServices`
+5. `mcpRoutes`
+6. `agents`
+7. `agentRoutes`
+8. `virtualKeys`
+9. `cliAuthAuthenticators`
 
 Current non-behavior:
 
@@ -292,9 +348,14 @@ Current non-behavior:
 
 Current behavior:
 
-- export current implemented object families only
+- export providers, managed models, LLM routes, virtual keys, CLI-authenticator
+  configuration, MCP services/routes, and Agents/AgentRoutes
 - omit Admin API read-only/source wrapper fields from the re-apply file
 - emit a re-usable bundle shape intended for later `validate` and `apply`
+
+Export does not read or serialize managed `credentials`. Operators must manage
+and back up those separately through `/admin/credentials`, and any UI exposing
+bundle import/export must state this limitation before the action.
 
 Export is designed for operator editing and round-tripping, not for lossless archival of every response field.
 
@@ -309,6 +370,11 @@ Current standalone integration does the following:
 - instantiate static providers from bundle provider configs
 - register static provider API-key credentials into the shared credential manager
 - pass static providers, managed models, and routes into `gateway.BootstrapOptions`
+
+The shared schema contains more dynamic object families than standalone static
+loading supports. Standalone validates its own narrower startup boundary; the
+full schema is intended for config-store workflows through `agwctl gateway
+apply`.
 
 The resulting runtime behavior matches the existing static-object model:
 

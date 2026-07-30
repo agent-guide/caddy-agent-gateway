@@ -77,6 +77,10 @@ Export remote gateway objects as bundle YAML:
   export -f ./gateway.bundle.yaml
 ```
 
+The exported bundle does not include managed upstream credentials. Preserve
+credentials separately through `/admin/credentials`; bundle export is not a
+complete gateway backup.
+
 ## Agent Commands
 
 Agents and unified ingress routes are bundle objects (`agents` and
@@ -95,6 +99,10 @@ Agents and unified ingress routes are bundle objects (`agents` and
 ./agwctl gateway agent transcript <agent-id> <session-id> [--cwd <cwd>]
 ./agwctl gateway agent delete <agent-id>
 ```
+
+The default `agent list` table includes `RUNTIME-STATE` and `EXECUTABLE`.
+`not_executable` / `no` means the Agent and route can be configured but turns
+will return `501 runtime_not_executable`.
 
 Manage AgentRoutes with:
 

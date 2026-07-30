@@ -302,6 +302,34 @@ func TestGatewayMCPServiceListCommand(t *testing.T) {
 	}
 }
 
+func TestGatewayAgentListProminentlyShowsNonExecutableRuntime(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/admin/agents":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{{
+				"id": "http-agent", "name": "HTTP Agent", "runtime": map[string]any{
+					"type": "http", "http": map[string]any{"endpoint": "https://example.com/agent"},
+				},
+				"runtime_status": map[string]any{"type": "http", "state": "not_executable", "executable": false},
+				"capabilities":   map[string]any{"executable": false},
+			}}})
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	stdout, stderr, err := executeAGWCTL(t, "gateway", "--admin-addr", srv.URL, "agent", "list")
+	if err != nil {
+		t.Fatalf("gateway agent list: %v\nstderr=%s", err, stderr)
+	}
+	for _, want := range []string{"RUNTIME-STATE", "EXECUTABLE", "not_executable", "no"} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
 func TestGatewayMCPServiceGetAndDeleteCommands(t *testing.T) {
 	var deleteCalled atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

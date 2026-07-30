@@ -351,6 +351,11 @@ startup and by a periodic background janitor.
 Agents are first-class management objects that bind an operator-facing identity
 to one runtime backend. Managed local Agents own ACP runtime config directly;
 builtin Agents are materialized in process.
+Agent list/get/create/update views include `runtime_status` and `capabilities`.
+`capabilities.executable=false` together with
+`runtime_status.state=not_executable` means the Agent and AgentRoute may exist
+but `POST /turn` will return `501 runtime_not_executable`; it is not a route
+matcher or VirtualKey authentication failure.
 Pending permission responses contain runtime-neutral identity, expiry,
 resume-mode, allowlisted action id/display-name fields, and exact ACP option
 id/kind/display-name fields. They never expose

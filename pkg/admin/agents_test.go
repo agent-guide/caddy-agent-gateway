@@ -18,6 +18,22 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 )
 
+func TestAgentViewExposesNonExecutableRuntime(t *testing.T) {
+	h := &Handler{}
+	a := agentpkg.Agent{
+		ID: "http-agent", Name: "HTTP Agent",
+		Runtime: agentpkg.Runtime{Type: agentpkg.RuntimeTypeHTTP, HTTP: &agentpkg.HTTPRuntime{Endpoint: "https://example.com/agent"}},
+	}
+
+	view := h.agentView(t.Context(), a, "config_store")
+	if view.RuntimeStatus == nil || view.RuntimeStatus.State != runtimeapi.RuntimeStateNotExecutable {
+		t.Fatalf("runtime status = %#v, want not_executable", view.RuntimeStatus)
+	}
+	if view.Capabilities == nil || view.Capabilities.Executable {
+		t.Fatalf("capabilities = %#v, want executable=false", view.Capabilities)
+	}
+}
+
 type permissionResponseBackend struct{ resolved bool }
 
 func (*permissionResponseBackend) RuntimeType() string { return agentpkg.RuntimeTypeBuiltin }

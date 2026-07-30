@@ -336,7 +336,7 @@ func printGatewayMCPRuntimeHistoryTable(items []adminclient.MCPRuntimeCompletedR
 }
 
 func printGatewayAgentsTable(items []adminclient.AgentView) {
-	headers := []string{"ID", "NAME", "RUNTIME", "RUNTIME-TARGET", "DISABLED", "SOURCE"}
+	headers := []string{"ID", "NAME", "RUNTIME", "RUNTIME-STATE", "EXECUTABLE", "RUNTIME-TARGET", "DISABLED", "SOURCE"}
 	rows := make([][]string, 0, len(items))
 	for _, item := range items {
 		target := ""
@@ -345,10 +345,20 @@ func printGatewayAgentsTable(items []adminclient.AgentView) {
 		} else if item.Runtime.HTTP != nil {
 			target = item.Runtime.HTTP.Endpoint
 		}
+		state := "unknown"
+		if item.RuntimeStatus != nil && item.RuntimeStatus.State != "" {
+			state = string(item.RuntimeStatus.State)
+		}
+		executable := "unknown"
+		if item.Capabilities != nil {
+			executable = boolStr(item.Capabilities.Executable)
+		}
 		rows = append(rows, []string{
 			dash(item.ID),
 			dash(item.Name),
 			dash(item.Runtime.Type),
+			dash(state),
+			executable,
 			dash(target),
 			boolStr(item.Disabled),
 			dash(item.Source),
