@@ -84,13 +84,13 @@
           <h3>Pooled, scheduled, refreshed</h3>
           <p>
             Upstream credentials are managed objects, not strings in app config.
-            Pool several credentials per provider, schedule across them, and let
-            the gateway keep OAuth-style CLI credentials fresh in the background.
+            Pool several credentials per provider, schedule across them, and
+            refresh OAuth-style CLI credentials at request time.
           </p>
         </div>
         <ul class="feature-list">
           <li><b>Credential pool</b> Multiple credentials per provider with selection state and scheduling.</li>
-          <li><b>CLI auth built in</b> Sign in with Codex, Claude Code, or Gemini CLI subscriptions; the gateway runs the login flow and auto-refreshes tokens.</li>
+          <li><b>CLI subscription auth</b> Sign in with Codex or Claude Code CLI subscriptions through the companion agw-auth tool; the gateway refreshes tokens at request time.</li>
           <li><b>Virtual keys</b> Consumers never see upstream secrets — issue, rotate, and revoke gateway-owned keys per app or team.</li>
           <li><b>Fail-closed auth</b> Routes can require a virtual key; unauthenticated traffic never reaches a provider.</li>
         </ul>
@@ -170,8 +170,8 @@
           <h3>Operate everything remotely</h3>
           <p>
             A complete Admin API covers the whole object model, plus runtime
-            surfaces: model discovery and refresh, CLI login flows, MCP/ACP runtime
-            state, pending permission decisions, and metrics queries.
+            surfaces: model discovery and refresh, MCP/ACP runtime state,
+            pending permission decisions, and metrics queries.
           </p>
         </div>
         <ul class="feature-list">
@@ -238,8 +238,7 @@ http://127.0.0.1:8080 {
         llm_api openai
         llm_api anthropic
         mcp
-        acp
-        builtin
+        agent
     }
 }</pre></div>
       <div class="cta-row" style="margin-top: 32px;">

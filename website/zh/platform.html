@@ -77,15 +77,15 @@
       <div class="feature-row">
         <div>
           <span class="kicker">credentials</span>
-          <h3>池化、调度、自动刷新</h3>
+          <h3>池化、调度、按需刷新</h3>
           <p>
             上游凭据是受管对象，而不是应用配置里的字符串。
-            每个提供商可池化多条凭据并在其间调度，OAuth 类 CLI 凭据由网关在后台保持新鲜。
+            每个提供商可池化多条凭据并在其间调度，OAuth 类 CLI 凭据在请求时刷新。
           </p>
         </div>
         <ul class="feature-list">
           <li><b>凭据池</b> 每个提供商多条凭据，带选择状态与调度。</li>
-          <li><b>内置 CLI 登录</b> 用 Codex、Claude Code 或 Gemini CLI 订阅登录；网关代跑登录流程并自动刷新 token。</li>
+          <li><b>CLI 订阅登录</b> 通过配套的 agw-auth 工具用 Codex 或 Claude Code CLI 订阅登录；网关在请求时刷新 token。</li>
           <li><b>虚拟密钥</b> 消费方永远接触不到上游密钥 —— 按应用或团队签发、轮换、吊销网关自有密钥。</li>
           <li><b>fail-closed 鉴权</b> 路由可强制要求虚拟密钥；未鉴权的流量到不了任何提供商。</li>
         </ul>
@@ -160,7 +160,7 @@
           <h3>远程运营一切</h3>
           <p>
             完整的 Admin API 覆盖整个对象模型，外加运行时表面：
-            模型发现与刷新、CLI 登录流程、MCP/ACP 运行时状态、待裁决的权限请求、指标查询。
+            模型发现与刷新、MCP/ACP 运行时状态、待裁决的权限请求、指标查询。
           </p>
         </div>
         <ul class="feature-list">
@@ -225,8 +225,7 @@ http://127.0.0.1:8080 {
         llm_api openai
         llm_api anthropic
         mcp
-        acp
-        builtin
+        agent
     }
 }</pre></div>
       <div class="cta-row" style="margin-top: 32px;">

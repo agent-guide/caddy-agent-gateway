@@ -54,7 +54,7 @@
       </div>
       <div class="diagram-frame">
         <span class="kicker">live traffic — one control plane</span>
-        <svg viewBox="0 0 640 360" role="img" aria-label="Diagram: consumers drive agents through the AgentGuide gateway; agents call back through the same gateway for LLM and MCP resources">
+        <svg viewBox="0 0 640 360" role="img" aria-label="Diagram: consumers drive builtin and ACP agents through the AgentGuide gateway; HTTP agents are registered identities with execution on the roadmap; agents call back through the gateway for LLM and MCP resources">
           <!-- left: consumers -->
           <rect class="dg-box" x="10" y="52" width="130" height="40" rx="4"></rect>
           <text class="dg-label dg-label-strong" x="26" y="76">Applications</text>
@@ -75,14 +75,14 @@
           <text class="dg-label dg-label-accent" x="252" y="242">orchestrate</text>
           <text class="dg-label" x="252" y="272">usage events + traces</text>
 
-          <!-- right: agents — driven by the gateway, calling back through it -->
+          <!-- right: executable ACP agents plus registered HTTP identities -->
           <text class="dg-label dg-group" x="500" y="30">agents</text>
           <rect class="dg-box" x="500" y="38" width="130" height="40" rx="4"></rect>
           <text class="dg-label dg-label-strong" x="516" y="56">ACP agents</text>
           <text class="dg-label" x="516" y="70">codex · opencode</text>
           <rect class="dg-box" x="500" y="88" width="130" height="40" rx="4"></rect>
-          <text class="dg-label dg-label-strong" x="516" y="106">HTTP agents</text>
-          <text class="dg-label" x="516" y="120">your own services</text>
+          <text class="dg-label dg-label-strong" x="516" y="106">HTTP identity</text>
+          <text class="dg-label" x="516" y="120">execution roadmap</text>
 
           <!-- right: resources — call-back targets -->
           <text class="dg-label dg-group" x="500" y="168">resources</text>
@@ -206,7 +206,7 @@
           </p>
         </div>
         <div class="card">
-          <span class="kicker">runtime · http</span>
+          <span class="kicker">identity · http · roadmap</span>
           <h3>HTTP agents</h3>
           <p>
             Agents on your infrastructure can register as first-class identities
@@ -287,7 +287,7 @@
             <li>OpenAI, Anthropic, Gemini, DeepSeek, Qwen, Zhipu, OpenRouter, Ollama and more</li>
             <li>OpenAI- and Anthropic-compatible endpoints, plus a Claude Code-ready profile</li>
             <li>Logical model routing: one model name, many candidate providers, automatic fallback</li>
-            <li>Credential pooling with scheduling — including CLI-auth credentials (Codex, Claude Code, Gemini)</li>
+            <li>Credential pooling with scheduling — including CLI subscription credentials (Codex, Claude Code)</li>
           </ul>
           <a class="more" href="platform.html">Platform details →</a>
         </div>

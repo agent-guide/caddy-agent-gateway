@@ -53,7 +53,7 @@
       </div>
       <div class="diagram-frame">
         <span class="kicker">live traffic — one control plane</span>
-        <svg viewBox="0 0 640 360" role="img" aria-label="示意图：消费方经 AgentGuide 网关驱动 agent；agent 再经同一网关回调 LLM 与 MCP 资源">
+        <svg viewBox="0 0 640 360" role="img" aria-label="示意图：消费方经 AgentGuide 网关驱动 builtin 与 ACP agent；HTTP agent 当前是已注册身份，执行仍在路线图上；agent 再经网关回调 LLM 与 MCP 资源">
           <!-- left: consumers -->
           <rect class="dg-box" x="10" y="52" width="130" height="40" rx="4"></rect>
           <text class="dg-label dg-label-strong" x="26" y="76">Applications</text>
@@ -74,14 +74,14 @@
           <text class="dg-label dg-label-accent" x="252" y="242">orchestrate</text>
           <text class="dg-label" x="252" y="272">usage events + traces</text>
 
-          <!-- right: agents — driven by the gateway, calling back through it -->
+          <!-- right: executable ACP agents plus registered HTTP identities -->
           <text class="dg-label dg-group" x="500" y="30">agents</text>
           <rect class="dg-box" x="500" y="38" width="130" height="40" rx="4"></rect>
           <text class="dg-label dg-label-strong" x="516" y="56">ACP agents</text>
           <text class="dg-label" x="516" y="70">codex · opencode</text>
           <rect class="dg-box" x="500" y="88" width="130" height="40" rx="4"></rect>
-          <text class="dg-label dg-label-strong" x="516" y="106">HTTP agents</text>
-          <text class="dg-label" x="516" y="120">your own services</text>
+          <text class="dg-label dg-label-strong" x="516" y="106">HTTP identity</text>
+          <text class="dg-label" x="516" y="120">execution roadmap</text>
 
           <!-- right: resources — call-back targets -->
           <text class="dg-label dg-group" x="500" y="168">resources</text>
@@ -198,7 +198,7 @@
           </p>
         </div>
         <div class="card">
-          <span class="kicker">runtime · http</span>
+          <span class="kicker">identity · http · roadmap</span>
           <h3>HTTP agent</h3>
           <p>
             运行在你自己基础设施上的 agent 可以注册成一等身份，并声明资源与路由引用。
@@ -275,7 +275,7 @@
             <li>OpenAI、Anthropic、Gemini、DeepSeek、通义千问、智谱、OpenRouter、Ollama 等</li>
             <li>OpenAI 与 Anthropic 兼容端点，外加 Claude Code 即插即用的 CLI profile</li>
             <li>逻辑模型路由：一个模型名、多个候选提供商、自动回退</li>
-            <li>凭据池化调度 —— 包括 CLI 订阅凭据（Codex、Claude Code、Gemini）</li>
+            <li>凭据池化调度 —— 包括 CLI 订阅凭据（Codex、Claude Code）</li>
           </ul>
           <a class="more" href="platform.html">平台详情 →</a>
         </div>
