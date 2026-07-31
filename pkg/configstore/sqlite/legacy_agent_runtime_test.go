@@ -21,6 +21,31 @@ func TestPreflightLegacyAgentRuntimeMissingFileDoesNotCreate(t *testing.T) {
 	}
 }
 
+func TestPreflightLegacyAgentRuntimeAcceptsRelativePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "clean.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Ping(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativePath, err := filepath.Rel(workingDir, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := PreflightLegacyAgentRuntime(context.Background(), relativePath); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPreflightLegacyAgentRuntimeCollectsFamiliesWithoutChangingDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open("sqlite", path)

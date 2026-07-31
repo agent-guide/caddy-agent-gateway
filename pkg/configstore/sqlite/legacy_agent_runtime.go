@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -43,13 +44,17 @@ func PreflightLegacyAgentRuntime(ctx context.Context, path string) error {
 	if path == "" {
 		return fmt.Errorf("sqlite path is required")
 	}
-	if _, err := os.Stat(path); err != nil {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve sqlite path: %w", err)
+	}
+	if _, err := os.Stat(absolutePath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
 	}
-	dsn := (&url.URL{Scheme: "file", Path: path}).String() + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
+	dsn := (&url.URL{Scheme: "file", Path: absolutePath}).String() + "?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(5000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return fmt.Errorf("open legacy preflight: %w", err)
