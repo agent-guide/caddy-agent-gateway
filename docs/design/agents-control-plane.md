@@ -14,8 +14,8 @@ control plane for agents:
   runtime backend
 - govern the LLM and MCP resources an agent can use
 - observe sessions, transcripts, permissions, usage, and call chains
-- coordinate agent-level workflow tasks, policies, scheduling, and future
-  handoffs through the shared workflow runtime
+- provide a stable AgentRoute execution boundary for upper-layer Workflow
+  Workers without owning Project, Task, schedule, or handoff state
 
 This is the layer that turns the existing LLM, MCP, ACP, and metrics surfaces
 from separate protocol gateways into one agent gateway.
@@ -39,7 +39,7 @@ The repository already contains the protocol-level building blocks:
 
 `pkg/agent` should be the product layer that composes these building blocks.
 It should not replace `pkg/llm`, `pkg/mcp`, or `pkg/acp`; it should organize
-them around agent management and orchestration.
+them around Agent management, governance, and execution.
 
 The released ACP model stores execution config directly under
 `Agent.runtime.acp`; `agent_id` owns the runtime pool. There is no independent
@@ -296,11 +296,12 @@ This is deliberate, for three reasons:
 Therefore:
 
 - **Multiple real agents** are modeled as multiple `Agent` objects. Coordinating
-  them is a layer *above* agents — an `agent` Workflow Task runs one agent and a
-  Workflow DAG coordinates A→B handoff or a larger graph. The workflow is a
-  separate gateway-owned object that *references* several agents; it does not
-  live inside any one agent. The authoritative execution model is
-  [Unified Workflow Runtime](workflow-runtime.md).
+  them is a layer *above* Agent Gateway. An upper-layer workbench owns the
+  Project/Team/business-Task model and a durable engine such as Temporal owns
+  the Workflow execution. Its Worker invokes one Agent through AgentRoute for
+  each AI Activity. A→B handoff is a Business Workflow edge, not a
+  gateway-owned Agent DAG. See
+  [Gateway Request Pipeline And External Orchestration](request-pipeline.md).
 - **One logical agent over interchangeable backends** (failover / load balance /
   A-B) is a different need and is out of scope here; see Open Questions.
 
@@ -373,30 +374,26 @@ permissions, so its workspace degrades to the runtime-agnostic parts (the
 Agent object, linked resources, tasks, and metrics/interaction traces). Do not
 hard-code ACP fields as required in the workspace shape.
 
-### 5.3 Agent Task
+### 5.3 External Business Tasks
 
-This section defines the **product semantics** of an Agent Task only. Its
-**execution model** — the Workflow Run/Task Run state machines, invocation
-policies, scheduling, retry, and task-type definitions — lives in
-[Unified Workflow Runtime](workflow-runtime.md). An Agent Task is not a
-separate object, state machine, or API family; it is a Workflow Task whose
-`type` is `agent`, so this document does not duplicate that machinery.
+An Agent Gateway turn is an execution primitive, not a durable business Task.
+The gateway accepts one request through AgentRoute, dispatches it through the
+Agent's selected runtime backend, streams its common events, and exposes exact
+run cancellation and inspection where supported.
 
-In product terms, an Agent Task is an external unit of work owned by the
-gateway: run this agent on a prompt now, resume a session with new input,
-schedule maintenance, or hand off from agent A to agent B. It is never the
-agent's internal plan. Execution dispatches through a runtime backend
-([5.4](#54-runtime-backends)), selected by the agent's `runtime.type`. A
-one-off "run this agent" operation is a one-task Workflow Run (defaulting to
-durable, per [workflow-runtime §1](workflow-runtime.md#1-status)); schedules
-target Workflow Definitions and create durable runs.
+An upper-layer product may represent that turn as an AI Task or durable
+Workflow Activity. That product owns Project membership, assignment,
+scheduling, approval, retry policy, and durable state. Its Workflow Worker
+calls `POST /<agent-route>/turn` using scoped gateway credentials and persists
+the mapping between its business task id and the returned gateway run and
+interaction ids. Agent Gateway does not expose a second AgentTask object or
+gateway-owned Task state machine.
 
 ### 5.4 Runtime Backends
 
 A runtime backend is the turn-first seam between a stable Agent identity and
 one native execution runtime. It is selected by `agent.runtime.type` and is
-shared by every caller: the current runtime-specific routes during migration,
-the target unified `AgentRoute`, and the Workflow Runtime's `agent` task. The
+shared by direct AgentRoute callers and upper-layer Workflow Workers. The
 authoritative implementation sequence is
 [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md).
 
@@ -422,12 +419,10 @@ Optional capabilities are narrow interfaces such as `SessionLister`,
 and `HealthChecker`. Unsupported capabilities fail closed; a backend never
 silently emulates them or falls through to another runtime.
 
-There is deliberately no task-first `StartTask` SPI. The Workflow `agent` task
-handler adapts its typed input to `TurnRequest`, invokes `ServeTurn`, consumes
-the common event envelope, and maps the terminal result into its Task Run. The
-Workflow Runner remains the sole owner of durable state, scheduling, retry,
-idempotency, permission suspension, and handoff. The backend owns one Agent
-turn and its native capability behavior.
+There is deliberately no task-first `StartTask` SPI. `ServeTurn` is the stable
+data-plane operation for interactive callers and external Workflow Activities.
+The external engine owns durable state, scheduling, retry, human approval, and
+handoff; the backend owns one Agent turn and its native capability behavior.
 
 #### Runtime categories and adapters
 
@@ -471,16 +466,16 @@ The backend registry rejects duplicate runtime types at startup. An Agent whose
 runtime backend is not linked remains manageable but is not executable and
 fails with `runtime_not_executable`. A later runtime category can add another
 adapter behind this registry without adding another route family or changing
-the Workflow Runner.
+the AgentRoute contract.
 
 #### Executor contract
 
 Every backend must accept the runtime-neutral turn identity, emit the ordered
 common event envelope, report exactly one terminal result, and expose
-capabilities honestly. Opting into Workflow retry or `requeue` recovery
-additionally requires the adapter to propagate or enforce the stable logical
-execution key from
-[workflow-runtime §11](workflow-runtime.md#11-cancellation-retry-and-idempotency).
+capabilities honestly. An external Workflow Activity may retry a turn only
+when the adapter can propagate or enforce a stable caller-supplied logical
+execution key; otherwise the Worker must select non-retryable/at-most-once
+behavior.
 Cancellation, permission, session, transcript, health, and inspection behavior
 are exposed only when the corresponding optional capability is implemented.
 
@@ -488,10 +483,10 @@ The common run registry owns exact-run control identity. Active entries hold
 backend cancellation bindings; completed entries become process-local,
 10-minute terminal tombstones capped at 1,024 per Agent. Repeated cancellation
 of a retained terminal run returns its terminal result without re-invoking the
-backend. A `run_id` cannot be reused while its tombstone is retained; Workflow
-retries keep the stable logical execution key separate and allocate a distinct
-per-attempt `run_id`. Durable Workflow state replaces this process-local
-history only for Workflow-owned runs.
+backend. A `run_id` cannot be reused while its tombstone is retained; external
+Activity retries keep the stable logical execution key separate and allocate a distinct
+per-attempt `run_id`. Durable business history, when needed, belongs to the
+external Workflow engine and upper-layer projection.
 
 The common permission broker owns pending identity, expiry, atomic claim, and
 audit. A broker record contains an unguessable opaque backend token; ACP waiter
@@ -518,7 +513,8 @@ stores a validated, decided continuation without running it, and a later
 AgentRoute `POST /turn` consumes it while owning the continuation SSE stream.
 A decision submitted on builtin `POST /turn` claims and consumes in that same
 request. The Admin endpoint never starts a builtin continuation in the
-background because there is no durable event sink before Workflow W2/M10.
+background because the gateway has no caller-independent business execution
+owner or headless event sink.
 
 During M2-M4 only, a legacy ACPRoute whose service is not bound to exactly one
 Agent remains on the pre-unification native ACP path because it has no truthful
@@ -535,8 +531,9 @@ Runtime-agnostic policy areas (live under `policy`):
 
 - max agent depth
 - budget and quota
-- schedule enablement
 - retention and transcript visibility
+
+Schedule policy belongs to the upper-layer workbench and its durable engine.
 
 Runtime-specific config areas (for `acp`, owned by `runtime.acp`; see
 [5.1](#51-agent)):
@@ -613,9 +610,10 @@ ingress stamps `agent_id` directly and new ACP runtime events carry their owner
 `agent_id`; active queries no longer infer ownership from `service_id`. Any
 retained SQL service column is historical-only.
 
-`origin_agent_id` for cross-agent handoff is deferred to P2/P3, because there is
-nothing to stamp until handoff exists. It is added the same additive way when
-handoff ships.
+Cross-Agent handoff origin belongs to the upper-layer Business Workflow. A
+future authenticated correlation envelope may carry an optional
+`origin_agent_id` for audit, but the gateway must not infer it from a
+gateway-owned DAG or accept it from untrusted turn JSON.
 
 ### 5.7 Builtin Runtime (ADK-Hosted Agents)
 
@@ -637,8 +635,8 @@ The control-plane contract is:
 - builtin routes are owned by one agent and target that same agent;
 - generic agent policy and attribution rules remain shared with `acp` and
   `http`;
-- future `agent` Workflow Tasks use the shared `runtimeapi.Backend` contract rather
-  than a builtin-only task model.
+- upper-layer Workflow Activities use the shared AgentRoute/
+  `runtimeapi.Backend` boundary rather than a builtin-only task model.
 
 After the AgentRoute cutover, the runtime-specific builtin route family is
 removed and one `AgentRoute.agent_id` relationship covers builtin, ACP, and
@@ -773,48 +771,35 @@ P1 semantics:
 - health is shallow at first: disabled state, runtime instances, in-flight
   turns, pending permissions, recent error rate, pipeline health
 
-### 6.3 P2 Endpoints
+### 6.3 External Workflow Integration Surface
 
-P2 adds durable agent execution and scheduling through the shared Workflow
-Definition/Run surface. The endpoint list, run/task state machines, and
-invocation contracts are authoritative in
-[Unified Workflow Runtime §10](workflow-runtime.md#10-durable-runs-scheduling-and-handoff);
-they are not repeated here. From the agent control plane's perspective, P2 is
-characterized by:
+Agent Gateway does not add durable Business Workflow
+Definition/Run/Schedule endpoints.
+An upper-layer workbench starts and queries its own Temporal (or equivalent)
+Workflows. Its Workers use the existing gateway surfaces:
 
-- Workflow Runs and Task Runs are gateway-owned external work items, executed
-  through the agent's runtime backend ([5.4](#54-runtime-backends)):
-  the Workflow `agent` task invokes the already-proven
-  `runtimeapi.Backend`; ACP and builtin adapters arrive during the unified
-  runtime foundation, while HTTP becomes executable only after its own backend
-  milestone;
-- schedules create durable Workflow Runs; they do not become hidden runtime
-  loops, and cancellation is gateway-visible and auditable;
-- agent-scoped UI views filter Workflow Runs/Task Runs by `agent_id`; they do
-  not introduce a second AgentTask API or state machine.
+- AgentRoute for one Agent Activity and its common event stream;
+- exact-run cancellation and capability APIs where advertised;
+- LLM and MCP routes for separately governed resource Activities;
+- interaction and metrics APIs for correlation and usage projection.
 
-**Why P2 is limited to one `agent` task per durable definition.** This is a
-deliberate product rollout boundary, not a runner or config-store limitation:
-P2 first proves one durable backend dispatch, cancellation, recovery, and audit
-lifecycle before exposing handoff graphs. A definition containing even one
-`agent` task can create the valid management-reference cycle described in
-[workflow-runtime §15](workflow-runtime.md#15-validation-and-safety) when an
-Agent's LLM resource route binds a workflow that targets the same Agent. The
-one-way AgentRoute ingress model does not create that cycle, but it does not
-remove this LLM-resource cycle either. The transactional staged-apply operation
-must therefore land **before any** P2 Agent Task is enabled. Once it lands, it
-safely covers both one-step and multi-step definitions. P3 then removes the
-one-task product validation when the handoff, topology, and multi-agent
-management surfaces are ready.
+The Worker authenticates every call with a scoped gateway identity. A Temporal
+Workflow id is correlation data, not authorization. The upper layer persists
+the mapping between Project/Task/Workflow ids and gateway run, interaction, and
+trace ids.
 
-### 6.4 P3 Endpoints
+### 6.4 Multi-Agent And Human Workflow Boundary
 
-P3 extends the same P2 surface and Runner to static multi-step DAGs. It adds no
-parallel `/admin/agent-workflows` object family. The graph coordinates external
-turns, resource tasks (`llm`/`mcp`/`transform`), and handoffs; it is static and
-gateway-owned, and never becomes an agent's internal reasoning loop. The
-authoritative API, storage, invocation-policy, and task contracts are in
-[Unified Workflow Runtime](workflow-runtime.md).
+Multi-Agent handoff, human approval, scheduling, retry across process failure,
+and long-running history belong to the external Workflow. Each AI node invokes
+exactly one managed Agent through its AgentRoute. Agent Gateway neither stores
+the business graph nor exposes `/admin/agent-workflows`, `/admin/workflow-runs`,
+or schedule APIs.
+
+Gateway-native permissions remain runtime capabilities inside one live turn;
+they are not Project approval Tasks. The complete boundary and reference
+Temporal topology are in
+[Gateway Request Pipeline And External Orchestration](request-pipeline.md).
 
 ## 7. Backend Implementation Plan
 
@@ -897,73 +882,42 @@ Goals:
 This phase should reuse `internal/observability/usage` and existing managers. It
 should not introduce rollup tables unless query performance requires it.
 
-### P2: External Tasks And Scheduling
+### P2: External Workflow Readiness
 
-The Workflow Runner, Definition/Run models, durable persistence, and scheduling
-loop are built once in `pkg/workflow` per
-[workflow-runtime §16 W2/W3](workflow-runtime.md#16-implementation-plan); this
-section lists only what the *agent* control plane contributes on top of that
-runner.
+P2 makes AgentRoute a reliable Activity boundary for an upper-layer Workflow
+Worker; it does not add a gateway scheduler or durable Task model:
 
-Agent-control-plane goals for P2:
+- finish the common runtime contracts, identities, event envelope, capability
+  discovery, and executable ACP/builtin/HTTP adapters;
+- define authenticated business correlation metadata and stable external
+  execution-key propagation;
+- document retry eligibility from backend capabilities and fail closed when an
+  Activity requests unsupported idempotency behavior;
+- test duplicate Activity delivery, cancellation, timeout, permission flow,
+  trace correlation, and bounded event relay;
+- provide a Temporal reference Worker/sample outside the gateway runtime core.
 
-- require the common runtime contracts, registry, identities, events, errors,
-  and ACP/builtin adapters from
-  [Unified Agent Runtime M0–M3](../plans/unified-agent-runtime.md#8-delivery-sequence)
-  before durable Agent Tasks consume them
-- add the `agent` task handler over `runtimeapi.Backend`, registered into the
-  Workflow Runner at bootstrap
-- enable a backend for durable retry/recovery only when its capabilities can
-  propagate the stable logical execution key; builtin durable
-  session/checkpoint recovery additionally waits for PB2
-- require the transactional staged-apply operation from
-  [workflow-runtime §15](workflow-runtime.md#15-validation-and-safety) before
-  enabling any Agent Task
-- after staged apply is available, enforce one `agent` task per durable
-  definition as the explicit P2 product scope
+### P3: Upper-Layer Multi-Agent Workflow
 
-Agent tasks call `runtimeapi.Backend` through the shared registry. They must not
-implement an internal reasoning loop or hard-code ACP/builtin/HTTP behavior.
-
-Scheduler placement constraint (agent-control-plane concern, not a workflow
-concern):
-
-- the runtime has two assembly paths, `agw` (Caddy app) and `agwd` (standalone
-  daemon). The scheduler loop must be owned by the shared runtime core so both
-  paths get identical behavior, and started exactly once per process by the
-  assembly layer — not by an HTTP handler or per-request code.
-- the design assumes a single active gateway process per config store. Running
-  multiple processes against one store is out of scope for P2; if it is needed,
-  task claiming must move to a store-backed lease/leader mechanism rather than an
-  in-memory loop. P2 should make this assumption explicit rather than silently
-  double-firing schedules.
-
-### P3: Multi-Agent Workflow
-
-P3 lifts the P2 one-`agent`-task product limit to static multi-step DAGs. The
-transactional staged-apply prerequisite has already landed in P2; P3 adds
-handoff and dependency semantics plus topology-view support. The runtime remains
-a static external orchestration graph, never a model-authored reasoning loop;
-the multi-step DAG mechanics themselves are the Workflow Runner's, already
-exercised by the synchronous profile.
+P3 is an upper-product milestone, not an Agent Gateway runtime milestone. The
+workbench composes multiple AgentRoute Activities, human Tasks, schedules, and
+Project state in Temporal or another durable engine. Gateway work is limited to
+stable data-plane contracts and observability needed by those Workers.
 
 ### PB: Builtin Runtime Track
 
-PB is independent of the P2/P3 control-plane schedule except where builtin
-durable session/checkpoint state integrates with Workflow Agent Tasks:
+PB is independent of the upper-layer Workflow schedule. Builtin session and
+checkpoint durability is a backend capability, not gateway Workflow state:
 
 - **PB0 — bridge adapters:** implemented
   (`pkg/mcp/einotool`, `pkg/llm/provider/einomodel`).
 - **PB1 — runtime type, host, routes, ingress, observability, management
   parity, sessions, topologies, and middleware:** implemented.
 - **PB1b — interactive MCP tool permissions:** implemented.
-- **PB2 — durable Workflow integration and Runner-managed sessions:**
-  the turn-first builtin `runtimeapi.Backend` adapter is delivered by the
-  unified runtime foundation; PB2 is the additional durable
-  session/checkpoint integration, deferred until Workflow W2 and a stable eino
-  persistence surface exist. The two prerequisites are stated authoritatively in
-  [workflow-runtime §16.1](workflow-runtime.md#161-builtin-agent-durable-dependency-gate-authoritative);
-  this document does not restate it.
+- **PB2 — durable builtin sessions/checkpoints:** adopt a stable eino
+  persistence surface when available. An external Workflow may retry or resume
+  a builtin Activity only to the extent this backend capability truthfully
+  supports it; Temporal does not make in-memory ADK state durable by itself.
 
 The detailed scope and implementation notes are authoritative in
 [**Builtin Agent Runtime §11–§12**](builtin-agent-runtime.md#11-implementation-track).
@@ -1008,16 +962,14 @@ Screens and widgets:
 - call-chain / interaction topology
 - resource access panel
 
-### P2/P3 Frontend: Workflows, Runs, And Scheduling
+### P2/P3 Frontend: Workbench Integration
 
-Once the Workflow Runtime ships durable runs (W2) and scheduling (W3), the
-agent console adds task/run/schedule surfaces driven by the workflow Admin APIs
-([workflow-runtime §10](workflow-runtime.md#10-durable-runs-scheduling-and-handoff))
-and filtered by `agent_id`. The screen inventory (task queue, run detail,
-schedule editor, workflow graph editor, run timeline, handoff visualization,
-per-step logs and usage) belongs to the workflow UI and is not enumerated here;
-from the agent console's perspective these are filtered projections of the
-shared workflow surfaces, not agent-specific screens.
+Task queues, schedules, business run details, approval screens, Workflow graph
+editing, and handoff visualization belong to the upper-layer workbench. The
+Agent console may deep-link to those records or show correlation summaries, but
+its native surfaces remain Agent runtime state, sessions, permissions,
+interactions, health, and usage. It does not query gateway-owned Business
+Workflow Run or Schedule APIs because those APIs do not exist.
 
 ## 9. Migration Notes
 
@@ -1084,18 +1036,13 @@ The following are still genuinely open. Items the body now takes a position on
 (Agent-owned ACP config, resource enforcement, runtime-vs-routes authority,
 attribution timing, and bundle/CLI parity) are decided there and are not
 repeated here.
-- Which dedicated operational schema and retention policy should back
-  `workflow_runs`, `workflow_task_runs`, `workflow_events`, and schedules?
-  Workflow Definitions may use the generic config-store pattern, but
-  high-churn run state must not.
 - What is the first budget model: token budget, cost budget, turn budget, or
   all three? And is budget enforced (data-plane) or only observed (management)
   in its first version?
-- Should schedules live under agents only, or should there also be global
-  schedules that target multiple agents?
-- Does multi-process (HA) gateway operation against one config store become a
-  requirement? If so, the P2 scheduler needs a store-backed lease/leader
-  mechanism rather than the single-process assumption stated in P2.
+- What authenticated correlation envelope should external Workflow Workers use
+  without allowing callers to spoof Project principals, budgets, or traces?
+- Which Agent backends can enforce a stable external Activity execution key,
+  and what retry guidance should capability discovery expose?
 - If/when memory becomes an agent resource, what is its reference shape and is it
   enforced or observed first? (See 9.2a.)
 - Beyond AgentRoute resolving the Agent for ingress, does the Agent gain scoped
@@ -1109,7 +1056,7 @@ repeated here.
   stateless `http` backends; ACP session affinity (a session is pinned to one
   service/instance) makes it hard for `acp` and would need an explicit
   session-routing model. This is distinct from coordinating *multiple distinct*
-  agents, which is Workflows (P3), not multi-backend.
+  agents, which is an upper-layer Business Workflow, not multi-backend.
 - Builtin-runtime-specific deferred work and decided questions are tracked in
   [Builtin Agent Runtime §13](builtin-agent-runtime.md#13-open-questions-and-deferred-work),
   not duplicated in this cross-runtime list.

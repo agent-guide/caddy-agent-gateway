@@ -37,8 +37,9 @@ type TurnOptions struct {
 	Execution ExecutionOptions `json:"-"`
 }
 
-// ExecutionOptions carries trusted caller metadata. The logical execution key
-// is reserved for Workflow-owned idempotent execution.
+// ExecutionOptions carries trusted caller metadata. A validated upper-layer
+// Workflow Activity may supply the logical execution key through an
+// authenticated adapter; it is never accepted from ordinary turn JSON.
 type ExecutionOptions struct {
 	LogicalExecutionKey string
 }

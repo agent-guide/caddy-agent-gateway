@@ -16,8 +16,8 @@ The implementation is broader than replacing ACPRoute and BuiltinRoute. It
 first introduces one Agent runtime capability layer, moves ACP and builtin
 behind that layer while their existing routes still work, then cuts ingress
 over to one AgentRoute and folds ACP service config into the owning Agent. HTTP
-execution and durable Workflow Agent Tasks build on the same contract after the
-two shipping runtimes prove it. M0-M2 are complete: the common contracts,
+execution and upper-layer Workflow Activities build on the same contract after
+the two shipping runtimes prove it. M0-M2 are complete: the common contracts,
 identities/sequencer, and ACP/builtin adapters are live behind the legacy
 ingress routes. M3 and M4 are complete: the common control plane, the internal
 AgentRoute model/dispatch, the agent.Manager definition snapshot, and the
@@ -31,7 +31,7 @@ and OTLP expose the runtime-neutral route dimensions.
 The target stack is:
 
 ```text
-Agent APIs / AgentRoute / Workflow `agent` task
+Agent APIs / AgentRoute / external Workflow Activity
   -> runtime-neutral ids, events, errors, capabilities, policy
   -> runtimeapi.Backend registry
        acp     -> ACP adapter -> agent-owned ACP runtime/process pool
@@ -44,7 +44,7 @@ BuiltinRoute temporarily call the common runtime layer during implementation;
 they are removed, not retained as compatibility aliases, when AgentRoute
 becomes public.
 
-### 1.1 Relationship to the Workflow Runtime
+### 1.1 Relationship to Workflow Orchestration
 
 There is one Agent execution SPI: the turn-first
 `runtimeapi.Backend.ServeTurn` contract defined here and in
@@ -52,17 +52,17 @@ There is one Agent execution SPI: the turn-first
 It is introduced before route cutover and registers ACP and builtin as the
 first executable backends; HTTP follows after its wire/auth contract is real.
 
-There is also one durable task/DAG state machine, owned by
-[`workflow-runtime.md`](../design/workflow-runtime.md). Its `agent` task handler
-resolves the target Agent, invokes the same `runtimeapi.Backend`, consumes the
-common event stream, and maps its terminal result into the Workflow Task Run.
-The Workflow Runner owns persistence, scheduling, retry, idempotency,
-permission suspension, and handoff. The runtime backend owns one Agent turn and
-its native capabilities. No second task-first `StartTask` SPI or separate
-`AgentTask` state machine is introduced.
+Durable business orchestration is owned above Agent Gateway by a workbench and
+an external engine such as Temporal. Its Worker resolves a target Agent route,
+invokes the same data-plane turn contract, consumes the common event stream,
+and maps the result into an Activity result. The external engine owns durable
+history, scheduling, retry, approval, and handoff. The runtime backend owns one
+Agent turn and its native capabilities. Gateway Request Pipelines are a
+separate synchronous LLM/MCP/transform facility and deliberately have no
+`agent` step. See [`request-pipeline.md`](../design/request-pipeline.md).
 
-M10 is therefore the integration point with Workflow Runtime W2/W3, not a
-competing durable task implementation.
+M10 is therefore external Workflow readiness, not a gateway durable state
+machine.
 
 The route end state replaces the runtime-specific `ACPRoute` and
 `BuiltinRoute` ingress objects with one `AgentRoute` that targets an
@@ -140,8 +140,8 @@ permission transport, or runtime-specific operator details.
 ## 2. Baseline Alignment
 
 This proposal originated from the pre-release v0.5 development tree and was
-reconciled with the current `dev` documentation after the Unified Workflow
-Runtime design landed. The implementation, product website, and permanent
+reconciled with the current `dev` documentation after the Workflow boundary
+decision landed. The implementation, product website, and permanent
 documentation currently agree on the following facts.
 
 ### 2.1 Code
@@ -192,8 +192,8 @@ product as two execution runtimes plus one external identity model:
 
 - builtin executes in-process;
 - ACP executes Codex/OpenCode through managed processes;
-- HTTP identity is persisted, but direct HTTP task dispatch is deferred;
-- cross-runtime workflows remain roadmap work.
+- HTTP identity is persisted, but direct HTTP turn dispatch is deferred;
+- upper-layer cross-runtime Workflow integration remains roadmap work.
 
 The proposal must not change those statements to “three execution runtimes”
 until the HTTP backend is implemented and tested. Product-site updates always
@@ -212,9 +212,9 @@ Permanent docs correctly describe the current runtime-specific surfaces:
 - ACP and builtin usage have different typed event families and dimensions.
 
 This proposal does not retroactively describe planned behavior as shipped.
-`agents-control-plane.md` §5.4 and `workflow-runtime.md` now share the
-turn-first SPI boundary described in §1.1; all current-behavior ACP/builtin docs
-remain authoritative until each migration milestone lands.
+`agents-control-plane.md` §5.4 and `request-pipeline.md` now share the
+AgentRoute Activity boundary described in §1.1; all current-behavior
+ACP/builtin docs remain authoritative until each migration milestone lands.
 
 The current architecture diagram and product website must be updated in the
 same implementation change that switches the public route surface. Until then,
@@ -284,9 +284,8 @@ necessary.
   diagnostics.
 - Do not make ACP and builtin sessions durable or behaviorally identical.
 - Do not add cross-agent scheduling, hand-offs, or DAG execution in the runtime
-  and route foundation. Those belong to the separately designed Workflow
-  Runtime; its durable W2/W3 implementation consumes the finished backend
-  contract.
+  and route foundation. Those belong to an upper-layer workbench and external
+  durable engine whose Workers consume the finished AgentRoute contract.
 - Do not claim HTTP execution before its outbound auth and wire contract ship.
 - Do not preserve the old ACPRoute/BuiltinRoute public shapes or aliases. The
   repository change policy treats this as a breaking schema change.
@@ -329,7 +328,7 @@ has the same implementation:
 | runtime state | pool/inflight/pending | materialization/inflight/pending | none | common summary plus details |
 | health | service/process-derived | host/materialization-derived | identity only | common health result |
 | typed usage | ACP events | builtin events | none | common dimensions, typed extensions |
-| durable Workflow Agent Task | no | no | no | Workflow Runtime W2 integration |
+| stable external Activity key | backend-dependent | backend-dependent | no | capability-advertised Worker integration |
 
 Capability discovery is authoritative. Clients and Admin/UI code do not infer
 support from `runtime.type`, and the dispatcher never silently emulates an
@@ -401,7 +400,7 @@ fallback mechanism: the selected backend rejects them with
 `unsupported_option`.
 
 `ExecutionOptions` is internal-only metadata used by trusted gateway callers,
-including the future Workflow logical execution/idempotency key. It is never
+including an authenticated external Activity execution/idempotency key. It is never
 decoded from AgentRoute JSON. The M2 legacy ACPRoute/BuiltinRoute decoders keep
 their existing public request bodies and translate them once into this
 container; the M5 AgentRoute surface publishes only the versioned envelope.
@@ -431,13 +430,13 @@ resume. Ordering is the composite `(run_id, sequence)`; segment index exists for
 transport diagnostics and is not needed to recover the run order.
 
 The common sink serializes concurrent producers and allocates sequence numbers.
-Before M10, a suspended run keeps the next sequence and segment index in its
-in-memory checkpoint/pending-run record. M1 therefore guarantees monotonicity
-and uniqueness across resume segments only within one process-lifetime logical
-run. M10 persists the cursor transactionally with task events, enforces
-uniqueness on `(run_id, sequence)`, and extends the same contract across
-durable recovery and process restart. A resumed run within its advertised
-durability boundary must never restart sequence numbering at one.
+A suspended run keeps the next sequence and segment index in its in-memory
+checkpoint/pending-run record. M1 therefore guarantees monotonicity and
+uniqueness across resume segments only within one process-lifetime logical run.
+M10 does not make this cursor durable: an upper-layer Workflow owns durable
+Activity history and allocates a new gateway `run_id` for a later attempt. A
+backend may separately advertise durable native-session continuation, but it
+must not imply that the process-local common event cursor survives restart.
 
 Core event names are:
 
@@ -595,18 +594,18 @@ all knowledge at completion:
   result into an in-memory tombstone;
 - tombstones are retained for 10 minutes, capped at 1,024 entries per Agent,
   with oldest-completed eviction when the cap is exceeded;
-- a retained `run_id` is therefore not reusable during that window. Workflow
-  retries must keep their durable logical execution key separate and allocate
+- a retained `run_id` is therefore not reusable during that window. External
+  Activity retries must keep their stable logical execution key separate and allocate
   a distinct per-attempt `run_id` for process-local cancellation;
 - `GET /admin/agents/{id}/runs` returns active entries and retained tombstones;
 - cancelling a retained terminal run returns its terminal result without
   calling the backend again;
 - an id absent from both sets returns `run_not_found`.
 
-The registry is process-local through M7 and capabilities report that run
-history is not durable. M10 replaces the tombstone source for Workflow-owned
-runs with durable task/run state; it does not change the exact-run cancellation
-contract.
+The registry remains process-local and capabilities report that run history is
+not durable. M10 documents how an external Worker correlates its durable
+Activity state with these ephemeral exact-run ids; it does not move business
+history into the gateway or change the exact-run cancellation contract.
 
 ACP `CloseScope`/`CloseThread` are not mappings for graceful or ordinary force
 cancel: they tear down pooled instances and may affect more than one logical
@@ -815,8 +814,9 @@ Runtime-neutral policy describes outcomes:
 - turn timeout and maximum concurrent runs;
 - turn/token/cost budgets;
 - transcript/session visibility and retention;
-- schedule enablement when durable Workflow scheduling exists;
 - default fail-closed permission posture.
+
+Schedule and business retry policy belong to the upper-layer Workflow owner.
 
 Backend-specific operational config stays under the owning Agent runtime block:
 ACP process pool, cwd/allowed roots, permission and adapter config under
@@ -867,23 +867,21 @@ For SQLite query paths that add `run_id` or `runtime_type` filters, inspect
 where the actual access path uses them; do not assume the new nullable columns
 automatically replace ACP `thread_id`/`session_id` lookup semantics.
 
-### 5.13 Durable Workflow Agent Task boundary
+### 5.13 External Workflow Activity Boundary
 
-The Workflow Runtime's `agent` task is the eventual durable consumer of the
-same backend contract:
+An upper-layer Workflow Worker is a caller of the same AgentRoute contract:
 
 ```text
-Workflow Task Run -> invoke backend turn -> persist ordered events
-                  -> permission/cancel/retry -> terminal result
+Business Activity -> authenticated AgentRoute turn -> ordered events
+                  -> cancel/retry per capability -> bounded result/reference
 ```
 
-The Workflow Runner owns durable state, scheduling, retry, handoff, artifacts,
-and audit. It is not introduced during the route cutover. The runtime
-foundation must avoid coupling `Backend` exclusively to an HTTP response so the
-Workflow Agent task handler can invoke the same backend and consume the same
-events. The authoritative run/task states, idempotency rules, permissions, and
-W2/W3 delivery gates live in
-[`workflow-runtime.md`](../design/workflow-runtime.md).
+Temporal or another external engine owns durable state, schedules, human Tasks,
+handoff, and business audit. The runtime foundation must avoid coupling
+`Backend` exclusively to a browser or CLI so a Worker can consume the same
+events and terminal result. The gateway remains authoritative for Agent policy,
+runtime capabilities, native permissions, and usage. See
+[`request-pipeline.md` §10](../design/request-pipeline.md#10-external-business-workflow-integration).
 
 ## 6. Target Route and Control-plane Model
 
@@ -1179,20 +1177,19 @@ with:
 agentRoutes: [...]
 ```
 
-[`workflow-runtime.md` §15](../design/workflow-runtime.md#15-validation-and-safety)
-defines the relative W0/W1 workflow order only. This plan newly places
+[`request-pipeline.md` §12](../design/request-pipeline.md#12-validation-and-safety)
+defines the Request Pipeline apply order. This plan places
 `agents`, `AgentRoutes`, and `VirtualKeys` around that existing subsequence; it
-does not claim that §15 already defines those placements. The W2 staged-apply
-requirement is unchanged. For the W0/W1 workflow profile (which rejects
-`agent` tasks), the resulting safe apply order is:
+does not claim that §12 defines those placements. The resulting safe apply
+order is:
 
 ```text
 providers
 managed models
 MCP services and routes
-resource LLM routes referenced by workflows
-Workflow Definitions
-LLM ingress routes that pin Workflow revisions
+resource LLM routes referenced by request pipelines
+Request Pipeline Definitions
+LLM ingress routes that pin Request Pipeline revisions
 agents
 Agent routes
 VirtualKeys
@@ -1201,8 +1198,8 @@ CLI auth configuration
 
 This order works because:
 
-- Workflow Definitions can validate concrete MCP services and resource LLM
-  routes before an ingress route pins their revision;
+- Request Pipeline Definitions can validate concrete MCP services and resource
+  LLM routes before an ingress route pins their revision;
 - builtin Agents can validate their referenced LLM routes and MCP services;
 - ACP Agents validate their inline `runtime.acp` config without a cross-object
   service reference;
@@ -1210,12 +1207,10 @@ This order works because:
 - AgentRoutes can then validate `agent_id`;
 - VirtualKeys can finally validate every `allowed_route_id`.
 
-Workflow W2 introduces valid Agent/resource-route/workflow reference cycles.
-At that point this linear apply order is replaced by the transactional staged
-prospective-snapshot validation defined in
-[`workflow-runtime.md` §15](../design/workflow-runtime.md#15-validation-and-safety).
-The one-way `AgentRoute.agent_id` ownership relationship itself remains
-acyclic.
+Request Pipelines reject `agent` steps, so they cannot introduce an
+Agent/resource-route/Pipeline reference cycle. The one-way
+`AgentRoute.agent_id` ownership relationship remains acyclic. Cross-Agent
+business graphs live outside the gateway bundle.
 
 Bundle-local validation rejects an AgentRoute whose `agent_id` is absent when
 the bundle contains an `agents` section that is authoritative for the apply.
@@ -1860,7 +1855,7 @@ surface:
 - `docs/architecture/architecture-overview.md` and its SVG;
 - `docs/design/agents-control-plane.md`;
 - `docs/design/builtin-agent-runtime.md`;
-- `docs/design/workflow-runtime.md`;
+- `docs/design/request-pipeline.md`;
 - `docs/architecture/acp-architecture.md`;
 - `docs/reference/{route-schema-reference,admin-api-reference,agwctl-reference}.md`;
 - `docs/reference/{acp-api,acp-technical-spec}.md`;
@@ -1875,7 +1870,7 @@ Website release edits must be paired English/Chinese changes:
 - describe one stable Agent route across runtimes;
 - update diagrams and Caddy/config snippets;
 - keep “two execution runtimes plus HTTP identity” until M8 ships;
-- keep cross-Agent workflow claims on the roadmap;
+- keep cross-Agent Workflow claims scoped to the upper-layer workbench roadmap;
 - update observability wording from runtime-specific route ownership to direct
   AgentRoute attribution.
 
@@ -1913,25 +1908,26 @@ propagation, and retry/idempotency assertions.
 - preserve builtin's stricter definition-time resource validation;
 - update website claims only after external enforcement is real.
 
-### M10 — Durable Workflow Agent Task integration
+### M10 — External Workflow Activity Readiness
 
-This milestone maps to Workflow Runtime W2; it does not add another state
-machine:
+This milestone hardens AgentRoute for upper-layer Temporal Workers; it does not
+add a gateway durable state machine:
 
-- implement the Workflow `agent` task handler over `runtimeapi.Backend`;
-- persist Workflow Run/Task Run state and ordered task events, including the
-  next run-sequence cursor transactionally and unique `(run_id, sequence)`;
-- propagate the Workflow logical execution key through `TurnOptions`; reject
-  retry or `requeue` when a backend cannot enforce idempotency;
-- link Workflow cancellation and permission suspension/resume by `run_id`;
-- retain scheduling and multi-agent handoff as Workflow Runtime W3.
+- define authenticated correlation and stable Activity execution-key metadata;
+- advertise whether each backend can enforce that key and reject unsupported
+  retry assumptions;
+- document bounded result/artifact-reference and event-relay patterns;
+- link Activity cancellation to exact gateway run cancellation where the
+  backend advertises it;
+- publish a reference Temporal Worker outside the gateway runtime core.
 
 Verification:
 
-- durable cursor recovery continues sequence and segment indexes across a
-  simulated process restart;
-- the persisted uniqueness constraint rejects duplicate
-  `(run_id, sequence)` task events.
+- duplicate Activity delivery is deduplicated or rejected according to the
+  advertised backend capability;
+- Worker cancellation, timeout, trace correlation, and event relay work across
+  ACP, builtin, and executable HTTP backends without persisting business
+  Workflow state in the gateway.
 
 M8-M10 are post-route capabilities. They may ship after the M7 foundation in
 separate reviewable changes without changing the contracts defined here.
@@ -2115,9 +2111,9 @@ three identity types share AgentRoute, while the product truth remains two
 execution runtimes plus one external identity model.
 
 External resource enforcement has its own M9 gate; until then ACP/HTTP resource
-references remain a management view. Durable task execution remains deferred
-until M10 / Workflow W2, and scheduling plus handoff remain deferred until
-Workflow W3.
+references remain a management view. M10 covers external Worker readiness;
+scheduling, human Tasks, durable recovery, and handoff remain upper-layer
+product responsibilities.
 
 ## 11. Decision Status Before Implementation
 

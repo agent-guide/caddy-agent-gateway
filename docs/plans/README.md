@@ -23,6 +23,8 @@ Current plans:
 - [unified-agent-runtime.md](unified-agent-runtime.md): implementation plan for
   one turn-first Agent runtime capability layer and one AgentRoute across ACP,
   HTTP, and builtin Agent identities, with ACP config owned directly by
-  `Agent.runtime.acp` rather than a separate service object; durable task/DAG
-  execution remains owned by the
-  [Unified Workflow Runtime](../design/workflow-runtime.md)
+  `Agent.runtime.acp` rather than a separate service object; upper-layer
+  durable Workflow Workers call the same AgentRoute boundary, while the
+  gateway's own
+  [Request Pipeline](../design/request-pipeline.md) remains synchronous and
+  non-durable

@@ -48,7 +48,8 @@ type runEntry struct {
 }
 
 // RunRegistry owns exact-run cancellation and bounded terminal tombstones.
-// It is process-local until durable Workflow runs replace its history source.
+// It is intentionally process-local; durable business history belongs to an
+// upper-layer workflow engine and correlates its Activity with these run IDs.
 type RunRegistry struct {
 	mu       sync.Mutex
 	active   map[string]map[string]*runEntry

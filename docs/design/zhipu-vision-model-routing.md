@@ -1,4 +1,4 @@
-# Zhipu Coding Plan Vision Workflow
+# Zhipu Coding Plan Vision Request Pipeline
 
 ## 1. Status
 
@@ -10,8 +10,8 @@ approach is invalid for Zhipu Coding Plan because vision is available through
 MCP rather than through the Coding Plan text-model endpoint.
 
 This design depends on the
-[Unified Workflow Runtime](workflow-runtime.md). An LLM route invokes a
-synchronous, non-durable workflow containing MCP, Transform, and LLM tasks.
+[Gateway Request Pipeline](request-pipeline.md). An LLM route invokes a
+synchronous, non-durable Pipeline containing MCP, Transform, and LLM steps.
 
 ## 2. Problem
 
@@ -43,7 +43,7 @@ The image bytes must not reach the text model.
 ## 3. Goals
 
 - Support Codex Responses, OpenAI Chat Completions, Anthropic Messages, and the
-  `cc` profile through one protocol-neutral workflow.
+  `cc` profile through one protocol-neutral Pipeline.
 - Send image content only to the configured Vision MCP service.
 - Preserve text-only requests without an MCP call.
 - Continue using the LLM route's normal target policy, model catalog,
@@ -63,7 +63,7 @@ The image bytes must not reach the text model.
 - No claim that a Coding Plan text model has native vision capability.
 - No MCP tool schema injection into the client request.
 - No hidden LLM/tool/LLM agent loop.
-- No durable workflow run, scheduling, handoff, or human approval on this LLM
+- No durable Business Workflow run, scheduling, handoff, or human approval on this LLM
   ingress path.
 - No arbitrary prompt or transform scripting in route configuration.
 - No remote URL fetching without a separately designed SSRF policy.
@@ -77,10 +77,10 @@ Codex / Claude Code
 LLM route (openai / anthropic / cc)
         |
         v
-protocol handler prepares normalized LLMWorkflowInput
+protocol handler prepares normalized LLMPipelineInput
         |
         v
-synchronous Workflow Runner
+synchronous Request Pipeline Runner
         |
         +-- Transform Task: prepare-images
         |       decode/validate media into request-scoped artifacts
@@ -99,8 +99,8 @@ synchronous Workflow Runner
 protocol-native response / stream
 ```
 
-The workflow is an ordinary Workflow Definition. Its invocation policy is
-supplied by the LLM route:
+The Pipeline is an ordinary Request Pipeline Definition. Its execution profile
+is fixed by the gateway boundary:
 
 ```text
 mode = synchronous
@@ -164,7 +164,7 @@ Plan Vision MCP server package or binary before use; do not copy it verbatim.
 The gateway process must receive the actual Zhipu Coding Plan credential in its
 environment so the stdio child inherits the credential required by the MCP
 server. Credential names and secret injection belong to deployment
-configuration and must not be embedded in the workflow definition.
+configuration and must not be embedded in the Pipeline Definition.
 
 A local stdio service is the preferred first implementation because the MCP
 tool accepts a local image path and the child process can read a
@@ -192,30 +192,30 @@ The Coding Plan text model remains:
 Vision = false
 ```
 
-Workflow composition is a route execution capability, not a native provider or
+Pipeline composition is a route execution capability, not a native provider or
 model capability. Model catalog filtering and provider capabilities must not be
 made inaccurate to advertise the composite route.
 
-## 7. Workflow Definition
+## 7. Request Pipeline Definition
 
 Conceptual bundle configuration:
 
 ```yaml
-workflows:
+requestPipelines:
   - id: zhipu-coding-plan-vision
     name: Zhipu Coding Plan with Vision MCP
     required_bindings:
       - ingress.llm_target
     input_type: llm_request
 
-    tasks:
+    steps:
       - id: prepare-images
         type: transform
         target:
           handler: prepare_llm_images
         input:
           request:
-            ref: run.input
+            ref: execution.input
         config:
           allowed_media_types:
             - image/png
@@ -232,10 +232,10 @@ workflows:
         condition:
           type: output_not_empty
           input:
-            ref: tasks.prepare-images.output.images
+            ref: steps.prepare-images.output.images
         for_each:
           collection:
-            ref: tasks.prepare-images.output.images
+            ref: steps.prepare-images.output.images
           max_concurrency: 1
         target:
           service_id: zhipu-vision
@@ -249,7 +249,7 @@ workflows:
         retry:
           max_attempts: 2
           backoff: exponential
-        failure_policy: fail_workflow
+        failure_policy: fail_pipeline
 
       - id: rewrite-request
         type: transform
@@ -260,11 +260,11 @@ workflows:
           handler: replace_llm_images_with_analysis
         input:
           request:
-            ref: run.input
+            ref: execution.input
           prepared_images:
-            ref: tasks.prepare-images.output
+            ref: steps.prepare-images.output
           analyses:
-            ref: tasks.analyze-images.output
+            ref: steps.analyze-images.output
 
       - id: completion
         type: llm
@@ -274,21 +274,21 @@ workflows:
           binding: ingress.llm_target
         input:
           request:
-            ref: tasks.rewrite-request.output
+            ref: steps.rewrite-request.output
           stream:
-            ref: run.input.stream
+            ref: execution.input.stream
         terminal_output: true
 
     output:
-      ref: tasks.completion.output
+      ref: steps.completion.output
 ```
 
-This YAML is the target design shape, not a claim that the current gateway
-bundle decoder already supports `workflows`.
+This YAML is the target design shape; the current gateway bundle decoder does
+not yet support `requestPipelines`.
 
 ## 8. LLM Route Configuration
 
-The ingress route retains its current LLM target policy and adds workflow
+The ingress route retains its current LLM target policy and adds Pipeline
 execution:
 
 ```yaml
@@ -305,21 +305,21 @@ llmRoutes:
         provider_id: glm-coding-plan
 
     execution_policy:
-      type: workflow
-      workflow_id: zhipu-coding-plan-vision
-      workflow_revision: "sha256:<definition-content-hash>"
+      type: request_pipeline
+      pipeline_id: zhipu-coding-plan-vision
+      pipeline_revision: "sha256:<definition-content-hash>"
       timeout_seconds: 120
       max_concurrency: 4
 ```
 
-`workflow_revision` is the deterministic hash of the canonical definition.
+`pipeline_revision` is the deterministic hash of the canonical definition.
 Bundle validation may compute and persist it when the definition and route are
-applied together. Updating the workflow does not move this route to the new
+applied together. Updating the Pipeline does not move this route to the new
 revision implicitly; the route must be updated and revalidated so an expanded
 resource set cannot be granted silently.
 
 At invocation, `ingress.llm_target` is a capability-like binding containing the
-already validated route target policy. The terminal LLM task creates a
+already validated route target policy. The terminal LLM step creates a
 `RoutedProvider` from that binding. It does not recursively dispatch an HTTP
 request back through the ingress route.
 
@@ -335,11 +335,11 @@ optimize the empty path after preserving identical semantics.
 
 ## 9. Protocol-Neutral Input
 
-The Workflow Runner must not parse OpenAI or Anthropic HTTP bodies. Each LLM API
-handler converts its wire request into a normalized workflow input:
+The Request Pipeline Runner must not parse OpenAI or Anthropic HTTP bodies.
+Each LLM API handler converts its wire request into normalized Pipeline input:
 
 ```go
-type LLMWorkflowInput struct {
+type LLMPipelineInput struct {
     RequestType provider.LLMApiRequestType
     Model       string
     Stream      bool
@@ -366,7 +366,7 @@ Required protocol coverage:
 - URL sources only when allowed by route/media policy.
 
 The protocol handler also owns the terminal response conversion. Internal
-Workflow events are not serialized as unknown Responses or Anthropic events.
+Pipeline events are not serialized as unknown Responses or Anthropic events.
 
 ## 10. Image Preparation
 
@@ -395,7 +395,7 @@ behavior. The gateway must not become an unrestricted URL fetcher.
 
 ## 11. MCP Analysis
 
-The MCP task performs bounded `for_each` over prepared images. Each child call
+The MCP step performs bounded `for_each` over prepared images. Each child call
 uses:
 
 ```json
@@ -409,17 +409,17 @@ uses:
 
 Results are joined by input index, not completion time.
 
-The initial local-stdio workflow sets MCP `for_each.max_concurrency = 1`.
-Although the Workflow Runner supports bounded fan-out, the current MCP service
-manager reuses one stdio transport per service and that transport does not
+The initial local-stdio Pipeline sets MCP `for_each.max_concurrency = 1`.
+Although the Request Pipeline Runner supports bounded fan-out, the current MCP
+service manager reuses one stdio transport per service and that transport does not
 provide concurrent request multiplexing. Increasing this value requires the
 MCP runtime to add unique request ids plus a concurrency-safe response
 dispatcher, or to expose a process/session pool.
 
-The initial workflow uses `analyze_image` for every image. Specialized tools
+The initial Pipeline uses `analyze_image` for every image. Specialized tools
 such as screenshot OCR, error diagnosis, diagram understanding, visualization
 analysis, or UI comparison should be introduced only through an explicit
-workflow definition or deterministic request hint. The text model must not be
+Pipeline Definition or deterministic request hint. The text model must not be
 called merely to choose a vision tool.
 
 MCP result validation rejects:
@@ -451,24 +451,24 @@ Rules:
 - preserve client-provided tools, tool choice, generation options, metadata,
   and response state;
 - cap analysis length before sending it to the text model;
-- fail before the LLM task if any original image remains in the rewritten
+- fail before the LLM step if any original image remains in the rewritten
   request.
 
 The final invariant is:
 
 ```text
-terminal LLM task input contains zero image content parts
+terminal LLM step input contains zero image content parts
 ```
 
 This invariant is asserted independently of the selected provider.
 
 ## 13. Failure And Retry Semantics
 
-The HTTP status column below is produced by the Workflow Runtime's synchronous
-ingress task-error → status classification
-([workflow-runtime §11.1](workflow-runtime.md#111-task-error-to-http-status-synchronous-ingress-profile));
-this document does not define its own mapping. A `transform` or `mcp` task in
-this workflow signals one of those closed classifications, and the runner maps
+The HTTP status column below is produced by the Request Pipeline's synchronous
+ingress step-error → status classification
+([request-pipeline §9](request-pipeline.md#9-cancellation-retry-and-error-mapping));
+this document does not define its own mapping. A `transform` or `mcp` step in
+this Pipeline signals one of those closed classifications, and the runner maps
 it to the listed status before any stream bytes are committed.
 
 Default behavior is fail closed:
@@ -483,7 +483,7 @@ Default behavior is fail closed:
 | MCP/tool failure | `502` |
 | Rewrite leaves image content | `500` |
 | Text LLM failure | Existing LLM route/provider status |
-| Client disconnect | Cancel workflow and active tasks |
+| Client disconnect | Cancel Pipeline and active steps |
 
 The gateway never falls back by:
 
@@ -501,13 +501,13 @@ unless explicitly classified safe.
 Image preparation and MCP analysis finish before response headers are committed.
 This adds pre-stream latency but preserves protocol correctness.
 
-Only the terminal `completion` LLM task owns the client stream:
+Only the terminal `completion` LLM step owns the client stream:
 
 - OpenAI Responses events remain Responses events;
 - Chat Completions remains Chat Completions SSE;
 - Anthropic and `cc` retain their expected event profiles.
 
-MCP progress and internal task lifecycle events are recorded for observability
+MCP progress and internal step lifecycle events are recorded for observability
 but are not injected into those protocol streams.
 
 ## 15. Observability
@@ -516,7 +516,7 @@ One image-bearing request produces a span tree:
 
 ```text
 LLM ingress: codex-glm-coding-plan
-└── workflow: zhipu-coding-plan-vision
+└── pipeline: zhipu-coding-plan-vision
     ├── transform: prepare-images
     ├── mcp: zhipu-vision/analyze_image[0]
     ├── mcp: zhipu-vision/analyze_image[1]
@@ -527,12 +527,12 @@ LLM ingress: codex-glm-coding-plan
 The MCP and LLM child spans carry the ingress trace, route, VirtualKey, and
 unambiguous agent attribution. Metrics expose at least:
 
-- workflow id and run id;
+- Pipeline id and execution id;
 - image count and total decoded bytes, without image content;
 - preprocess latency;
 - MCP service/tool and child-call status;
 - selected provider and concrete upstream text model;
-- workflow/task failure phase.
+- Pipeline/step failure phase.
 
 Usage events report the real MCP tool and real text model. They must not report
 a fictitious vision model swap.
@@ -541,19 +541,19 @@ a fictitious vision model swap.
 
 Bundle/apply validation requires:
 
-- workflow definition exists and is enabled;
-- route execution policy references and pins that workflow revision;
+- Request Pipeline Definition exists and is enabled;
+- route execution policy references and pins that Request Pipeline revision;
 - required `ingress.llm_target` binding is declared;
 - Transform handlers are registered in the linked binary;
 - MCP service exists, is enabled, and exposes the configured tool;
-- terminal-output task is the unique non-`for_each` DAG sink, is one LLM task
-  bound to the ingress target, depends transitively on every other task, and
-  supplies the workflow output;
-- graph is acyclic and within task/fan-out limits;
+- terminal-output step is the unique non-`for_each` DAG sink, is one LLM step
+  bound to the ingress target, depends transitively on every other step, and
+  supplies the Pipeline output;
+- graph is acyclic and within step/fan-out limits;
 - synchronous profile cannot suspend or continue in background;
 - provider/model target is valid for streaming/tools requirements after image
   rewrite;
-- route timeout is not shorter than an invalid combination of task timeouts.
+- route timeout is not shorter than an invalid combination of step timeouts.
 
 Live MCP tool discovery may be unavailable during offline bundle validation.
 Structural validation checks the service reference and tool name; apply or
@@ -562,13 +562,13 @@ missing.
 
 ## 17. Testing
 
-### Workflow unit tests
+### Pipeline unit tests
 
-- text-only input skips MCP and calls the LLM task once;
-- one image creates one MCP child task;
+- text-only input skips MCP and calls the LLM step once;
+- one image creates one MCP child step;
 - multiple images serialize calls to the reused stdio service and join results
   in original order;
-- dependency failure prevents the LLM task;
+- dependency failure prevents the LLM step;
 - cancellation removes artifacts and stops active MCP calls;
 - terminal stream ownership is unique.
 
@@ -602,15 +602,16 @@ missing.
 
 ## 18. Rollout
 
-1. Implement Workflow Runtime W0 and W1 from
-   [workflow-runtime.md](workflow-runtime.md#16-implementation-plan).
+1. Implement Request Pipeline G0–G2 from
+   [request-pipeline.md](request-pipeline.md#13-implementation-plan).
 2. Add protocol-neutral media extraction and rewrite hooks.
 3. Register the two media Transform handlers.
 4. Configure and verify the local Zhipu Vision MCP service.
 5. Add the `glm-coding-plan` provider instance.
-6. Apply the workflow definition without binding production routes.
+6. Apply the Request Pipeline Definition without binding production routes.
 7. Run protocol and security integration tests.
-8. Bind one canary LLM route through `execution_policy.type = workflow`.
+8. Bind one canary LLM route through
+   `execution_policy.type = request_pipeline`.
 9. Compare text-only latency and image-request success/usage.
 10. Expand routing after MCP capacity and timeout behavior are verified.
 
@@ -631,10 +632,10 @@ semantics.
 
 Codex and Claude Code are already agents. Nesting another agent adds model
 turns, session state, permission semantics, and incompatible streaming. The
-workflow needs deterministic resource composition, not another reasoning loop.
+Pipeline needs deterministic resource composition, not another reasoning loop.
 
 ### Dedicated `input_processors`
 
-The operation is a small synchronous workflow. A separate processor engine
-would duplicate the common Workflow Runner while solving only one ingress
+The operation is a small synchronous Pipeline. A separate processor engine
+would duplicate the common Request Pipeline Runner while solving only one ingress
 phase.

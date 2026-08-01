@@ -15,8 +15,8 @@ remaining builtin-specific questions.
 Related documents deliberately own different concerns:
 
 - [Agents Control Plane](agents-control-plane.md) defines the shared `Agent`
-  identity, resources, policy, attribution, runtime-backend contract, tasks,
-  scheduling, and workflows across `acp`, `http`, and `builtin`.
+  identity, resources, policy, attribution, runtime-backend contract, and
+  external Workflow Activity boundary across `acp`, `http`, and `builtin`.
 - [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md)
   defines the turn-first `runtimeapi.Backend` adapter, common capability/event
   plane, and breaking migration from BuiltinRoute/ACPRoute to AgentRoute.
@@ -143,7 +143,8 @@ Schema rules:
   attribution, and no admin surface. Referencing another `Agent` as a
   sub-agent would make one agent a fan-out container over other agents'
   runtimes — exactly what the [agent cardinality rules](agents-control-plane.md#51-agent) exclude;
-  coordinating first-class agents is Workflows (P3), not topology.
+  coordinating first-class agents belongs to an upper-layer Business Workflow,
+  not builtin topology.
 - **`middlewares`** toggles the ADK middlewares that are safe as
   configuration; each is off by default, and they apply to the root
   definition's chat-model nodes (a single node, the supervisor head, the
@@ -259,12 +260,11 @@ lower protocol layers still never import `pkg/agent`.
   (see [§13](#13-open-questions)).
 - **Unified turn adapter**: builtin is registered as a turn-first
   `runtimeapi.Backend`; AgentRoute is its only public ingress.
-- **Durable task layer (PB2)**: the Workflow `agent` task reuses that same
-  turn adapter. PB2 adds durable Runner session/checkpoint integration rather
-  than a second backend SPI, following the dependency gate in
-  [workflow-runtime §16.1](workflow-runtime.md#161-builtin-agent-durable-dependency-gate-authoritative).
-  Workflow Run/Task Run state, scheduling, cancellation, retry, and audit stay
-  owned by `pkg/workflow`.
+- **External Workflow Activity**: an upper-layer Worker invokes the same
+  AgentRoute/turn adapter as any other caller. Temporal or another external
+  engine may own durable business state, but it does not make the builtin
+  runtime's in-memory session/checkpoint state durable. PB2 is therefore a
+  backend persistence capability, not a gateway Workflow layer.
 
 ## 8. Observability and attribution
 
@@ -496,10 +496,11 @@ the caller's to abandon by disconnecting.
 
 ## 11. Implementation track
 
-The builtin runtime is its own track. PB0/PB1/PB1b have no dependency on the
-Workflow Runtime roadmap. The turn-first builtin `runtimeapi.Backend` adapter
+The builtin runtime is its own track. PB0/PB1/PB1b have no dependency on a
+gateway Workflow roadmap. The turn-first builtin `runtimeapi.Backend` adapter
 belongs to the unified Agent runtime foundation; PB2 is only the later durable
-Workflow session/checkpoint integration.
+builtin session/checkpoint capability used by direct callers or external
+Workflow Workers.
 
 **PB0 — bridge adapters (no agent-model change):** implemented.
 
@@ -548,17 +549,15 @@ both Caddy and standalone bootstrap paths.
   unanswered calls) fails closed
 - `GET /admin/builtin/runtime` pending-permission view
 
-**PB2 — durable Workflow integration and sessions:**
+**PB2 — durable builtin sessions/checkpoints:**
 
-- plug the existing builtin `runtimeapi.Backend` adapter into the durable
-  Workflow Agent task path
-- adopt Runner session/checkpoint persistence only after eino v0.10
-  stabilizes; do not hand-roll durable agent state before that
-
-The two prerequisites for this item (W2 durable runs + eino v0.10 persistence
-→ PB2 durable integration) are stated authoritatively in
-[workflow-runtime §16.1](workflow-runtime.md#161-builtin-agent-durable-dependency-gate-authoritative);
-this document does not restate it.
+- adopt Runner session/checkpoint persistence only after a stable eino
+  persistence surface exists; do not hand-roll a competing durable state
+  engine
+- advertise resume and external execution-key capabilities only after they are
+  supported end to end
+- let upper-layer Workflow Workers choose retry/resume policy from those
+  capabilities; no gateway-owned Workflow Agent task is introduced
 
 ## 12. Implementation notes: PB1b interactive tool permissions
 
@@ -612,9 +611,9 @@ The following builtin-specific items remain open:
   offload require a gateway workspace and allowed-roots design. Until then,
   agentsmd documents and skills remain inline, and reduction remains
   clear-only.
-- **Durable task integration:** the shared builtin turn adapter lands with the
-  unified Agent runtime; durable Workflow session/checkpoint support remains
-  PB2.
+- **External durable orchestration:** upper-layer Workers already use the
+  shared AgentRoute turn contract. Durable builtin session/checkpoint support
+  remains PB2 and is independent of the external engine's history.
 
 The turn event vocabulary and explicit operator cancellation are decided:
 builtin exposes the documented ACP-compatible subset, and force/graceful

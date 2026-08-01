@@ -44,7 +44,8 @@ Primary detailed documents:
 - [getting-started/quickstart-acp.md](getting-started/quickstart-acp.md): ACP gateway quick start
 - [reference/acp-api.md](reference/acp-api.md): ACP dispatcher and Admin API reference
 - [reference/acp-technical-spec.md](reference/acp-technical-spec.md): ACP service, route, runtime, and event specification
-- [design/agents-control-plane.md](design/agents-control-plane.md): shared agent identity, resources, runtime contracts, tasks, and workflows
+- [design/agents-control-plane.md](design/agents-control-plane.md): shared Agent identity, resources, runtime contracts, and the external Business Workflow boundary
+- [design/request-pipeline.md](design/request-pipeline.md): synchronous Gateway Request Pipelines and upper-layer durable orchestration through Temporal or another external engine
 - [design/builtin-agent-runtime.md](design/builtin-agent-runtime.md): builtin ADK host, schema, lifecycle, permissions, and implementation status
 - [design/gateway-bundle-yaml.md](design/gateway-bundle-yaml.md): bundle YAML architecture and workflow
 - [design/mcp-tool-policy.md](design/mcp-tool-policy.md): MCP tool policy design

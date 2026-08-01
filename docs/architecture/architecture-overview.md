@@ -476,11 +476,12 @@ The following are partial or placeholder:
   cutover are implemented through M6; physical legacy-source deletion and the
   HTTP execution backend remain follow-up work. See
   [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md).
-- the unified Workflow Runtime for synchronous resource composition, durable
-  Agent Tasks, scheduling, and multi-agent DAGs remains future work. It
-  consumes the same turn-first Agent runtime backend rather than defining a
-  second execution SPI. See
-  [Unified Workflow Runtime](../design/workflow-runtime.md).
+- the Gateway Request Pipeline for synchronous, request-bound LLM/MCP/transform
+  composition remains future work. Durable Project/Team/Agent workflows,
+  scheduling, human approval, and multi-Agent DAGs belong to an upper-layer
+  workbench and an external engine such as Temporal; its Workers call the
+  gateway data plane. See
+  [Gateway Request Pipeline And External Orchestration](../design/request-pipeline.md).
 - the legacy `pkg/llm/agent` orchestrator has been removed
 - richer static Caddyfile route syntax for all route fields
 
@@ -521,11 +522,12 @@ The execution boundary for ACP and builtin turns is one
 turn-first `runtimeapi.Backend` layer registered by `AgentGateway`. The
 gateway-owned adapters execute through one run sequencer behind a unified
 `AgentRoute.agent_id` relationship. There is no unbound ACP ingress or
-runtime-specific public route family. HTTP remains non-executable. Workflow
-`agent` tasks will call the same backend while the Workflow Runner exclusively
-owns durable run/task state, retry, scheduling, and DAG semantics. See
+runtime-specific public route family. HTTP remains non-executable. Upper-layer
+Workflow Workers call the same AgentRoute/turn boundary while their external
+engine owns durable business state, retry, scheduling, approval, and DAG
+semantics. Gateway Request Pipelines deliberately exclude an `agent` step. See
 [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md) and
-[Unified Workflow Runtime](../design/workflow-runtime.md).
+[Gateway Request Pipeline And External Orchestration](../design/request-pipeline.md).
 
 ACP service is no longer a first-class product/config object.
 An ACP Agent owns its execution config under `Agent.runtime.acp`, and
@@ -574,11 +576,11 @@ The most coherent next steps for the architecture are:
 - finish the missing admin handlers for memory
 - complete the legacy source-deletion follow-up after the unified
   AgentRoute/Agent-owned ACP configuration and observability cutover
-- implement the [Unified Workflow Runtime](../design/workflow-runtime.md) for
-  request-bound LLM/MCP composition, durable Agent Tasks, scheduling, and
-  multi-agent DAGs, integrated with the implemented P0 + P1
-  [agents control plane](../design/agents-control-plane.md); its Agent task
-  handler depends on the unified turn-first runtime foundation
+- implement the
+  [Gateway Request Pipeline](../design/request-pipeline.md) for request-bound
+  LLM/MCP/transform composition, and harden AgentRoute as the Activity boundary
+  used by upper-layer Temporal Workers; do not add gateway-owned durable Agent
+  Tasks, schedules, or multi-Agent DAG state
 - expand enforcement of route policy beyond the currently active subset
 - integrate memory into the request path
 - expand Caddyfile route syntax to cover more of the existing route data model

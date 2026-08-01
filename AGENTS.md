@@ -14,6 +14,13 @@ The current primary LLM path is:
 
 MCP is active through `agent_route_dispatcher` with MCP enabled. ACP and builtin execution now enter through unified `kind=agent` routes (`pkg/gateway/agentroute`, dispatcher `agent` enablement, `POST /<agent-route>/turn` SSE); the target Agent's `runtime.type` selects the registered backend. ACP execution config is owned inline by `Agent.runtime.acp`, while builtin definitions are materialized by the in-process eino ADK host. The agent control plane is exposed through `/admin/agents` and `/admin/agents/routes`. Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
 
+Future gateway Pipeline support is limited to synchronous, request-bound
+`llm`/`mcp`/`transform` composition. Durable Project/Team workflows, Agent
+handoffs, schedules, human Tasks, and restart recovery belong to an upper-layer
+workbench and an external engine such as Temporal; its Workers invoke the
+gateway through normal AgentRoute/LLM/MCP data-plane APIs. Agent Gateway does
+not own a durable business Workflow state machine.
+
 ## Product Site
 
 `website/` holds the static product marketing site for https://agentguide.online
@@ -149,6 +156,8 @@ Cross-cutting invariants:
 - dependency direction: `pkg/agent` composes the LLM/MCP/ACP/metrics surfaces; the lower protocol packages must not depend on `pkg/agent`
 - no config-store reads in per-request hot paths (provider resolution, route matching); manager snapshots are refreshed on mutation
 - factory registration (providers, CLI-auth authenticators, builtin custom agents) requires blank imports in the binaries that link them (`cmd/agw/main.go`, `cmd/agwd/main.go`, `cmd/agwctl/cmd_gateway.go`); see each subtree file for the exact rule
+- gateway request pipelines never add an `agent` step, durable execution/event store,
+  scheduler, human-task model, or Temporal dependency to lower runtime packages
 
 ## Runtime Request Flow
 
