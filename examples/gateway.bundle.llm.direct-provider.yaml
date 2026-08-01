@@ -1,0 +1,103 @@
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+
+# Direct-provider routes bind one route to one provider. The request model is
+# forwarded as the upstream model; when it is omitted, the provider's
+# default_model is used.
+#
+# This file enables the DeepSeek API-key example. To use another profile,
+# uncomment its provider block and update the three annotated route fields:
+# protocol, provider_id, and credential_type_order.
+providers:
+  - id: deepseek-main
+    provider_type: deepseek
+    api_key: ${DEEPSEEK_API_KEY}
+    default_model: deepseek-v4-pro
+    options:
+      compact: cc
+
+  # Alternative: Zhipu with an API key.
+  # Route settings: protocol=openai, provider_id=zhipu-main,
+  # credential_type_order=[api_key].
+  # - id: zhipu-main
+  #   provider_type: zhipu
+  #   api_key: ${ZHIPU_API_KEY}
+  #   default_model: glm-5.1
+  #   options:
+  #     compact: cc
+
+  # Alternative: Claude Code CLI credentials obtained through CLI auth.
+  # Route settings: protocol=cc, provider_id=claudecode-cli,
+  # credential_type_order=[cliauth_token].
+  # The provider sends the Claude Code CLI fingerprint by default. Override
+  # individual network.extra_headers only when matching a newer CLI release.
+  # - id: claudecode-cli
+  #   provider_type: claudecode
+  #   default_model: claude-sonnet-4-6
+  #   network:
+  #     proxy_url: http://127.0.0.1:7890
+
+  # Alternative: Codex CLI credentials obtained through CLI auth.
+  # Route settings: protocol=openai, provider_id=codex-cli,
+  # credential_type_order=[cliauth_token].
+  # - id: codex-cli
+  #   provider_type: codex
+  #   default_model: gpt-5.4
+  #   network:
+  #     proxy_url: http://127.0.0.1:7890
+
+  # Alternative: a third-party Claude Code-compatible API-key endpoint.
+  # Route settings: protocol=openai, provider_id=claudecode-compatible,
+  # credential_type_order=[api_key].
+  # - id: claudecode-compatible
+  #   provider_type: claudecode
+  #   base_url: https://us-api.ccodezh.com
+  #   api_key: ${ANTHROPIC_API_KEY}
+  #   default_model: claude-sonnet-4-6
+  #   network:
+  #     proxy_url: http://127.0.0.1:7890
+  #     extra_headers:
+  #       User-Agent: claude-cli/2.1.158 (external, cli)
+  #       anthropic-beta: <new beta flag list>
+  #   options:
+  #     api_key_header: authorization
+  #     compact: codex
+
+  # Alternative: a third-party Codex-compatible API-key endpoint.
+  # Route settings: protocol=openai, provider_id=codex-compatible,
+  # credential_type_order=[api_key].
+  # - id: codex-compatible
+  #   provider_type: codex
+  #   base_url: https://us-api.codexzh.com/v1
+  #   api_key: ${OPENAI_API_KEY}
+  #   default_model: gpt-5.5
+  #   network:
+  #     proxy_url: http://127.0.0.1:7890
+  #   options:
+  #     compact: cc
+
+llmRoutes:
+  - id: chat
+    # Use cc for the claudecode-cli profile; the other profiles use openai.
+    protocol: openai
+    match_policy:
+      path_prefix: /
+      methods:
+        - POST
+        # Add GET when the selected client also calls endpoints such as /models.
+        # - GET
+    auth_policy:
+      require_virtual_key: true
+    target_policy:
+      provider_target:
+        # Set this to the id of the enabled provider profile above.
+        provider_id: deepseek-main
+      # CLI-auth profiles use cliauth_token instead.
+      credential_type_order:
+        - api_key
+
+virtualKeys:
+  - id: vk-llm-direct-provider
+    tag: local-test
+    allowed_route_ids:
+      - chat

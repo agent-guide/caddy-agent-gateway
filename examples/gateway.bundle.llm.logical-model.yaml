@@ -1,0 +1,94 @@
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+
+# Logical-model routes expose stable model names to clients and resolve each
+# name to an enabled (provider_id, upstream_model) candidate. Every candidate
+# must have a matching managedModels entry.
+providers:
+  - id: openai-main
+    provider_type: openai
+    api_key: ${OPENAI_API_KEY}
+    default_model: gpt-4.1
+  - id: anthropic-main
+    provider_type: anthropic
+    api_key: ${ANTHROPIC_API_KEY}
+    default_model: claude-sonnet-4-5
+
+  # Alternative API-key providers. If enabled, also enable their matching
+  # managedModels and route candidates below.
+  # - id: zhipu-main
+  #   provider_type: zhipu
+  #   api_key: ${ZHIPU_API_KEY}
+  #   default_model: glm-5.1
+  # - id: deepseek-main
+  #   provider_type: deepseek
+  #   api_key: ${DEEPSEEK_API_KEY}
+  #   default_model: deepseek-v4-pro
+
+managedModels:
+  - provider_id: openai-main
+    upstream_model: gpt-4.1
+    enabled: true
+  - provider_id: anthropic-main
+    upstream_model: claude-sonnet-4-5
+    enabled: true
+
+  # Matching managed models for the alternative providers above.
+  # - provider_id: zhipu-main
+  #   upstream_model: glm-5.1
+  #   enabled: true
+  # - provider_id: deepseek-main
+  #   upstream_model: deepseek-v4-pro
+  #   enabled: true
+
+llmRoutes:
+  - id: chat-prod
+    protocol: openai
+    match_policy:
+      path_prefix: /
+      methods:
+        - POST
+    auth_policy:
+      require_virtual_key: true
+    target_policy:
+      # Used when the client omits model. Client-supplied model values must
+      # match one of the model_targets names, not an upstream model name.
+      default_model: chat-default
+      # To select among multiple candidates for the same logical model, add
+      # candidates below and enable one of these policies:
+      # model_selector_strategy: weighted
+      # fallback:
+      #   enabled: true
+      #   max_num: 1
+      model_targets:
+        - name: chat-default
+          candidates:
+            - provider_id: openai-main
+              upstream_model: gpt-4.1
+              weight: 100
+            # Example second candidate for weighted selection or fallback:
+            # - provider_id: anthropic-main
+            #   upstream_model: claude-sonnet-4-5
+            #   weight: 20
+        - name: reasoning-default
+          candidates:
+            - provider_id: anthropic-main
+              upstream_model: claude-sonnet-4-5
+              weight: 100
+        # Alternative route-visible models for the optional providers above:
+        # - name: code-default
+        #   candidates:
+        #     - provider_id: zhipu-main
+        #       upstream_model: glm-5.1
+        #       weight: 100
+        # - name: deepseek-default
+        #   candidates:
+        #     - provider_id: deepseek-main
+        #       upstream_model: deepseek-v4-pro
+        #       weight: 100
+
+virtualKeys:
+  - id: vk-prod
+    tag: prod
+    allowed_route_ids:
+      - chat-prod

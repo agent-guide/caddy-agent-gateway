@@ -7,59 +7,39 @@
 # - "agent_route_dispatcher.llm_apis.openai"
 # - "agent_route_dispatcher.llm_apis.anthropic"
 # - "agent_route_dispatcher.llm_apis.cc"
-
 {
 	admin localhost:2019
 
+	# Global error/module log — controls where h.logger.Info/Debug/Error calls go.
+	# This is separate from the per-site HTTP access log below.
 	log {
 		output stderr
 		format console
-		level INFO
+		level DEBUG
 	}
 
 	agent_gateway {
 		config_store sqlite {
 			path ./data/configstore.db
 		}
+		# External command for request-time OAuth token refresh. Defaults to
+		# agw-auth; set an absolute path when it is not available on PATH.
+		credential_refresh_command agw-auth
 
-		provider zhipu-for-codex {
-			provider_type zhipu
-			api_key {$ZHIPU_API_KEY}
-			base_url https://open.bigmodel.cn/api/coding/paas/v4
-			default_model glm-5.2
-			option thinking_type disabled
-			# Codex needs no compat option here: zhipu is a real OpenAI-compatible
-			# endpoint, so it does not gate on Claude Code tool names and the Codex
-			# Responses->chat conversion drops the metadata/user fields. The codex
-			# tool-name aliasing (option compact codex) only applies to the
-			# claudecode/Anthropic-relay provider.
+		metrics {
+			retention_days 30
+			max_agent_depth 0
+			# Optional: export usage events as OpenTelemetry spans to an OTLP
+			# collector. Export is disabled when no endpoint is configured.
+			# otlp {
+			#	endpoint 127.0.0.1:4317
+			#	protocol grpc
+			#	insecure
+			#	header Authorization "Bearer token"
+			#	service_name agent-gateway
+			#	timeout_seconds 10
+			# }
 		}
-
-		provider deepseek-for-codex {
-			provider_type deepseek
-			api_key {$DEEPSEEK_API_KEY}
-			base_url https://api.deepseek.com
-			default_model deepseek-v4-pro
-		}
-		
-		route codex-zp-chat {
-			protocol openai
-			path_prefix /codexzpchat
-			require_virtual_key false
-			target provider zhipu-for-codex
-		}
-
-		route codex-ds-chat {
-			protocol openai
-			path_prefix /codexdschat
-			require_virtual_key false
-			target provider deepseek-test
-		}
-
-                metrics {
-                        retention_days 30
-                        max_agent_depth 0
-                }
 	}
 }
 
@@ -83,10 +63,17 @@ http://127.0.0.1:8080 {
 	log {
 		output stderr
 		format console
+		level DEBUG
 	}
 
 	# LLM API routes
 	agent_route_dispatcher {
 		llm_api openai
+		llm_api anthropic
+		llm_api cc
+		# Enable MCP and unified Agent handling. Agents and AgentRoutes are created
+		# through the Admin API or gateway bundles.
+		mcp
+		agent
 	}
 }

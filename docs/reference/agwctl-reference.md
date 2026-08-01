@@ -58,7 +58,7 @@ List remote gateway CLI auth authenticators and refresher status:
 Validate a gateway bundle YAML file locally:
 
 ```bash
-./agwctl gateway validate -f ./examples/gateway.bundle.minimal.yaml
+./agwctl gateway validate -f ./examples/gateway.bundle.llm.direct-provider.yaml
 ```
 
 Apply a gateway bundle YAML file through the Admin API:
@@ -66,7 +66,7 @@ Apply a gateway bundle YAML file through the Admin API:
 ```bash
 ./agwctl gateway --admin-addr http://localhost:8019 \
   --admin-basic-auth admin:your-password \
-  apply -f ./examples/gateway.bundle.minimal.yaml
+  apply -f ./examples/gateway.bundle.llm.direct-provider.yaml
 ```
 
 Export remote gateway objects as bundle YAML:

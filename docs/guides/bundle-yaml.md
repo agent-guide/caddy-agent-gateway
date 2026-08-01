@@ -79,8 +79,8 @@ llmRoutes:
 
 See:
 
-- [examples/gateway.static.minimal.yaml](/Users/simpcl/github/agent-guide/agent-gateway/examples/gateway.static.minimal.yaml)
-- [examples/gateway.bundle.direct-provider.test.yaml](/Users/simpcl/github/agent-guide/agent-gateway/examples/gateway.bundle.direct-provider.test.yaml)
+- [examples/gateway.static.minimal.yaml](../../examples/gateway.static.minimal.yaml)
+- [examples/gateway.bundle.llm.direct-provider.yaml](../../examples/gateway.bundle.llm.direct-provider.yaml)
 
 ## Logical-Model Bundle Example
 
@@ -117,7 +117,7 @@ llmRoutes:
               weight: 100
 ```
 
-See [examples/gateway.bundle.logical-model.test.yaml](/Users/simpcl/github/agent-guide/agent-gateway/examples/gateway.bundle.logical-model.test.yaml).
+See [examples/gateway.bundle.llm.logical-model.yaml](../../examples/gateway.bundle.llm.logical-model.yaml).
 
 ## Static Versus Dynamic Restrictions
 

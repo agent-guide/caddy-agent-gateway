@@ -1,17 +1,21 @@
 # Caddy Agent Gateway
-# Caddy App module ID: "agent_gateway"
-# HTTP handler module IDs:
-# - "http.handlers.agent_gateway_admin" (Caddyfile directive: "agent_gateway_admin")
-# - "http.handlers.agent_route_dispatcher" (Caddyfile directive: "agent_route_dispatcher")
-# Dispatcher LLM API module IDs:
-# - "agent_route_dispatcher.llm_apis.openai"
-# - "agent_route_dispatcher.llm_apis.anthropic"
-# - "agent_route_dispatcher.llm_apis.cc"
+#
+# This is the consolidated Caddyfile reference. It runs as-is with the shared
+# SQLite config store; providers and routes can be managed through the Admin API
+# or gateway bundles. Optional static-provider and OTLP profiles are included
+# below as commented examples.
+#
+# Caddy module IDs:
+# - agent_gateway
+# - http.handlers.agent_gateway_admin (directive: agent_gateway_admin)
+# - http.handlers.agent_route_dispatcher (directive: agent_route_dispatcher)
+# - agent_route_dispatcher.llm_apis.openai
+# - agent_route_dispatcher.llm_apis.anthropic
+# - agent_route_dispatcher.llm_apis.cc
 {
 	admin localhost:2019
 
-	# Global error/module log — controls where h.logger.Info/Debug/Error calls go.
-	# This is separate from the per-site HTTP access log below.
+	# Global module log. This is separate from the per-site access log below.
 	log {
 		output stderr
 		format console
@@ -22,19 +26,123 @@
 		config_store sqlite {
 			path ./data/configstore.db
 		}
+		# Optional static provider and route profiles. Uncomment the provider and
+		# matching route needed for local experiments. Bundle/Admin API objects
+		# stored in SQLite can be used instead.
+
+		# OpenAI API-key baseline.
+		# provider openai-main {
+		# 	provider_type openai
+		# 	api_key {$OPENAI_API_KEY}
+		# 	default_model gpt-4.1
+		# }
+		# route openai-chat {
+		# 	protocol openai
+		# 	path_prefix /
+		# 	require_virtual_key
+		# 	target provider openai-main
+		# }
+
+		# Anthropic ingress -> OpenAI-compatible upstream simulation. Both
+		# providers intentionally use provider_type openai; enable either one and
+		# point the route target at it. The optional provider_types block limits
+		# this process to the OpenAI provider implementation.
+		# provider_types {
+		# 	openai
+		# }
+		# provider zhipu-simulated-openai {
+		# 	provider_type openai
+		# 	api_key {$ZHIPU_API_KEY}
+		# 	base_url https://open.bigmodel.cn/api/paas/v4
+		# 	default_model glm-4.7
+		# 	option debug_request true
+		# }
+		# provider deepseek-simulated-openai {
+		# 	provider_type openai
+		# 	api_key {$DEEPSEEK_API_KEY}
+		# 	base_url https://api.deepseek.com
+		# 	default_model deepseek-chat
+		# 	option debug_request true
+		# }
+		# route anthropic-to-openai-chat {
+		# 	protocol anthropic
+		# 	path_prefix /myanthropicprefix
+		# 	require_virtual_key
+		# 	target provider deepseek-simulated-openai
+		# }
+
+		# Claude Code -> Zhipu coding endpoint.
+		# provider zhipu-for-cc {
+		# 	provider_type zhipu
+		# 	api_key {$ZHIPU_API_KEY}
+		# 	base_url https://open.bigmodel.cn/api/coding/paas/v4
+		# 	default_model glm-5.2
+		# 	option thinking_type disabled
+		# 	# Strip top-level metadata/user fields rejected by this endpoint.
+		# 	option compact cc
+		# }
+		# route cc-zhipu-chat {
+		# 	protocol cc
+		# 	path_prefix /cczpchat
+		# 	require_virtual_key false
+		# 	target provider zhipu-for-cc
+		# }
+
+		# Codex -> Zhipu coding endpoint.
+		# provider zhipu-for-codex {
+		# 	provider_type zhipu
+		# 	api_key {$ZHIPU_API_KEY}
+		# 	base_url https://open.bigmodel.cn/api/coding/paas/v4
+		# 	default_model glm-5.2
+		# 	option thinking_type disabled
+		# }
+		# route codex-zhipu-chat {
+		# 	protocol openai
+		# 	path_prefix /codexzpchat
+		# 	require_virtual_key false
+		# 	target provider zhipu-for-codex
+		# }
+
+		# Codex -> DeepSeek endpoint.
+		# provider deepseek-for-codex {
+		# 	provider_type deepseek
+		# 	api_key {$DEEPSEEK_API_KEY}
+		# 	base_url https://api.deepseek.com
+		# 	default_model deepseek-v4-pro
+		# }
+		# route codex-deepseek-chat {
+		# 	protocol openai
+		# 	path_prefix /codexdschat
+		# 	require_virtual_key false
+		# 	target provider deepseek-for-codex
+		# }
 
 		metrics {
 			retention_days 30
 			max_agent_depth 0
-			# Optional: export usage events as OpenTelemetry spans to an OTLP
-			# collector. Export is disabled when no endpoint is configured.
+
+			# Optional OTLP usage-event export. Every LLM/MCP/ACP/builtin usage
+			# event is exported as an OpenTelemetry span in addition to SQLite
+			# event storage and the Prometheus exposition endpoint.
+			#
+			# Quick local collector and UI:
+			# docker run --rm -p 16686:16686 -p 4317:4317 -p 4318:4318 \
+			#   jaegertracing/all-in-one:latest
+			#
 			# otlp {
-			#	endpoint 127.0.0.1:4317
-			#	protocol grpc
-			#	insecure
-			#	header Authorization "Bearer token"
-			#	service_name agent-gateway
-			#	timeout_seconds 10
+			# 	# Use host:port, or a full OTLP/HTTP URL such as
+			# 	# http://collector.internal:4318/v1/traces.
+			# 	endpoint 127.0.0.1:4317
+			# 	# grpc uses the conventional 4317 port; http uses 4318.
+			# 	protocol grpc
+			# 	# Disable TLS for a plaintext local collector.
+			# 	insecure
+			# 	# Repeat header for hosted-backend authentication as needed.
+			# 	# header Authorization "Bearer token"
+			# 	service_name agent-gateway
+			# 	timeout_seconds 10
+			# 	# Also export nested eino chat-model component spans.
+			# 	# components
 			# }
 		}
 	}
@@ -43,8 +151,7 @@
 http://localhost:8019 {
 	# Admin routes
 	route /admin/* {
-		# Exempt the public health probe and CORS preflight (which carries no
-		# credentials) so browser admin UIs and health checks keep working.
+		# Exempt the public health probe and credential-free CORS preflight.
 		@needauth {
 			not path /admin/health
 			not method OPTIONS
@@ -63,13 +170,10 @@ http://127.0.0.1:8080 {
 		level DEBUG
 	}
 
-	# LLM API routes
 	agent_route_dispatcher {
 		llm_api openai
 		llm_api anthropic
 		llm_api cc
-		# Enable MCP and unified Agent handling. Agents and AgentRoutes are created
-		# through the Admin API or gateway bundles.
 		mcp
 		agent
 	}

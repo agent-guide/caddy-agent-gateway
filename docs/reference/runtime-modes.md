@@ -41,8 +41,8 @@ Recommended workflows:
 
 Bundle YAML examples used by current workflows:
 
-- `examples/gateway.bundle.minimal.yaml`
-- `examples/gateway.bundle.logical-model.yaml`
+- `examples/gateway.bundle.llm.direct-provider.yaml`
+- `examples/gateway.bundle.llm.logical-model.yaml`
 - `examples/gateway.bundle.cliauth-authenticators.yaml`
 
 ## Related Docs
