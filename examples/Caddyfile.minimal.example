@@ -24,7 +24,7 @@
 		}
 		# External command for request-time OAuth token refresh. Defaults to
 		# agw-auth; set an absolute path when it is not available on PATH.
-		credential_refresh_command agw-auth
+		credential_refresh_command agw-auth refresh
 
 		metrics {
 			retention_days 30

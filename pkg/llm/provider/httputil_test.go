@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 )
 
 func TestAPIKeyFromContextOrConfigUsesConfigFallbackByDefault(t *testing.T) {
@@ -15,7 +15,7 @@ func TestAPIKeyFromContextOrConfigUsesConfigFallbackByDefault(t *testing.T) {
 }
 
 func TestAPIKeyFromContextOrConfigPrefersContextCredential(t *testing.T) {
-	ctx := WithCredential(context.Background(), &credentialmgr.Credential{
+	ctx := WithCredential(context.Background(), &credential.Credential{
 		Attributes: map[string]string{"api_key": "managed-key"},
 	})
 	got := APIKeyFromContextOrConfig(ctx, "config-key")

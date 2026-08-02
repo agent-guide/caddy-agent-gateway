@@ -502,21 +502,6 @@ func printGatewayManagedModelsTable(items []adminclient.ManagedModel) {
 	printTable(headers, rows)
 }
 
-func printGatewayCLIAuthAuthenticatorsTable(items []adminclient.CLIAuthAuthenticator) {
-	headers := []string{"NAME", "ENABLED", "CALLBACK-PORT", "NO-BROWSER", "DEVICE-FLOW"}
-	rows := make([][]string, 0, len(items))
-	for _, item := range items {
-		rows = append(rows, []string{
-			dash(item.Name),
-			boolStr(item.Enabled),
-			fmt.Sprintf("%d", item.Config.CallbackPort),
-			boolStr(item.Config.NoBrowser),
-			boolStr(item.Config.DeviceFlow),
-		})
-	}
-	printTable(headers, rows)
-}
-
 func printGatewayProviderTypesTable(items []adminclient.ProviderType) {
 	headers := []string{"PROVIDER-TYPE", "ENABLED"}
 	rows := make([][]string, 0, len(items))

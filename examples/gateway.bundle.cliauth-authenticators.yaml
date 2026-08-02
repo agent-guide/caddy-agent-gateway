@@ -1,9 +1,0 @@
-apiVersion: gateway.agw/v1alpha1
-kind: GatewayBundle
-
-cliAuthAuthenticators:
-  - name: claudecode
-    enabled: true
-    config:
-      no_browser: true
-      transport_profile: browser_like_tls

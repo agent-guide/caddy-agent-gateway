@@ -17,6 +17,11 @@ the per-request provider resolution hot path.
 
 `AgentGateway` is the main runtime object. It resolves routes, validates VirtualKeys, and selects providers. It does not own the HTTP protocol details.
 
+`RoutedProvider` selects managed credentials and invokes the credential
+manager's request-time external refresh hook before attaching a
+`oauth_token` to the provider context. Provider-specific login and token
+refresh behavior are external to this repository and owned by `agw-auth`.
+
 Runtime route matching uses the in-memory manager snapshot. Bootstrap and
 route manager create/update/delete/refresh keep that snapshot populated; do not
 reintroduce per-request config-store `List` calls for matching.

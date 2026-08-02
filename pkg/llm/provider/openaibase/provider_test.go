@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/httpclient"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
@@ -433,8 +433,8 @@ type providerCredential struct {
 	apiKey string
 }
 
-func (c providerCredential) toCredential() *credentialmgr.Credential {
-	return &credentialmgr.Credential{
+func (c providerCredential) toCredential() *credential.Credential {
+	return &credential.Credential{
 		Attributes: map[string]string{
 			"api_key": c.apiKey,
 		},

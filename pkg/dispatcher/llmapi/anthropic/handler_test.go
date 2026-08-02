@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	sched "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	sched "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/cloudwego/eino/schema"
 )
@@ -133,15 +133,15 @@ func (p *testCredentialMarkingProvider) mark(model string, err error) {
 	p.scheduler.MarkResult(context.Background(), result)
 }
 
-func newTestCredentialScheduler(t *testing.T, mgr *credentialmgr.Manager) sched.CredentialScheduler {
+func newTestCredentialScheduler(t *testing.T, mgr *credential.Manager) sched.CredentialScheduler {
 	t.Helper()
 	scheduler := sched.NewScheduler(nil)
-	listener, ok := scheduler.(credentialmgr.CredentialLifecycleListener)
+	listener, ok := scheduler.(credential.CredentialLifecycleListener)
 	if !ok {
 		t.Fatal("scheduler does not implement CredentialLifecycleListener")
 	}
 	mgr.AddListener(listener)
-	scheduler.Rebuild(mgr.ListCredentials(credentialmgr.Filter{}))
+	scheduler.Rebuild(mgr.ListCredentials(credential.Filter{}))
 	return scheduler
 }
 
@@ -181,13 +181,13 @@ func TestServeLLMApiCountTokensReturnsNotImplemented(t *testing.T) {
 }
 
 func TestServeLLMApiMarksAnthropicStreamFailures(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
-	if err := credMgr.RegisterCredential(context.Background(), &credentialmgr.Credential{
+	credMgr := credential.NewManager(nil)
+	if err := credMgr.RegisterCredential(context.Background(), &credential.Credential{
 		ID:           "cred-anthropic-1",
 		ProviderType: "anthropic",
 		ProviderID:   "anthropic",
 		Scope:        "id:anthropic",
-		Type:         credentialmgr.TypeAPIKey,
+		Type:         credential.TypeAPIKey,
 	}); err != nil {
 		t.Fatalf("register credential: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestServeLLMApiMarksAnthropicStreamFailures(t *testing.T) {
 	}
 
 	_, err = scheduler.Pick(context.Background(), sched.Filter{
-		Type:            credentialmgr.TypeAPIKey,
+		Type:            credential.TypeAPIKey,
 		CredentialScope: "id:anthropic",
 		Model:           "claude-sonnet-4-5",
 	}, nil)

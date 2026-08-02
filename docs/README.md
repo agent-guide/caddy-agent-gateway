@@ -10,7 +10,7 @@ The documentation is organized into these categories:
   - first-run setup for `agw`, `agwd`, and `agwctl`
   - first route, first VirtualKey, first successful request
 - `guides/`
-  - task-oriented usage guides such as providers, routes, credentials, CLI auth, bundle YAML, and MCP operations
+  - task-oriented usage guides such as providers, routes, OAuth credentials, bundle YAML, and MCP operations
 - `reference/`
   - Caddyfile syntax, Admin API endpoints, CLI command reference, provider options, and runtime mode reference
 - `architecture/`

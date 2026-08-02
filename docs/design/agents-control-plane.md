@@ -34,7 +34,7 @@ The repository already contains the protocol-level building blocks:
 - LLM routes and providers for model access
 - MCP services and routes for tool access
 - ACP runtime/process management for agent execution
-- VirtualKeys, credentials, and CLI auth for access control
+- VirtualKeys and managed credentials for access control
 - metrics and interactions for usage, latency, errors, and call-chain traces
 
 `pkg/agent` should be the product layer that composes these building blocks.
@@ -124,7 +124,7 @@ lower-level protocol packages must not depend on `pkg/agent`.
 pkg/agent
   -> pkg/acp/runtime
   -> pkg/gateway/agentroute + pkg/gateway/llmroute + pkg/gateway/mcproute
-  -> pkg/llm/provider + pkg/llm/credentialmgr + pkg/gateway/modelcatalog
+  -> pkg/llm/provider + pkg/credential + pkg/gateway/modelcatalog
   -> pkg/mcp/service + pkg/mcp/runtime
   -> pkg/gateway/virtualkey
   -> internal/observability/usage

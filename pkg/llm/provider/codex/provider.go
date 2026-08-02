@@ -10,7 +10,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider/openaibase"
 )
@@ -388,7 +388,7 @@ func extractAccessToken(ctx context.Context) string {
 	if !ok || cred == nil {
 		return ""
 	}
-	if cred.Type == credentialmgr.TypeCLIAuthToken {
+	if cred.Type == credential.TypeOAuthToken {
 		if cred.Metadata != nil {
 			if token, _ := cred.Metadata["access_token"].(string); strings.TrimSpace(token) != "" {
 				return strings.TrimSpace(token)

@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/pkg/adminclient"
-	_ "github.com/agent-guide/agent-gateway/pkg/cliauth/authenticator"
 	"github.com/agent-guide/agent-gateway/pkg/gatewaybundle"
 	"github.com/spf13/cobra"
 
@@ -74,15 +73,14 @@ var gatewayValidateCmd = &cobra.Command{
 				"status": "ok",
 				"file":   gatewayBundleFile,
 				"counts": map[string]int{
-					"providers":              len(bundle.Providers),
-					"managed_models":         len(bundle.ManagedModels),
-					"llm_routes":             len(bundle.LLMRoutes),
-					"virtual_keys":           len(bundle.VirtualKeys),
-					"cliauth_authenticators": len(bundle.CLIAuthAuthenticators),
-					"mcp_services":           len(bundle.MCPServices),
-					"mcp_routes":             len(bundle.MCPRoutes),
-					"agent_routes":           len(bundle.AgentRoutes),
-					"agents":                 len(bundle.Agents),
+					"providers":      len(bundle.Providers),
+					"managed_models": len(bundle.ManagedModels),
+					"llm_routes":     len(bundle.LLMRoutes),
+					"virtual_keys":   len(bundle.VirtualKeys),
+					"mcp_services":   len(bundle.MCPServices),
+					"mcp_routes":     len(bundle.MCPRoutes),
+					"agent_routes":   len(bundle.AgentRoutes),
+					"agents":         len(bundle.Agents),
 				},
 			})
 		}
@@ -802,88 +800,6 @@ var gatewayModelsManagedDeleteCmd = &cobra.Command{
 	},
 }
 
-// ── gateway cliauth ──────────────────────────────────────────────────────────
-
-var gatewayCLIAuthCmd = &cobra.Command{
-	Use:   "cliauth",
-	Short: "Manage remote gateway CLI auth runtime via the admin API",
-}
-
-var gatewayCLIAuthAuthenticatorsCmd = &cobra.Command{
-	Use:   "authenticators",
-	Short: "Manage gateway CLI auth authenticators",
-}
-
-var gatewayCLIAuthAuthenticatorsListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List enabled and known CLI auth authenticators",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		items, err := newGatewayClient().ListCLIAuthAuthenticators(context.Background())
-		if err != nil {
-			return err
-		}
-		if outputFormat == "json" {
-			return printJSON(items)
-		}
-		printGatewayCLIAuthAuthenticatorsTable(items)
-		return nil
-	},
-}
-
-var gatewayCLIAuthAuthenticatorsGetCmd = &cobra.Command{
-	Use:   "get <authenticator-name>",
-	Short: "Get one CLI auth authenticator",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		item, err := newGatewayClient().GetCLIAuthAuthenticator(context.Background(), args[0])
-		if err != nil {
-			return err
-		}
-		return printJSON(item)
-	},
-}
-
-var gatewayCLIAuthRefresherCmd = &cobra.Command{
-	Use:   "refresher",
-	Short: "Manage the gateway CLI auth refresher",
-}
-
-var gatewayCLIAuthRefresherStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show CLI auth refresher status",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		item, err := newGatewayClient().GetCLIAuthRefresherStatus(context.Background())
-		if err != nil {
-			return err
-		}
-		return printJSON(item)
-	},
-}
-
-var gatewayCLIAuthRefresherEnableCmd = &cobra.Command{
-	Use:   "enable",
-	Short: "Enable the CLI auth refresher",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		resp, err := newGatewayClient().EnableCLIAuthRefresher(context.Background())
-		if err != nil {
-			return err
-		}
-		return printJSON(resp)
-	},
-}
-
-var gatewayCLIAuthRefresherDisableCmd = &cobra.Command{
-	Use:   "disable",
-	Short: "Disable the CLI auth refresher",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		resp, err := newGatewayClient().DisableCLIAuthRefresher(context.Background())
-		if err != nil {
-			return err
-		}
-		return printJSON(resp)
-	},
-}
-
 var gatewayCredentialListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all credentials",
@@ -959,7 +875,7 @@ func init() {
 	gatewayCmd.PersistentFlags().StringArrayVar(&gwAdminHeaders, "admin-header", nil, "extra admin API header as 'Name: value'; repeat to send multiple headers")
 
 	gatewayModelsManagedListCmd.Flags().StringVar(&gatewayManagedModelProviderID, "provider-id", "", "filter managed models by provider ID")
-	gatewayCredentialListCmd.Flags().StringVar(&gatewayCredentialType, "type", "", "filter credentials by type (api_key or cliauth_token)")
+	gatewayCredentialListCmd.Flags().StringVar(&gatewayCredentialType, "type", "", "filter credentials by type (api_key or oauth_token)")
 	gatewayCredentialListCmd.Flags().StringVar(&gatewayCredentialProviderType, "provider-type", "", "filter credentials by provider type")
 	gatewayCredentialListCmd.Flags().StringVar(&gatewayCredentialProviderID, "provider-id", "", "filter credentials by provider ID")
 	gatewayMCPRuntimeHistoryCmd.Flags().StringVar(&gatewayMCPRuntimeRouteID, "route-id", "", "filter completed MCP requests by route ID")
@@ -1034,17 +950,6 @@ func init() {
 	gatewayLLMAPIHandlerTypesCmd.AddCommand(
 		gatewayLLMAPIHandlerTypesListCmd,
 	)
-	gatewayCLIAuthAuthenticatorsCmd.AddCommand(
-		gatewayCLIAuthAuthenticatorsListCmd,
-		gatewayCLIAuthAuthenticatorsGetCmd,
-	)
-	gatewayCLIAuthRefresherCmd.AddCommand(
-		gatewayCLIAuthRefresherStatusCmd,
-		gatewayCLIAuthRefresherEnableCmd,
-		gatewayCLIAuthRefresherDisableCmd,
-	)
-	gatewayCLIAuthCmd.AddCommand(gatewayCLIAuthAuthenticatorsCmd, gatewayCLIAuthRefresherCmd)
-
 	gatewayCmd.AddCommand(
 		gatewayValidateCmd,
 		gatewayApplyCmd,
@@ -1059,7 +964,6 @@ func init() {
 		gatewayProviderTypesCmd,
 		gatewayLLMAPIHandlerTypesCmd,
 		gatewayModelsCmd,
-		gatewayCLIAuthCmd,
 	)
 	rootCmd.AddCommand(gatewayCmd)
 }

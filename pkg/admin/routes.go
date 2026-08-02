@@ -90,22 +90,12 @@ func (h *Handler) Routes() []Route {
 		{Method: http.MethodPost, Path: "/admin/virtual_keys/{id}/enable", Handler: h.handleEnableVirtualKey},
 		{Method: http.MethodPost, Path: "/admin/virtual_keys/{id}/disable", Handler: h.handleDisableVirtualKey},
 		{Method: http.MethodDelete, Path: "/admin/virtual_keys/{id}", Handler: h.handleDeleteVirtualKey},
-		// Credentials (api_key and cliauth)
+		// Credentials (api_key and externally provisioned oauth_token)
 		{Method: http.MethodGet, Path: "/admin/credentials", Handler: h.handleListCredentials},
 		{Method: http.MethodPost, Path: "/admin/credentials", Handler: h.handleCreateCredential},
 		{Method: http.MethodGet, Path: "/admin/credentials/{credential_id}", Handler: h.handleGetCredential},
 		{Method: http.MethodPut, Path: "/admin/credentials/{credential_id}", Handler: h.handleUpdateCredential},
 		{Method: http.MethodDelete, Path: "/admin/credentials/{credential_id}", Handler: h.handleDeleteCredential},
-
-		// CLI Auth Authenticators
-		{Method: http.MethodGet, Path: "/admin/cliauth/authenticators", Handler: h.handleListCLIAuthAuthenticators},
-		{Method: http.MethodGet, Path: "/admin/cliauth/authenticators/{authenticator_name}", Handler: h.handleGetCLIAuthAuthenticator},
-		{Method: http.MethodPut, Path: "/admin/cliauth/authenticators/{authenticator_name}", Handler: h.handleUpdateCLIAuthAuthenticator},
-		{Method: http.MethodPost, Path: "/admin/cliauth/authenticators/{authenticator_name}/login", Handler: h.handleStartCLIAuthAuthenticatorLogin},
-		{Method: http.MethodGet, Path: "/admin/cliauth/refresher", Handler: h.handleGetCLIAuthRefresherStatus},
-		{Method: http.MethodPost, Path: "/admin/cliauth/refresher/enable", Handler: h.handleEnableCLIAuthRefresher},
-		{Method: http.MethodPost, Path: "/admin/cliauth/refresher/disable", Handler: h.handleDisableCLIAuthRefresher},
-		{Method: http.MethodGet, Path: "/admin/cliauth/logins/{login_id}", Handler: h.handleGetCLIAuthLoginStatus},
 
 		// MCP
 		{Method: http.MethodGet, Path: "/admin/mcp/services", Handler: h.handlerListMCPServices},

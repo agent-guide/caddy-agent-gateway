@@ -310,54 +310,61 @@ func (s *authScheduler) MarkResult(_ context.Context, result Result) {
 	} else if result.Error != nil {
 		rerr := result.Error
 		changed = true
-		isQuota := rerr.HTTPStatus == http.StatusTooManyRequests
-		if isQuota && !s.disableQuota {
-			backoffLevel := cred.Quota.BackoffLevel
-			backoff := computeBackoff(backoffLevel, defaultQuotaBackoffBase, defaultQuotaBackoffMax)
-			if result.RetryAfter != nil && *result.RetryAfter > backoff {
-				backoff = *result.RetryAfter
-			}
-			cred.Quota = QuotaState{
-				Exceeded:      true,
-				Reason:        rerr.Message,
-				NextRecoverAt: now.Add(backoff),
-				BackoffLevel:  backoffLevel + 1,
-			}
-			cred.Unavailable = true
-			cred.NextRetryAfter = now.Add(backoff)
-		} else if rerr.HTTPStatus == http.StatusUnauthorized || rerr.HTTPStatus == http.StatusForbidden {
-			cred.AuthInvalid = true
-			cred.LastError = rerr
-		} else {
-			cred.LastError = rerr
+		if result.CredentialWide {
+			cred.CredentialWideUnavailable = true
 			if result.RetryAfter != nil {
-				cred.Unavailable = true
-				cred.NextRetryAfter = now.Add(*result.RetryAfter)
+				cred.CredentialWideNextRetryAfter = now.Add(*result.RetryAfter)
 			}
-		}
-
-		if result.Model != "" {
-			if cred.ModelStates == nil {
-				cred.ModelStates = make(map[string]*ModelState)
-			}
-			state := cred.ModelStates[result.Model]
-			if state == nil {
-				state = &ModelState{}
-				cred.ModelStates[result.Model] = state
-			}
-			state.UpdatedAt = now
+		} else {
+			isQuota := rerr.HTTPStatus == http.StatusTooManyRequests
 			if isQuota && !s.disableQuota {
-				state.Quota = cred.Quota
-				state.Unavailable = true
-				state.NextRetryAfter = cred.NextRetryAfter
+				backoffLevel := cred.Quota.BackoffLevel
+				backoff := computeBackoff(backoffLevel, defaultQuotaBackoffBase, defaultQuotaBackoffMax)
+				if result.RetryAfter != nil && *result.RetryAfter > backoff {
+					backoff = *result.RetryAfter
+				}
+				cred.Quota = QuotaState{
+					Exceeded:      true,
+					Reason:        rerr.Message,
+					NextRecoverAt: now.Add(backoff),
+					BackoffLevel:  backoffLevel + 1,
+				}
+				cred.Unavailable = true
+				cred.NextRetryAfter = now.Add(backoff)
 			} else if rerr.HTTPStatus == http.StatusUnauthorized || rerr.HTTPStatus == http.StatusForbidden {
-				state.AuthInvalid = true
-				state.LastError = rerr
+				cred.AuthInvalid = true
+				cred.LastError = rerr
 			} else {
-				state.LastError = rerr
+				cred.LastError = rerr
 				if result.RetryAfter != nil {
+					cred.Unavailable = true
+					cred.NextRetryAfter = now.Add(*result.RetryAfter)
+				}
+			}
+
+			if result.Model != "" {
+				if cred.ModelStates == nil {
+					cred.ModelStates = make(map[string]*ModelState)
+				}
+				state := cred.ModelStates[result.Model]
+				if state == nil {
+					state = &ModelState{}
+					cred.ModelStates[result.Model] = state
+				}
+				state.UpdatedAt = now
+				if isQuota && !s.disableQuota {
+					state.Quota = cred.Quota
 					state.Unavailable = true
-					state.NextRetryAfter = now.Add(*result.RetryAfter)
+					state.NextRetryAfter = cred.NextRetryAfter
+				} else if rerr.HTTPStatus == http.StatusUnauthorized || rerr.HTTPStatus == http.StatusForbidden {
+					state.AuthInvalid = true
+					state.LastError = rerr
+				} else {
+					state.LastError = rerr
+					if result.RetryAfter != nil {
+						state.Unavailable = true
+						state.NextRetryAfter = now.Add(*result.RetryAfter)
+					}
 				}
 			}
 		}

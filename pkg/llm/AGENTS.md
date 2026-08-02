@@ -1,7 +1,7 @@
 # pkg/llm — AGENTS.md
 
 Scope: the LLM provider layer (`pkg/llm/provider/` plus the built-in provider
-runtimes) and `pkg/llm/credentialmgr/`. Paths are repository-root relative;
+runtimes). Paths are repository-root relative;
 the root `AGENTS.md` global rules apply.
 
 ## `provider/`
@@ -51,7 +51,3 @@ Provider registration rules:
 - implement the `provider.Provider` interface
 - register the factory with `provider.RegisterProviderFactory(...)`
 - add a blank import for the runtime provider package in `cmd/agw/main.go`, `cmd/agwd/main.go`, and `cmd/agwctl/cmd_gateway.go`; agwctl needs it because `gateway validate`/`apply` check `provider_type` against the locally linked provider registry
-
-## `credentialmgr/`
-
-This package manages persisted upstream credentials and selection state. It is separate from the provider registry and separate from `cliauth`, though `cliauth` integrates with it through an adapter.

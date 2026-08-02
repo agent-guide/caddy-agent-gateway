@@ -13,10 +13,10 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
-	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configstoreschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	dispatcherpkg "github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
@@ -25,7 +25,6 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/deepseek"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/openai"
@@ -52,7 +51,7 @@ func (s *adminCaptureSink) Enqueue(v any) bool {
 	return true
 }
 
-func newTestAgentGateway(configStoreBackend configstore.ConfigStoreBackend, cliauthMgr *cliauth.Manager, cliauthRefresher *cliauth.AutoRefresher, staticRoutes []llmroutepkg.LLMRoute, _ []virtualkeypkg.VirtualKey, staticProviders ...map[string]provider.Provider) *gateway.AgentGateway {
+func newTestAgentGateway(configStoreBackend configstore.ConfigStoreBackend, _ any, _ any, staticRoutes []llmroutepkg.LLMRoute, _ []virtualkeypkg.VirtualKey, staticProviders ...map[string]provider.Provider) *gateway.AgentGateway {
 	var providers map[string]provider.Provider
 	if len(staticProviders) > 0 {
 		providers = staticProviders[0]
@@ -70,8 +69,6 @@ func newTestAgentGateway(configStoreBackend configstore.ConfigStoreBackend, clia
 		ConfigStoreBackend: configStoreBackend,
 		StaticLLMRoutes:    staticLLMRoutes,
 		StaticProviders:    providers,
-		CLIAuthManager:     cliauthMgr,
-		CLIAuthRefresher:   cliauthRefresher,
 	}); err != nil {
 		panic(err)
 	}
@@ -1741,7 +1738,7 @@ func TestProviderListMarksStaticProvidersAsReadOnly(t *testing.T) {
 }
 
 func TestCredentialListShowsOnlyManagedCredentials(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
+	credMgr := credential.NewManager(nil)
 	agentGateway := gateway.NewAgentGateway()
 	if err := agentGateway.Bootstrap(context.Background(), gateway.BootstrapOptions{
 		ConfigStoreBackend: &testConfigStore{
@@ -1759,11 +1756,11 @@ func TestCredentialListShowsOnlyManagedCredentials(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("bootstrap gateway: %v", err)
 	}
-	if err := credMgr.RegisterCredential(context.Background(), &credentialmgr.Credential{
+	if err := credMgr.RegisterCredential(context.Background(), &credential.Credential{
 		ID:           "cred-1",
 		ProviderType: "openai",
 		ProviderID:   "openai-static",
-		Type:         credentialmgr.TypeAPIKey,
+		Type:         credential.TypeAPIKey,
 		Attributes:   map[string]string{"api_key": "managed-key"},
 	}); err != nil {
 		t.Fatalf("register managed credential: %v", err)
@@ -1796,7 +1793,7 @@ func TestCredentialListShowsOnlyManagedCredentials(t *testing.T) {
 }
 
 func TestCredentialCreateUsesProviderID(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
+	credMgr := credential.NewManager(nil)
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		providerStore: &testProviderConfigStore{items: map[string]*provider.ProviderConfig{
 			"openai-main": {Id: "openai-main", ProviderType: "openai"},
@@ -1806,7 +1803,7 @@ func TestCredentialCreateUsesProviderID(t *testing.T) {
 	token := loginForTest(t, handler, "admin", "secret-pass")
 
 	body, err := json.Marshal(map[string]any{
-		"type":        credentialmgr.TypeAPIKey,
+		"type":        credential.TypeAPIKey,
 		"provider_id": "openai-main",
 		"label":       "primary",
 		"attributes": map[string]string{
@@ -1826,7 +1823,7 @@ func TestCredentialCreateUsesProviderID(t *testing.T) {
 		t.Fatalf("unexpected create status: got %d want %d", rec.Code, http.StatusCreated)
 	}
 
-	var got credentialmgr.Credential
+	var got credential.Credential
 	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
 		t.Fatalf("decode created credential: %v", err)
 	}
@@ -1845,7 +1842,7 @@ func TestCredentialCreateUsesProviderID(t *testing.T) {
 }
 
 func TestCredentialCreateRejectsUnknownProviderID(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
+	credMgr := credential.NewManager(nil)
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		providerStore: &testProviderConfigStore{items: map[string]*provider.ProviderConfig{}},
 	}, nil, nil, nil, nil), nil)
@@ -1853,7 +1850,7 @@ func TestCredentialCreateRejectsUnknownProviderID(t *testing.T) {
 	token := loginForTest(t, handler, "admin", "secret-pass")
 
 	body, err := json.Marshal(map[string]any{
-		"type":        credentialmgr.TypeAPIKey,
+		"type":        credential.TypeAPIKey,
 		"provider_id": "missing-provider",
 		"attributes": map[string]string{
 			"api_key": "sk-test",
@@ -1874,7 +1871,7 @@ func TestCredentialCreateRejectsUnknownProviderID(t *testing.T) {
 }
 
 func TestProviderCreateDoesNotSyncProviderConfigCredential(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
+	credMgr := credential.NewManager(nil)
 	handler := NewHandler(newTestAgentGateway(&testConfigStore{
 		providerStore: &testProviderConfigStore{items: map[string]*provider.ProviderConfig{}},
 	}, nil, nil, nil, nil), nil)

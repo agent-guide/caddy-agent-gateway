@@ -1,4 +1,4 @@
-package credentialmgr
+package credential
 
 import (
 	"context"
@@ -6,10 +6,11 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	sched "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
+	sched "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 )
 
 type testCredentialLifecycleListener struct {
@@ -55,7 +56,8 @@ func (l *testCredentialLifecycleListener) OnCredentialsReplaced(_ context.Contex
 }
 
 type testCredentialStore struct {
-	items []any
+	items    []any
+	updateFn func(context.Context, any) error
 }
 
 func (s *testCredentialStore) List(ctx context.Context) ([]any, error) {
@@ -76,7 +78,10 @@ func (s *testCredentialStore) Create(_ context.Context, _ any) error {
 	return nil
 }
 
-func (s *testCredentialStore) Update(_ context.Context, _ any) error {
+func (s *testCredentialStore) Update(ctx context.Context, item any) error {
+	if s.updateFn != nil {
+		return s.updateFn(ctx, item)
+	}
 	return nil
 }
 
@@ -92,11 +97,11 @@ func (s *testCredentialStore) GetByIndex(context.Context, string, any) (any, err
 	return nil, nil
 }
 
-type testManualRefresher struct {
+type testRefresher struct {
 	refreshFn func(context.Context, *Credential) (*Credential, error)
 }
 
-func (r *testManualRefresher) Refresh(ctx context.Context, cred *Credential) (*Credential, error) {
+func (r *testRefresher) Refresh(ctx context.Context, cred *Credential) (*Credential, error) {
 	if r == nil || r.refreshFn == nil {
 		return nil, nil
 	}
@@ -154,7 +159,7 @@ func TestPickSelectsRequestedSource(t *testing.T) {
 	scheduler := newTestScheduler(t, mgr)
 	for _, cred := range []*Credential{
 		{ID: "api-key", ProviderType: "openai", ProviderID: "openai", Type: TypeAPIKey},
-		{ID: "cliauth", ProviderType: "openai", ProviderID: "openai", Type: TypeCLIAuthToken},
+		{ID: "oauth", ProviderType: "openai", ProviderID: "openai", Type: TypeOAuthToken},
 	} {
 		if err := mgr.RegisterCredential(context.Background(), cred); err != nil {
 			t.Fatalf("register %s: %v", cred.ID, err)
@@ -162,15 +167,15 @@ func TestPickSelectsRequestedSource(t *testing.T) {
 	}
 
 	picked, err := scheduler.Pick(context.Background(), sched.Filter{
-		Type:            TypeCLIAuthToken,
+		Type:            TypeOAuthToken,
 		CredentialScope: "id:openai",
 		Model:           "gpt-test",
 	}, nil)
 	if err != nil {
 		t.Fatalf("Pick returned error: %v", err)
 	}
-	if picked.ID != "cliauth" {
-		t.Fatalf("picked credential = %q, want cliauth", picked.ID)
+	if picked.ID != "oauth" {
+		t.Fatalf("picked credential = %q, want oauth", picked.ID)
 	}
 }
 
@@ -224,7 +229,7 @@ func TestPickReturnsNotFoundWhenFilteredCandidatesAbsent(t *testing.T) {
 	}
 
 	_, err := scheduler.Pick(context.Background(), sched.Filter{
-		Type:            TypeCLIAuthToken,
+		Type:            TypeOAuthToken,
 		CredentialScope: "id:openai",
 		Model:           "gpt-test",
 	}, nil)
@@ -245,8 +250,8 @@ func TestPickReturnsCooldownWhenFilteredCandidatesAllCoolingDown(t *testing.T) {
 	mgr := NewManager(nil)
 	scheduler := newTestScheduler(t, mgr)
 	for _, cred := range []*Credential{
-		{ID: "cli-1", ProviderType: "openai", ProviderID: "openai", Type: TypeCLIAuthToken},
-		{ID: "cli-2", ProviderType: "openai", ProviderID: "openai", Type: TypeCLIAuthToken},
+		{ID: "cli-1", ProviderType: "openai", ProviderID: "openai", Type: TypeOAuthToken},
+		{ID: "cli-2", ProviderType: "openai", ProviderID: "openai", Type: TypeOAuthToken},
 		{ID: "api-key", ProviderType: "openai", ProviderID: "openai", Type: TypeAPIKey},
 	} {
 		if err := mgr.RegisterCredential(context.Background(), cred); err != nil {
@@ -267,7 +272,7 @@ func TestPickReturnsCooldownWhenFilteredCandidatesAllCoolingDown(t *testing.T) {
 	}
 
 	_, err := scheduler.Pick(context.Background(), sched.Filter{
-		Type:            TypeCLIAuthToken,
+		Type:            TypeOAuthToken,
 		CredentialScope: "id:openai",
 		Model:           "gpt-test",
 	}, nil)
@@ -294,7 +299,7 @@ func TestPickReturnsUnavailableWhenFilteredCandidateBlockedButNotCoolingDown(t *
 	mgr := NewManager(nil)
 	scheduler := newTestScheduler(t, mgr)
 	for _, cred := range []*Credential{
-		{ID: "cli-1", ProviderType: "openai", ProviderID: "openai", Type: TypeCLIAuthToken},
+		{ID: "cli-1", ProviderType: "openai", ProviderID: "openai", Type: TypeOAuthToken},
 		{ID: "api-key", ProviderType: "openai", ProviderID: "openai", Type: TypeAPIKey},
 	} {
 		if err := mgr.RegisterCredential(context.Background(), cred); err != nil {
@@ -315,7 +320,7 @@ func TestPickReturnsUnavailableWhenFilteredCandidateBlockedButNotCoolingDown(t *
 	})
 
 	_, err := scheduler.Pick(context.Background(), sched.Filter{
-		Type:            TypeCLIAuthToken,
+		Type:            TypeOAuthToken,
 		CredentialScope: "id:openai",
 		Model:           "gpt-test",
 	}, nil)
@@ -486,9 +491,9 @@ func TestReloadFromStoreReplacesManagerStateAndRebuildsScheduler(t *testing.T) {
 	}
 }
 
-func TestRefreshCredentialIfNeededRefreshesExpiredCLIAuthCredential(t *testing.T) {
+func TestRefreshCredentialIfNeededRefreshesExpiredOAuthCredential(t *testing.T) {
 	mgr := NewManager(nil)
-	mgr.SetManualRefresher("gemini", &testManualRefresher{
+	mgr.SetRefresher(&testRefresher{
 		refreshFn: func(_ context.Context, cred *Credential) (*Credential, error) {
 			updated := cred.Clone()
 			updated.Attributes["api_key"] = "fresh-key"
@@ -502,12 +507,11 @@ func TestRefreshCredentialIfNeededRefreshesExpiredCLIAuthCredential(t *testing.T
 		ID:           "cli-1",
 		ProviderType: "openai",
 		ProviderID:   "openai",
-		Type:         TypeCLIAuthToken,
+		Type:         TypeOAuthToken,
 		Attributes: map[string]string{
 			"api_key": "stale-key",
 		},
 		Metadata: map[string]any{
-			MetadataRefreshNameKey:        "gemini",
 			MetadataRefreshExpiryDeltaKey: "10s",
 			"expired":                     expired,
 		},
@@ -527,10 +531,215 @@ func TestRefreshCredentialIfNeededRefreshesExpiredCLIAuthCredential(t *testing.T
 	}
 }
 
-func TestRefreshCredentialIfNeededSkipsWithoutRefreshExpiryDelta(t *testing.T) {
+func TestRefreshCredentialIfNeededDetachesRefreshAndPersistenceFromRequestCancellation(t *testing.T) {
+	storeUpdated := false
+	store := &testCredentialStore{
+		updateFn: func(ctx context.Context, _ any) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			storeUpdated = true
+			return nil
+		},
+	}
+	mgr := NewManager(store)
+	mgr.SetRefresher(&testRefresher{
+		refreshFn: func(ctx context.Context, cred *Credential) (*Credential, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			updated := cred.Clone()
+			updated.Attributes["api_key"] = "rotated-key"
+			updated.Metadata["expired"] = time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+			return updated, nil
+		},
+	})
+
+	expired := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if err := mgr.RegisterCredential(context.Background(), &Credential{
+		ID:           "rotating-oauth",
+		ProviderType: "openai",
+		ProviderID:   "openai",
+		Type:         TypeOAuthToken,
+		Attributes:   map[string]string{"api_key": "stale-key"},
+		Metadata: map[string]any{
+			MetadataRefreshExpiryDeltaKey: "10s",
+			"expired":                     expired,
+		},
+	}); err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	updated, err := mgr.RefreshCredentialIfNeeded(requestCtx, "rotating-oauth")
+	if err != nil {
+		t.Fatalf("RefreshCredentialIfNeeded returned error: %v", err)
+	}
+	if !storeUpdated {
+		t.Fatal("refreshed credential was not persisted")
+	}
+	if got := updated.Attributes["api_key"]; got != "rotated-key" {
+		t.Fatalf("api_key = %q, want rotated-key", got)
+	}
+}
+
+func TestRefreshCredentialIfNeededMergesMetadataFromPartialRefreshOutput(t *testing.T) {
+	mgr := NewManager(nil)
+	mgr.SetRefresher(&testRefresher{
+		refreshFn: func(_ context.Context, cred *Credential) (*Credential, error) {
+			updated := cred.Clone()
+			updated.Metadata = map[string]any{
+				"expired": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			}
+			return updated, nil
+		},
+	})
+
+	expired := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	if err := mgr.RegisterCredential(context.Background(), &Credential{
+		ID:           "partial-refresh",
+		ProviderType: "gemini",
+		ProviderID:   "gemini",
+		Type:         TypeOAuthToken,
+		Metadata: map[string]any{
+			MetadataRefreshExpiryDeltaKey: "5m",
+			"expired":                     expired,
+			"refresh_name":                "gemini",
+			"refresh_token":               "rotating-token",
+		},
+	}); err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+
+	updated, err := mgr.RefreshCredentialIfNeeded(context.Background(), "partial-refresh")
+	if err != nil {
+		t.Fatalf("RefreshCredentialIfNeeded returned error: %v", err)
+	}
+	for key, want := range map[string]any{
+		MetadataRefreshExpiryDeltaKey: "5m",
+		"refresh_name":                "gemini",
+		"refresh_token":               "rotating-token",
+	} {
+		if got := updated.Metadata[key]; got != want {
+			t.Fatalf("metadata[%q] = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestRefreshCredentialIfNeededRefreshesDifferentCredentialsConcurrently(t *testing.T) {
+	mgr := NewManager(nil)
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	mgr.SetRefresher(&testRefresher{
+		refreshFn: func(_ context.Context, cred *Credential) (*Credential, error) {
+			started <- cred.ID
+			<-release
+			updated := cred.Clone()
+			updated.Metadata["expired"] = time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+			return updated, nil
+		},
+	})
+
+	expired := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	for _, id := range []string{"cli-1", "cli-2"} {
+		if err := mgr.RegisterCredential(context.Background(), &Credential{
+			ID:           id,
+			ProviderType: "openai",
+			ProviderID:   "openai",
+			Type:         TypeOAuthToken,
+			Metadata: map[string]any{
+				MetadataRefreshExpiryDeltaKey: "10s",
+				"expired":                     expired,
+			},
+		}); err != nil {
+			t.Fatalf("register credential %q: %v", id, err)
+		}
+	}
+
+	errCh := make(chan error, 2)
+	for _, id := range []string{"cli-1", "cli-2"} {
+		go func() {
+			_, err := mgr.RefreshCredentialIfNeeded(context.Background(), id)
+			errCh <- err
+		}()
+	}
+
+	seen := make(map[string]bool, 2)
+	for range 2 {
+		select {
+		case id := <-started:
+			seen[id] = true
+		case <-time.After(time.Second):
+			close(release)
+			t.Fatal("different credentials did not begin refreshing concurrently")
+		}
+	}
+	close(release)
+	for range 2 {
+		if err := <-errCh; err != nil {
+			t.Fatalf("RefreshCredentialIfNeeded returned error: %v", err)
+		}
+	}
+	if !seen["cli-1"] || !seen["cli-2"] {
+		t.Fatalf("refreshed credentials = %v, want cli-1 and cli-2", seen)
+	}
+}
+
+func TestRefreshCredentialIfNeededSharesConcurrentFailure(t *testing.T) {
+	mgr := NewManager(nil)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	mgr.SetRefresher(&testRefresher{
+		refreshFn: func(_ context.Context, _ *Credential) (*Credential, error) {
+			calls.Add(1)
+			started <- struct{}{}
+			<-release
+			return nil, errors.New("refresh backend down")
+		},
+	})
+
+	if err := mgr.RegisterCredential(context.Background(), &Credential{
+		ID:           "shared-failure",
+		ProviderType: "openai",
+		ProviderID:   "openai",
+		Type:         TypeOAuthToken,
+		Metadata: map[string]any{
+			MetadataRefreshExpiryDeltaKey: "10s",
+			"expired":                     time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+
+	errCh := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := mgr.RefreshCredentialIfNeeded(context.Background(), "shared-failure")
+			errCh <- err
+		}()
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("refresh did not start")
+	}
+	close(release)
+	for range 2 {
+		if err := <-errCh; err == nil {
+			t.Fatal("RefreshCredentialIfNeeded returned nil error")
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+}
+
+func TestRefreshCredentialIfNeededUsesDefaultLeewayWithoutRefreshExpiryDelta(t *testing.T) {
 	mgr := NewManager(nil)
 	called := false
-	mgr.SetManualRefresher("codex", &testManualRefresher{
+	mgr.SetRefresher(&testRefresher{
 		refreshFn: func(_ context.Context, cred *Credential) (*Credential, error) {
 			called = true
 			return cred.Clone(), nil
@@ -542,13 +751,12 @@ func TestRefreshCredentialIfNeededSkipsWithoutRefreshExpiryDelta(t *testing.T) {
 		ID:           "cli-1",
 		ProviderType: "openai",
 		ProviderID:   "openai",
-		Type:         TypeCLIAuthToken,
+		Type:         TypeOAuthToken,
 		Attributes: map[string]string{
 			"api_key": "stale-key",
 		},
 		Metadata: map[string]any{
-			MetadataRefreshNameKey: "codex",
-			"expired":              expired,
+			"expired": expired,
 		},
 	}); err != nil {
 		t.Fatalf("register credential: %v", err)
@@ -561,15 +769,15 @@ func TestRefreshCredentialIfNeededSkipsWithoutRefreshExpiryDelta(t *testing.T) {
 	if updated == nil {
 		t.Fatal("RefreshCredentialIfNeeded returned nil credential")
 	}
-	if called {
-		t.Fatal("expected manual refresh to be skipped when refresh_expiry_delta is absent")
+	if !called {
+		t.Fatal("expected missing refresh_expiry_delta to use the default refresh leeway")
 	}
 	if got := updated.Attributes["api_key"]; got != "stale-key" {
 		t.Fatalf("api_key = %q, want stale-key", got)
 	}
 }
 
-func TestRefreshCredentialIfNeededSkipsWhenNoMatchingManualRefresher(t *testing.T) {
+func TestRefreshCredentialIfNeededFailsWhenNoRefresherConfigured(t *testing.T) {
 	mgr := NewManager(nil)
 
 	expired := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
@@ -577,34 +785,27 @@ func TestRefreshCredentialIfNeededSkipsWhenNoMatchingManualRefresher(t *testing.
 		ID:           "cli-1",
 		ProviderType: "openai",
 		ProviderID:   "openai",
-		Type:         TypeCLIAuthToken,
+		Type:         TypeOAuthToken,
 		Attributes: map[string]string{
 			"api_key": "stale-key",
 		},
 		Metadata: map[string]any{
-			MetadataRefreshNameKey: "codex",
-			"expired":              expired,
+			MetadataRefreshExpiryDeltaKey: "5m",
+			"expired":                     expired,
 		},
 	}); err != nil {
 		t.Fatalf("register credential: %v", err)
 	}
 
-	updated, err := mgr.RefreshCredentialIfNeeded(context.Background(), "cli-1")
-	if err != nil {
-		t.Fatalf("RefreshCredentialIfNeeded returned error: %v", err)
-	}
-	if updated == nil {
-		t.Fatal("RefreshCredentialIfNeeded returned nil credential")
-	}
-	if got := updated.Attributes["api_key"]; got != "stale-key" {
-		t.Fatalf("api_key = %q, want stale-key", got)
+	if _, err := mgr.RefreshCredentialIfNeeded(context.Background(), "cli-1"); err == nil {
+		t.Fatal("RefreshCredentialIfNeeded returned nil error")
 	}
 }
 
 func TestRefreshCredentialIfNeededHonorsCredentialSpecificExpiryDelta(t *testing.T) {
 	mgr := NewManager(nil)
 	refreshed := false
-	mgr.SetManualRefresher("gemini", &testManualRefresher{
+	mgr.SetRefresher(&testRefresher{
 		refreshFn: func(_ context.Context, cred *Credential) (*Credential, error) {
 			refreshed = true
 			updated := cred.Clone()
@@ -618,12 +819,11 @@ func TestRefreshCredentialIfNeededHonorsCredentialSpecificExpiryDelta(t *testing
 		ID:           "cli-1",
 		ProviderType: "gemini",
 		ProviderID:   "gemini",
-		Type:         TypeCLIAuthToken,
+		Type:         TypeOAuthToken,
 		Attributes: map[string]string{
 			"api_key": "stale-key",
 		},
 		Metadata: map[string]any{
-			MetadataRefreshNameKey:        "gemini",
 			MetadataRefreshExpiryDeltaKey: "10s",
 			"expired":                     expiry,
 		},
@@ -643,6 +843,38 @@ func TestRefreshCredentialIfNeededHonorsCredentialSpecificExpiryDelta(t *testing
 	}
 	if got := updated.Attributes["api_key"]; got != "stale-key" {
 		t.Fatalf("api_key = %q, want stale-key", got)
+	}
+}
+
+func TestRefreshCredentialIfNeededUsesDefaultLeewayForZeroDelta(t *testing.T) {
+	mgr := NewManager(nil)
+	refreshed := false
+	mgr.SetRefresher(&testRefresher{
+		refreshFn: func(_ context.Context, cred *Credential) (*Credential, error) {
+			refreshed = true
+			return cred.Clone(), nil
+		},
+	})
+
+	expiry := time.Now().UTC().Add(20 * time.Second).Format(time.RFC3339)
+	if err := mgr.RegisterCredential(context.Background(), &Credential{
+		ID:           "cli-zero-delta",
+		ProviderType: "gemini",
+		ProviderID:   "gemini",
+		Type:         TypeOAuthToken,
+		Metadata: map[string]any{
+			MetadataRefreshExpiryDeltaKey: 0,
+			"expired":                     expiry,
+		},
+	}); err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+
+	if _, err := mgr.RefreshCredentialIfNeeded(context.Background(), "cli-zero-delta"); err != nil {
+		t.Fatalf("RefreshCredentialIfNeeded returned error: %v", err)
+	}
+	if !refreshed {
+		t.Fatal("expected zero delta to use the default refresh leeway")
 	}
 }
 

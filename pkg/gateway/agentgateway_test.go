@@ -6,19 +6,23 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configstoreschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	credentialscheduler "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	credentialmgrscheduler "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/cloudwego/eino/schema"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type testProvider struct {
@@ -27,13 +31,21 @@ type testProvider struct {
 
 type testContextCaptureProvider struct {
 	cfg        provider.ProviderConfig
-	credential *credentialmgr.Credential
+	credential *credential.Credential
 }
 
 type testCredentialAwareProvider struct {
 	cfg      provider.ProviderConfig
 	attempts *[]string
 	failures map[string]error
+}
+
+type testGatewayCredentialRefresher struct {
+	err error
+}
+
+func (r testGatewayCredentialRefresher) Refresh(context.Context, *credential.Credential) (*credential.Credential, error) {
+	return nil, r.err
 }
 
 type testGatewayProviderConfigResolver struct {
@@ -431,9 +443,9 @@ func (s *testGatewayManagedModelStore) GetByIndex(context.Context, string, any) 
 }
 
 func TestBootstrapDoesNotSyncDynamicProviderConfigCredentials(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
-	scheduler := credentialmgrscheduler.NewScheduler(nil)
-	if listener, ok := scheduler.(credentialmgr.CredentialLifecycleListener); ok {
+	credMgr := credential.NewManager(nil)
+	scheduler := credentialscheduler.NewScheduler(nil)
+	if listener, ok := scheduler.(credential.CredentialLifecycleListener); ok {
 		credMgr.AddListener(listener)
 	}
 
@@ -486,8 +498,8 @@ func TestDirectProviderFallsBackToProviderConfigAPIKey(t *testing.T) {
 				"openai-main": {Id: "openai-main", ProviderType: "openai", APIKey: "provider-config-key"},
 			},
 		},
-		credentialMgr: credentialmgr.NewManager(nil),
-		scheduler:     credentialmgrscheduler.NewScheduler(nil),
+		credentialMgr: credential.NewManager(nil),
+		scheduler:     credentialscheduler.NewScheduler(nil),
 	}
 
 	if _, err := routedProvider.Chat(context.Background(), &provider.ChatRequest{Model: "gpt-4.1"}); err != nil {
@@ -499,18 +511,18 @@ func TestDirectProviderFallsBackToProviderConfigAPIKey(t *testing.T) {
 }
 
 func TestRoutedProviderInjectsExplicitCredentialValuesIntoContext(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
-	scheduler := credentialmgrscheduler.NewScheduler(nil)
-	if listener, ok := scheduler.(credentialmgr.CredentialLifecycleListener); ok {
+	credMgr := credential.NewManager(nil)
+	scheduler := credentialscheduler.NewScheduler(nil)
+	if listener, ok := scheduler.(credential.CredentialLifecycleListener); ok {
 		credMgr.AddListener(listener)
 	}
 
-	if err := credMgr.RegisterCredential(context.Background(), &credentialmgr.Credential{
+	if err := credMgr.RegisterCredential(context.Background(), &credential.Credential{
 		ID:           "cred-openai-managed",
 		ProviderType: "openai",
 		ProviderID:   "openai-main",
 		Scope:        "id:openai-main",
-		Type:         credentialmgr.TypeAPIKey,
+		Type:         credential.TypeAPIKey,
 		Attributes: map[string]string{
 			"api_key": "managed-key",
 		},
@@ -555,20 +567,147 @@ func TestRoutedProviderInjectsExplicitCredentialValuesIntoContext(t *testing.T) 
 	}
 }
 
+func TestRoutedProviderReportsCredentialRefreshFailure(t *testing.T) {
+	const sensitiveDetail = "upstream body contains access_token=secret"
+	credMgr := credential.NewManager(nil)
+	scheduler := credentialscheduler.NewScheduler(nil)
+	if listener, ok := scheduler.(credential.CredentialLifecycleListener); ok {
+		credMgr.AddListener(listener)
+	}
+	credMgr.SetRefresher(testGatewayCredentialRefresher{err: errors.New(sensitiveDetail)})
+	logCore, logs := observer.New(zap.ErrorLevel)
+
+	if err := credMgr.RegisterCredential(context.Background(), &credential.Credential{
+		ID:           "oauth-openai-managed",
+		ProviderType: "openai",
+		ProviderID:   "openai-main",
+		Scope:        "id:openai-main",
+		Type:         credential.TypeOAuthToken,
+		Attributes:   map[string]string{"api_key": "stale-key"},
+		Metadata: map[string]any{
+			credential.MetadataRefreshExpiryDeltaKey: "5m",
+			"expired":                                time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+
+	routedProvider := &RoutedProvider{
+		route: &llmroutepkg.LLMRoute{
+			AgentRouteConfig: llmroutepkg.AgentRouteConfig{ID: "chat-prod", Protocol: llmroutepkg.RouteProtocolOpenAI},
+			TargetPolicy: &llmroutepkg.RouteDirectProviderPolicy{
+				ProviderTarget: llmroutepkg.DirectProviderTarget{ProviderID: "openai-main"},
+			},
+		},
+		providerResolver: ProviderResolverFunc(func(context.Context, string) (provider.Provider, error) {
+			return &testContextCaptureProvider{cfg: provider.ProviderConfig{Id: "openai-main", ProviderType: "openai"}}, nil
+		}),
+		modelCatalog: testGatewayModelCatalogResolver{},
+		providerConfigs: testGatewayProviderConfigResolver{configs: map[string]provider.ProviderConfig{
+			"openai-main": {Id: "openai-main", ProviderType: "openai"},
+		}},
+		credentialMgr: credMgr,
+		scheduler:     scheduler,
+		logger:        zap.New(logCore),
+	}
+
+	_, err := routedProvider.Chat(context.Background(), &provider.ChatRequest{Model: "gpt-4.1"})
+	if err == nil || !strings.Contains(err.Error(), `credential refresh failed for credential "oauth-openai-managed"`) {
+		t.Fatalf("Chat error = %v, want safe credential refresh failure", err)
+	}
+	if strings.Contains(err.Error(), sensitiveDetail) || strings.Contains(err.Error(), "access_token") {
+		t.Fatalf("Chat error leaked refresher detail: %v", err)
+	}
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("refresh error log entries = %d, want 1", len(entries))
+	}
+	if loggedErr, _ := entries[0].ContextMap()["error"].(string); !strings.Contains(loggedErr, sensitiveDetail) {
+		t.Fatalf("logged error = %q, want refresher detail", loggedErr)
+	}
+}
+
+type testCountingRefresher struct {
+	calls int
+	err   error
+}
+
+func (r *testCountingRefresher) Refresh(context.Context, *credential.Credential) (*credential.Credential, error) {
+	r.calls++
+	return nil, r.err
+}
+
+func TestRoutedProviderCoolsCredentialAfterRefreshFailure(t *testing.T) {
+	credMgr := credential.NewManager(nil)
+	scheduler := credentialscheduler.NewScheduler(nil)
+	if listener, ok := scheduler.(credential.CredentialLifecycleListener); ok {
+		credMgr.AddListener(listener)
+	}
+	refresher := &testCountingRefresher{err: errors.New("refresh backend down")}
+	credMgr.SetRefresher(refresher)
+
+	if err := credMgr.RegisterCredential(context.Background(), &credential.Credential{
+		ID:           "oauth-openai-managed",
+		ProviderType: "openai",
+		ProviderID:   "openai-main",
+		Scope:        "id:openai-main",
+		Type:         credential.TypeOAuthToken,
+		Attributes:   map[string]string{"api_key": "stale-key"},
+		Metadata: map[string]any{
+			credential.MetadataRefreshExpiryDeltaKey: "5m",
+			"expired":                                time.Now().UTC().Add(-time.Minute).Format(time.RFC3339),
+		},
+	}); err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+
+	routedProvider := &RoutedProvider{
+		route: &llmroutepkg.LLMRoute{
+			AgentRouteConfig: llmroutepkg.AgentRouteConfig{ID: "chat-prod", Protocol: llmroutepkg.RouteProtocolOpenAI},
+			TargetPolicy: &llmroutepkg.RouteDirectProviderPolicy{
+				ProviderTarget: llmroutepkg.DirectProviderTarget{ProviderID: "openai-main"},
+			},
+		},
+		providerResolver: ProviderResolverFunc(func(context.Context, string) (provider.Provider, error) {
+			return &testContextCaptureProvider{cfg: provider.ProviderConfig{Id: "openai-main", ProviderType: "openai"}}, nil
+		}),
+		modelCatalog: testGatewayModelCatalogResolver{},
+		providerConfigs: testGatewayProviderConfigResolver{configs: map[string]provider.ProviderConfig{
+			"openai-main": {Id: "openai-main", ProviderType: "openai"},
+		}},
+		credentialMgr: credMgr,
+		scheduler:     scheduler,
+	}
+
+	if _, err := routedProvider.Chat(context.Background(), &provider.ChatRequest{Model: "gpt-4.1"}); err == nil {
+		t.Fatal("first Chat returned nil error, want refresh failure")
+	}
+	if refresher.calls != 1 {
+		t.Fatalf("refresher calls after first Chat = %d, want 1", refresher.calls)
+	}
+
+	if _, err := routedProvider.Chat(context.Background(), &provider.ChatRequest{Model: "gpt-4.1"}); err == nil {
+		t.Fatal("second Chat returned nil error, want credential unavailable")
+	}
+	if refresher.calls != 1 {
+		t.Fatalf("refresher calls after second Chat = %d, want 1 (cooled credential must not refresh again)", refresher.calls)
+	}
+}
+
 func TestRoutedProviderRetriesAnotherCredentialBeforeModelFallback(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
-	scheduler := credentialmgrscheduler.NewScheduler(nil)
-	if listener, ok := scheduler.(credentialmgr.CredentialLifecycleListener); ok {
+	credMgr := credential.NewManager(nil)
+	scheduler := credentialscheduler.NewScheduler(nil)
+	if listener, ok := scheduler.(credential.CredentialLifecycleListener); ok {
 		credMgr.AddListener(listener)
 	}
 
-	for _, cred := range []*credentialmgr.Credential{
+	for _, cred := range []*credential.Credential{
 		{
 			ID:           "cred-openai-bad",
 			ProviderType: "openai",
 			ProviderID:   "openai-main",
 			Scope:        "id:openai-main",
-			Type:         credentialmgr.TypeAPIKey,
+			Type:         credential.TypeAPIKey,
 			Attributes: map[string]string{
 				"api_key": "bad-key",
 			},
@@ -578,7 +717,7 @@ func TestRoutedProviderRetriesAnotherCredentialBeforeModelFallback(t *testing.T)
 			ProviderType: "openai",
 			ProviderID:   "openai-main",
 			Scope:        "id:openai-main",
-			Type:         credentialmgr.TypeAPIKey,
+			Type:         credential.TypeAPIKey,
 			Attributes: map[string]string{
 				"api_key": "good-key",
 			},
@@ -626,19 +765,19 @@ func TestRoutedProviderRetriesAnotherCredentialBeforeModelFallback(t *testing.T)
 }
 
 func TestRoutedProviderFallsBackToAnotherModelAfterCandidateCredentialsExhausted(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
-	scheduler := credentialmgrscheduler.NewScheduler(nil)
-	if listener, ok := scheduler.(credentialmgr.CredentialLifecycleListener); ok {
+	credMgr := credential.NewManager(nil)
+	scheduler := credentialscheduler.NewScheduler(nil)
+	if listener, ok := scheduler.(credential.CredentialLifecycleListener); ok {
 		credMgr.AddListener(listener)
 	}
 
-	for _, cred := range []*credentialmgr.Credential{
+	for _, cred := range []*credential.Credential{
 		{
 			ID:           "cred-openai-main",
 			ProviderType: "openai",
 			ProviderID:   "openai-main",
 			Scope:        "id:openai-main",
-			Type:         credentialmgr.TypeAPIKey,
+			Type:         credential.TypeAPIKey,
 			Attributes: map[string]string{
 				"api_key": "main-key",
 			},
@@ -648,7 +787,7 @@ func TestRoutedProviderFallsBackToAnotherModelAfterCandidateCredentialsExhausted
 			ProviderType: "openai",
 			ProviderID:   "openai-backup",
 			Scope:        "id:openai-backup",
-			Type:         credentialmgr.TypeAPIKey,
+			Type:         credential.TypeAPIKey,
 			Attributes: map[string]string{
 				"api_key": "backup-key",
 			},
@@ -700,7 +839,7 @@ func TestRoutedProviderFallsBackToAnotherModelAfterCandidateCredentialsExhausted
 						ProviderID:      "openai-main",
 						UpstreamModel:   "gpt-4.1",
 						Enabled:         true,
-						CredentialScope: credentialmgr.ProviderIDCredentialScope("openai-main"),
+						CredentialScope: credential.ProviderIDCredentialScope("openai-main"),
 					},
 				},
 				"openai-backup/gpt-4.1-mini": {
@@ -708,7 +847,7 @@ func TestRoutedProviderFallsBackToAnotherModelAfterCandidateCredentialsExhausted
 						ProviderID:      "openai-backup",
 						UpstreamModel:   "gpt-4.1-mini",
 						Enabled:         true,
-						CredentialScope: credentialmgr.ProviderIDCredentialScope("openai-backup"),
+						CredentialScope: credential.ProviderIDCredentialScope("openai-backup"),
 					},
 				},
 			},

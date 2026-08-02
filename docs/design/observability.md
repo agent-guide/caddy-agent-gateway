@@ -321,7 +321,7 @@ provider_id
 provider_type
 logical_model       client-facing model name in model-target routes
 upstream_model      concrete provider-facing model actually called
-credential_source   static | cliauth | managed | none
+credential_source   static | api_key | oauth_token | none
 credential_id
 stream              bool
 input_tokens

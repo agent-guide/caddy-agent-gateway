@@ -6,7 +6,7 @@ Current pages:
 
 - [admin-auth.md](admin-auth.md)
 - [bundle-yaml.md](bundle-yaml.md)
-- [cli-auth.md](cli-auth.md)
+- [oauth-credentials.md](oauth-credentials.md)
 - [credentials.md](credentials.md)
 - [logical-model-routing.md](logical-model-routing.md)
 - [mcp-gateway.md](mcp-gateway.md)

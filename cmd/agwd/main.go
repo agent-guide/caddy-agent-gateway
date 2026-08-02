@@ -16,9 +16,6 @@ import (
 	_ "github.com/agent-guide/agent-gateway/pkg/acp/agent/codex"
 	_ "github.com/agent-guide/agent-gateway/pkg/acp/agent/opencode"
 
-	// CLI authenticators register runtime factories through init.
-	_ "github.com/agent-guide/agent-gateway/pkg/cliauth/authenticator"
-
 	// LLM providers register runtime factories through init.
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropic"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/claudecode"
@@ -54,6 +51,8 @@ func main() {
 	rootCmd.Flags().StringVar(&opts.ConfigStorePath, "config-store", "./data/configstore.db", "SQLite config store file")
 	rootCmd.Flags().StringVar(&opts.StaticConfigPath, "static-config", "", "gateway bundle YAML file loaded as read-only static configuration")
 	rootCmd.Flags().StringArrayVar(&opts.ProviderTypes, "provider-type", nil, "provider type enabled for this process; repeat to allow multiple types")
+	rootCmd.Flags().StringVar(&opts.CredentialRefreshCommand, "credential-refresh-command", "", "external credential refresh executable (default: agw-auth)")
+	rootCmd.Flags().StringArrayVar(&opts.CredentialRefreshArgs, "credential-refresh-arg", nil, "static argument for the credential refresh executable; repeat as needed (default: refresh)")
 	rootCmd.Flags().IntVar(&opts.Metrics.RetentionDays, "metrics-retention-days", 30, "retention window in days for persisted usage events")
 	rootCmd.Flags().IntVar(&opts.Metrics.MaxAgentDepth, "max-agent-depth", 0, "maximum inbound X-Agent-Depth allowed before rejecting a request; 0 disables enforcement")
 	rootCmd.Flags().StringVar(&opts.Metrics.OTLP.Endpoint, "metrics-otlp-endpoint", "", "OTLP collector endpoint (host:port or URL) for exporting usage events as spans; empty disables export")

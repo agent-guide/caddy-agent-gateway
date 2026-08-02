@@ -12,17 +12,16 @@ import (
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
-	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	credentialscheduler "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 	agentroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	credentialmgrscheduler "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	einomodelbridge "github.com/agent-guide/agent-gateway/pkg/llm/provider/einomodel"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
@@ -37,10 +36,8 @@ type BootstrapOptions struct {
 	StaticAgentRoutes   []routecore.AgentRouteConfig
 	StaticProviders     map[string]provider.Provider
 	ConfigStoreBackend  configstore.ConfigStoreBackend
-	CLIAuthManager      *cliauth.Manager
-	CLIAuthRefresher    *cliauth.AutoRefresher
-	CredentialManager   *credentialmgr.Manager
-	CredentialScheduler credentialmgrscheduler.CredentialScheduler
+	CredentialManager   *credential.Manager
+	CredentialScheduler credentialscheduler.CredentialScheduler
 	UsageObserver       usage.InteractionObserver
 	UsageQuery          usage.QueryService
 	UsageStats          usage.RuntimeStats
@@ -66,10 +63,8 @@ type AgentGateway struct {
 	builtinHost         *builtinpkg.Host
 	virtualKeyManager   *virtualkeypkg.VirtualKeyManager
 	providerManager     *ProviderManager
-	cliauthManager      *cliauth.Manager
-	cliauthRefresher    *cliauth.AutoRefresher
-	credentialManager   *credentialmgr.Manager
-	credentialScheduler credentialmgrscheduler.CredentialScheduler
+	credentialManager   *credential.Manager
+	credentialScheduler credentialscheduler.CredentialScheduler
 	modelCatalog        modelcatalog.Service
 	mcpServiceManager   *mcpservice.Manager
 	mcpRuntimeRegistry  *mcpruntime.Registry
@@ -83,6 +78,7 @@ type AgentGateway struct {
 	usageStats          usage.RuntimeStats
 	usagePrometheus     usage.PrometheusProvider
 	usageConfig         usage.Config
+	logger              *zap.Logger
 }
 
 func NewAgentGateway() *AgentGateway {
@@ -121,8 +117,6 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	if err := g.configureProviderResolver(ctx, opts.ConfigStoreBackend, opts.StaticProviders); err != nil {
 		return err
 	}
-	g.cliauthManager = opts.CLIAuthManager
-	g.cliauthRefresher = opts.CLIAuthRefresher
 	g.credentialManager = opts.CredentialManager
 	g.credentialScheduler = opts.CredentialScheduler
 	if opts.UsageObserver != nil {
@@ -134,6 +128,7 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	g.usageStats = opts.UsageStats
 	g.usagePrometheus = opts.UsagePrometheus
 	g.usageConfig = opts.UsageConfig.Normalized()
+	g.logger = opts.Logger
 	if err := g.configureModelCatalog(ctx, opts.ConfigStoreBackend, opts.Logger); err != nil {
 		return err
 	}
@@ -204,8 +199,6 @@ func (g *AgentGateway) Reset() {
 	g.builtinHost = nil
 	g.virtualKeyManager = nil
 	g.providerManager = nil
-	g.cliauthManager = nil
-	g.cliauthRefresher = nil
 	g.credentialManager = nil
 	g.credentialScheduler = nil
 	g.modelCatalog = nil
@@ -224,6 +217,7 @@ func (g *AgentGateway) Reset() {
 	g.usageStats = nil
 	g.usagePrometheus = nil
 	g.usageConfig = usage.Config{}
+	g.logger = nil
 }
 
 func (g *AgentGateway) Close() {
@@ -236,25 +230,13 @@ func (g *AgentGateway) ConfigStoreBackend() configstore.ConfigStoreBackend {
 	return g.configStoreBackend
 }
 
-func (g *AgentGateway) CLIAuthManager() *cliauth.Manager {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.cliauthManager
-}
-
-func (g *AgentGateway) CLIAuthRefresher() *cliauth.AutoRefresher {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
-	return g.cliauthRefresher
-}
-
-func (g *AgentGateway) CredentialManager() *credentialmgr.Manager {
+func (g *AgentGateway) CredentialManager() *credential.Manager {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.credentialManager
 }
 
-func (g *AgentGateway) CredentialScheduler() credentialmgrscheduler.CredentialScheduler {
+func (g *AgentGateway) CredentialScheduler() credentialscheduler.CredentialScheduler {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.credentialScheduler
@@ -450,6 +432,7 @@ func (g *AgentGateway) NewRoutedProvider(route *llmroutepkg.LLMRoute, requestReq
 		modelCatalog:        g.ModelCatalog(),
 		credentialMgr:       g.CredentialManager(),
 		scheduler:           g.CredentialScheduler(),
+		logger:              g.logger,
 	}, nil
 }
 

@@ -81,7 +81,7 @@ Extra outbound request shaping:
   - controls which header carries a plain API key (provider `api_key` or a managed `api_key` credential)
   - default is `authorization`, which sends `Authorization: Bearer <key>`
   - `x-api-key` sends the key in the `x-api-key` header instead
-  - a managed `cliauth_token` and any `sk-ant-oat-` OAuth token always use `Authorization: Bearer` regardless of this option
+  - a managed `oauth_token` and any `sk-ant-oat-` OAuth token always use `Authorization: Bearer` regardless of this option
   - invalid values are rejected at startup
 - `option compact codex` enables Codex CLI compatibility mode for Claude-Code-gated upstreams
   - rewrites Codex tool names (e.g. `exec_command`) to their Claude Code equivalents (e.g. `Bash`) on the outbound request so an upstream that gates on Claude Code tool names accepts Codex traffic, then restores the original names on the response

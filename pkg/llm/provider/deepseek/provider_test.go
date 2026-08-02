@@ -11,7 +11,7 @@ import (
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
@@ -54,7 +54,7 @@ func TestGenerateUsesDeepSeekAPI(t *testing.T) {
 	}
 	p := prov.(*Provider)
 
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
 		Attributes: map[string]string{"api_key": "test-key"},
 	})
 	resp, err := p.Chat(ctx, &provider.ChatRequest{
@@ -165,7 +165,7 @@ func TestGenerateCarriesResponsesContextToDeepSeekPayload(t *testing.T) {
 		t.Fatalf("ResponsesToChatRequest returned error: %v", err)
 	}
 
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
 		Attributes: map[string]string{"api_key": "test-key"},
 	})
 	if _, err := p.Chat(ctx, chatReq); err != nil {
@@ -226,7 +226,7 @@ func TestGenerateMapsDeveloperMessagesToSystem(t *testing.T) {
 			{Role: schema.User, Content: "hi"},
 		},
 	}
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
 		Attributes: map[string]string{"api_key": "test-key"},
 	})
 	if _, err := p.Chat(ctx, req); err != nil {
@@ -302,7 +302,7 @@ func chatCaptureBody(t *testing.T, options map[string]any) map[string]any {
 		t.Fatalf("New returned error: %v", err)
 	}
 	p := prov.(*Provider)
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
 		Attributes: map[string]string{"api_key": "test-key"},
 	})
 	if _, err := p.Chat(ctx, &provider.ChatRequest{

@@ -15,10 +15,11 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/observability/pipeline"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/admin"
-	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	configstore "github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	credentialscheduler "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	anthropicapi "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/anthropic"
 	ccapi "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/cc"
@@ -26,8 +27,6 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	"github.com/agent-guide/agent-gateway/pkg/gatewaybundle"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	credentialmgrscheduler "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -37,13 +36,15 @@ import (
 const shutdownTimeout = 10 * time.Second
 
 type Options struct {
-	Addr               string
-	AdminAddr          string
-	ConfigStorePath    string
-	StaticConfigPath   string
-	ProviderTypes      []string
-	AdminBasicAuthHash string
-	Metrics            usage.Config
+	Addr                     string
+	AdminAddr                string
+	ConfigStorePath          string
+	StaticConfigPath         string
+	ProviderTypes            []string
+	CredentialRefreshCommand string
+	CredentialRefreshArgs    []string
+	AdminBasicAuthHash       string
+	Metrics                  usage.Config
 }
 
 func (o *Options) setDefaults() {
@@ -55,6 +56,12 @@ func (o *Options) setDefaults() {
 	}
 	if o.ConfigStorePath == "" {
 		o.ConfigStorePath = "./data/configstore.db"
+	}
+	if o.CredentialRefreshCommand == "" {
+		o.CredentialRefreshCommand = credential.DefaultRefreshCommand
+		if len(o.CredentialRefreshArgs) == 0 {
+			o.CredentialRefreshArgs = []string{credential.DefaultRefreshCommandArg}
+		}
 	}
 }
 
@@ -70,7 +77,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	defer func() { _ = logger.Sync() }()
 
-	agentGateway, cliauthRefresher, usageService, err := bootstrapGateway(ctx, opts, logger)
+	agentGateway, usageService, err := bootstrapGateway(ctx, opts, logger)
 	if err != nil {
 		return err
 	}
@@ -78,10 +85,6 @@ func Run(ctx context.Context, opts Options) error {
 	if usageService != nil {
 		usageService.Start()
 		defer func() { _ = usageService.Close() }()
-	}
-	if cliauthRefresher != nil {
-		cliauthRefresher.Start(ctx)
-		defer cliauthRefresher.Stop()
 	}
 
 	adminHandler, err := protectAdminHandler(admin.NewHandler(agentGateway, logger.Named("admin")), opts.AdminBasicAuthHash)
@@ -161,48 +164,40 @@ func newDispatchHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) 
 	), nil
 }
 
-func bootstrapGateway(ctx context.Context, opts Options, logger *zap.Logger) (*gateway.AgentGateway, *cliauth.AutoRefresher, *usage.UsageService, error) {
+func bootstrapGateway(ctx context.Context, opts Options, logger *zap.Logger) (*gateway.AgentGateway, *usage.UsageService, error) {
 	staticConfig, err := loadStaticConfig(ctx, opts)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 
 	configstoreBackend, err := configstore.OpenBackend(ctx, "sqlite", configstoresqlite.Config{SQLitePath: opts.ConfigStorePath}, logger.Named("sqlite"))
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("open config store: %w", err)
+		return nil, nil, fmt.Errorf("open config store: %w", err)
 	}
 	if err := schema.RegisterDefaultStores(configstoreBackend); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	usageService := newUsageService(configstoreBackend, logger, opts.Metrics)
 
 	credentialStore, err := configstoreBackend.Get(schema.StoreCredentials)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("get credential store: %w", err)
+		return nil, nil, fmt.Errorf("get credential store: %w", err)
 	}
-	credentialScheduler := credentialmgrscheduler.NewScheduler(nil)
-	credentialManager := credentialmgr.NewManager(credentialStore)
-	if schedulerListener, ok := credentialScheduler.(credentialmgr.CredentialLifecycleListener); ok {
+	credentialScheduler := credentialscheduler.NewScheduler(nil)
+	credentialManager := credential.NewManager(credentialStore)
+	credentialManager.SetRefresher(credential.NewCommandRefresher(opts.CredentialRefreshCommand, opts.CredentialRefreshArgs...))
+	if schedulerListener, ok := credentialScheduler.(credential.CredentialLifecycleListener); ok {
 		credentialManager.AddListener(schedulerListener)
 	}
 
-	cliauthManager := cliauth.NewManager()
-	cliauthManager.SetCredentialManager(credentialManager)
-	cliauthRefresher := cliauth.NewAutoRefresher(cliauth.WrapSharedCredentialManager(credentialManager), cliauthManager)
-
 	if err := credentialManager.Load(ctx); err != nil {
-		return nil, nil, nil, fmt.Errorf("load credentials: %w", err)
-	}
-	if err := cliauthRefresher.Load(ctx); err != nil {
-		return nil, nil, nil, fmt.Errorf("load cliauth credentials: %w", err)
+		return nil, nil, fmt.Errorf("load credentials: %w", err)
 	}
 	agentGateway := gateway.NewAgentGateway()
 	if err := agentGateway.Bootstrap(ctx, gateway.BootstrapOptions{
 		StaticLLMRoutes:     staticConfig.LLMRoutes,
 		StaticProviders:     staticConfig.Providers,
 		ConfigStoreBackend:  configstoreBackend,
-		CLIAuthManager:      cliauthManager,
-		CLIAuthRefresher:    cliauthRefresher,
 		CredentialManager:   credentialManager,
 		CredentialScheduler: credentialScheduler,
 		UsageObserver:       usageService.Observer(),
@@ -210,15 +205,16 @@ func bootstrapGateway(ctx context.Context, opts Options, logger *zap.Logger) (*g
 		UsageStats:          usageService,
 		UsagePrometheus:     usageService.Prometheus(),
 		UsageConfig:         opts.Metrics.Normalized(),
+		Logger:              logger,
 	}); err != nil {
-		return nil, nil, nil, fmt.Errorf("bootstrap agent gateway: %w", err)
+		return nil, nil, fmt.Errorf("bootstrap agent gateway: %w", err)
 	}
 	if attribution := usageService.Attribution(); attribution != nil {
 		if manager := agentGateway.AgentManager(); manager != nil {
 			attribution.Set(manager)
 		}
 	}
-	return agentGateway, cliauthRefresher, usageService, nil
+	return agentGateway, usageService, nil
 }
 
 func newUsageService(backend configstore.ConfigStoreBackend, logger *zap.Logger, cfg usage.Config) *usage.UsageService {

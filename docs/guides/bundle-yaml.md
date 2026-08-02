@@ -48,6 +48,7 @@ Behavior:
 
 - `--static-config` loads the bundle at startup
 - `--provider-type` is startup-only provider type availability; repeat it to allow multiple types
+- `--credential-refresh-command` selects the external request-time credential refresher; repeat `--credential-refresh-arg` for static arguments (together they default to `agw-auth refresh`)
 - loaded objects are treated as static read-only runtime objects
 - static bundle objects are not pre-seeded into SQLite as writable rows
 
@@ -167,7 +168,6 @@ Common top-level sections:
 - `managedModels`
 - `llmRoutes`
 - `virtualKeys`
-- `cliAuthAuthenticators`
 - `mcpServices`
 - `mcpRoutes`
 - `agents`

@@ -119,7 +119,7 @@ For each step, include:
 Hard constraints:
 - Each step must solve only one architecture problem.
 - Do not "clean up extra things on the way".
-- Do not introduce provider/modelcatalog/credentialmgr or other domain dependencies into core packages.
+- Do not introduce provider/modelcatalog/credential or other domain dependencies into core packages.
 - If a step crosses too many layers, split it further.
 - Prefer boundary clarification first, code convergence second.
 

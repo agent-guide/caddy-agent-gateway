@@ -3,11 +3,11 @@ package schema
 import (
 	"testing"
 
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	"github.com/agent-guide/agent-gateway/pkg/credential/model"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	modelcatalog "github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/model"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
@@ -74,7 +74,7 @@ func TestCredentialSchemaCodecRejectsWrongType(t *testing.T) {
 }
 
 func TestCredentialSchemaCodecRoundTrip(t *testing.T) {
-	obj := &model.Credential{ID: "cred-1", ProviderType: "openai", ProviderID: "openai-main", Scope: "id:openai-main", Type: credentialmgr.TypeAPIKey}
+	obj := &model.Credential{ID: "cred-1", ProviderType: "openai", ProviderID: "openai-main", Scope: "id:openai-main", Type: credential.TypeAPIKey}
 
 	data, err := CredentialSchema.Codec.Encode(obj)
 	if err != nil {
@@ -103,7 +103,7 @@ func TestCredentialSchemaCodecRejectsEmptyProviderID(t *testing.T) {
 }
 
 func TestCredentialSchemaCodecRejectsEmptyScope(t *testing.T) {
-	obj := &model.Credential{ID: "cred-1", ProviderType: "openai", ProviderID: "openai-main", Type: credentialmgr.TypeAPIKey}
+	obj := &model.Credential{ID: "cred-1", ProviderType: "openai", ProviderID: "openai-main", Type: credential.TypeAPIKey}
 
 	if _, err := CredentialSchema.Codec.Encode(obj); err == nil {
 		t.Fatal("expected scope validation error")

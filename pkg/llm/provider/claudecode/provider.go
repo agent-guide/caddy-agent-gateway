@@ -14,8 +14,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/httpclient"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 )
@@ -323,14 +323,14 @@ func authFromContextOrConfig(ctx context.Context, fallback string, apiKeyHeader 
 	useXAPIKey := apiKeyHeader == apiKeyHeaderXAPIKey
 
 	if cred, ok := provider.CredentialFromContext(ctx); ok && cred != nil {
-		if cred.Type == credentialmgr.TypeCLIAuthToken && cred.Metadata != nil {
+		if cred.Type == credential.TypeOAuthToken && cred.Metadata != nil {
 			if token, _ := cred.Metadata["access_token"].(string); strings.TrimSpace(token) != "" {
 				return authHeader{
 					authorization: "Bearer " + strings.TrimSpace(token),
 				}
 			}
 		}
-		if cred.Type == credentialmgr.TypeAPIKey && strings.TrimSpace(cred.APIKey()) != "" {
+		if cred.Type == credential.TypeAPIKey && strings.TrimSpace(cred.APIKey()) != "" {
 			if useXAPIKey {
 				return authHeader{
 					apiKey: strings.TrimSpace(cred.APIKey()),

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	_ "github.com/agent-guide/agent-gateway/pkg/cliauth/authenticator"
 	_ "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/openai"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/openai"
 	"go.uber.org/zap"
@@ -83,15 +82,12 @@ llmRoutes:
         provider_id: openai-main
 `)
 
-	gw, refresher, usageService, err := bootstrapGateway(context.Background(), Options{
+	gw, usageService, err := bootstrapGateway(context.Background(), Options{
 		ConfigStorePath:  dbPath,
 		StaticConfigPath: bundlePath,
 	}, zap.NewNop())
 	if err != nil {
 		t.Fatalf("bootstrapGateway() error = %v", err)
-	}
-	if refresher == nil {
-		t.Fatal("bootstrapGateway() refresher = nil")
 	}
 	if usageService == nil {
 		t.Fatal("bootstrapGateway() usageService = nil")
@@ -307,6 +303,31 @@ llmRoutes:
 	_, err := loadStaticConfig(context.Background(), Options{StaticConfigPath: path})
 	if err == nil {
 		t.Fatal("expected static config logical-model routes to fail")
+	}
+}
+
+func TestOptionsDefaultCredentialRefreshCommand(t *testing.T) {
+	opts := Options{}
+	opts.setDefaults()
+	if opts.CredentialRefreshCommand != "agw-auth" {
+		t.Fatalf("CredentialRefreshCommand = %q, want agw-auth", opts.CredentialRefreshCommand)
+	}
+	if len(opts.CredentialRefreshArgs) != 1 || opts.CredentialRefreshArgs[0] != "refresh" {
+		t.Fatalf("CredentialRefreshArgs = %v, want [refresh]", opts.CredentialRefreshArgs)
+	}
+}
+
+func TestOptionsPreservesExplicitCredentialRefreshArgv(t *testing.T) {
+	opts := Options{
+		CredentialRefreshCommand: "/opt/custom-refresher",
+		CredentialRefreshArgs:    []string{"--mode", "oauth"},
+	}
+	opts.setDefaults()
+	if opts.CredentialRefreshCommand != "/opt/custom-refresher" {
+		t.Fatalf("CredentialRefreshCommand = %q, want /opt/custom-refresher", opts.CredentialRefreshCommand)
+	}
+	if len(opts.CredentialRefreshArgs) != 2 || opts.CredentialRefreshArgs[0] != "--mode" || opts.CredentialRefreshArgs[1] != "oauth" {
+		t.Fatalf("CredentialRefreshArgs = %v, want [--mode oauth]", opts.CredentialRefreshArgs)
 	}
 }
 

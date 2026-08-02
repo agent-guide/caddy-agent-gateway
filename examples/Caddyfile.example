@@ -26,6 +26,11 @@
 		config_store sqlite {
 			path ./data/configstore.db
 		}
+
+		# External command for request-time OAuth token refresh. Defaults to
+		# agw-auth; set an absolute path when it is not available on PATH.
+		credential_refresh_command agw-auth refresh
+
 		# Optional static provider and route profiles. Uncomment the provider and
 		# matching route needed for local experiments. Bundle/Admin API objects
 		# stored in SQLite can be used instead.

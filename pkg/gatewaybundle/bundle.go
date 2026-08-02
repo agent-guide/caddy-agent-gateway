@@ -10,7 +10,6 @@ import (
 	"time"
 
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
-	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	mcproute "github.com/agent-guide/agent-gateway/pkg/gateway/mcproute"
@@ -30,17 +29,16 @@ const (
 var envVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 type GatewayBundle struct {
-	APIVersion            string                        `json:"apiVersion"`
-	Kind                  string                        `json:"kind"`
-	Providers             []provider.ProviderConfig     `json:"providers,omitempty"`
-	ManagedModels         []modelcatalog.ManagedModel   `json:"managedModels,omitempty"`
-	LLMRoutes             []routecore.AgentRouteConfig  `json:"llmRoutes,omitempty"`
-	VirtualKeys           []BundleVirtualKey            `json:"virtualKeys,omitempty"`
-	CLIAuthAuthenticators []CLIAuthAuthenticator        `json:"cliAuthAuthenticators,omitempty"`
-	MCPServices           []mcpservice.MCPServiceConfig `json:"mcpServices,omitempty"`
-	MCPRoutes             []mcproute.MCPRouteConfig     `json:"mcpRoutes,omitempty"`
-	AgentRoutes           []agentroute.AgentRouteConfig `json:"agentRoutes,omitempty"`
-	Agents                []agentpkg.Agent              `json:"agents,omitempty"`
+	APIVersion    string                        `json:"apiVersion"`
+	Kind          string                        `json:"kind"`
+	Providers     []provider.ProviderConfig     `json:"providers,omitempty"`
+	ManagedModels []modelcatalog.ManagedModel   `json:"managedModels,omitempty"`
+	LLMRoutes     []routecore.AgentRouteConfig  `json:"llmRoutes,omitempty"`
+	VirtualKeys   []BundleVirtualKey            `json:"virtualKeys,omitempty"`
+	MCPServices   []mcpservice.MCPServiceConfig `json:"mcpServices,omitempty"`
+	MCPRoutes     []mcproute.MCPRouteConfig     `json:"mcpRoutes,omitempty"`
+	AgentRoutes   []agentroute.AgentRouteConfig `json:"agentRoutes,omitempty"`
+	Agents        []agentpkg.Agent              `json:"agents,omitempty"`
 }
 
 type BundleVirtualKey struct {
@@ -52,12 +50,6 @@ type BundleVirtualKey struct {
 	RateLimits      *virtualkeypkg.VirtualKeyRateLimits `json:"rate_limits,omitempty"`
 	StatusMessage   string                              `json:"status_message,omitempty"`
 	ExpiresAt       time.Time                           `json:"expires_at,omitempty"`
-}
-
-type CLIAuthAuthenticator struct {
-	Name    string                      `json:"name"`
-	Enabled bool                        `json:"enabled"`
-	Config  cliauth.AuthenticatorConfig `json:"config,omitempty"`
 }
 
 type ValidationErrors struct {
@@ -85,6 +77,9 @@ func DecodeYAML(data []byte) (*GatewayBundle, error) {
 	if root, ok := expanded.(map[string]any); ok {
 		if _, exists := root["providerTypes"]; exists {
 			return nil, fmt.Errorf("providerTypes is not supported in GatewayBundle; configure provider types at gateway startup")
+		}
+		if _, exists := root["cliAuthAuthenticators"]; exists {
+			return nil, fmt.Errorf("cliAuthAuthenticators is not supported in GatewayBundle; use the external agw-auth tool")
 		}
 		legacy := []string{}
 		for _, key := range []string{"acpServices", "acpRoutes", "builtinRoutes"} {
@@ -290,23 +285,6 @@ func (b *GatewayBundle) validate(_ bool) error {
 		}
 		// allowed_route_ids are validated after every route family has been
 		// collected — virtual keys may restrict to routes of any kind.
-	}
-	authenticators := map[string]struct{}{}
-	for i := range b.CLIAuthAuthenticators {
-		name := strings.ToLower(strings.TrimSpace(b.CLIAuthAuthenticators[i].Name))
-		b.CLIAuthAuthenticators[i].Name = name
-		if name == "" {
-			errs.Append(fmt.Errorf("cliAuthAuthenticators[%d].name is required", i))
-			continue
-		}
-		if _, exists := authenticators[name]; exists {
-			errs.Append(fmt.Errorf("cliAuthAuthenticators[%q]: duplicate name", name))
-		} else {
-			authenticators[name] = struct{}{}
-		}
-		if _, err := cliauth.NewAuthenticator(name); err != nil {
-			errs.Append(fmt.Errorf("cliAuthAuthenticators[%q]: unknown authenticator", name))
-		}
 	}
 	mcpServiceIDs := map[string]struct{}{}
 	for i := range b.MCPServices {

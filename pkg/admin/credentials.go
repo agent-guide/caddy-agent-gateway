@@ -8,13 +8,13 @@ import (
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	"gorm.io/gorm"
 )
 
 type CredentialView struct {
-	credentialmgr.ManagedCredential
+	credential.ManagedCredential
 	ReadOnly bool `json:"read_only"`
 }
 
@@ -24,7 +24,7 @@ func (h *Handler) handleListCredentials(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	filter := credentialmgr.Filter{
+	filter := credential.Filter{
 		ProviderType: r.URL.Query().Get("provider_type"),
 		ProviderID:   r.URL.Query().Get("provider_id"),
 		Type:         r.URL.Query().Get("type"),
@@ -162,7 +162,7 @@ func (h *Handler) handleDeleteCredential(w http.ResponseWriter, r *http.Request)
 	_ = httpjson.Write(w, http.StatusOK, map[string]string{"status": "deleted", "credential_id": id})
 }
 
-func credentialView(cred *credentialmgr.ManagedCredential, readOnly bool) CredentialView {
+func credentialView(cred *credential.ManagedCredential, readOnly bool) CredentialView {
 	if cred == nil {
 		return CredentialView{ReadOnly: readOnly}
 	}
@@ -172,14 +172,14 @@ func credentialView(cred *credentialmgr.ManagedCredential, readOnly bool) Creden
 	}
 }
 
-func (h *Handler) buildCredentialForCreate(ctx context.Context, req credentialCreateRequest) (*credentialmgr.Credential, error) {
+func (h *Handler) buildCredentialForCreate(ctx context.Context, req credentialCreateRequest) (*credential.Credential, error) {
 	credentialType := strings.ToLower(strings.TrimSpace(req.Type))
 	if credentialType == "" {
 		return nil, fmt.Errorf("type is required")
 	}
 
 	switch credentialType {
-	case credentialmgr.TypeAPIKey:
+	case credential.TypeAPIKey:
 		manager := h.providerManagerForRoutes()
 		if manager == nil {
 			return nil, fmt.Errorf("provider manager is not configured")
@@ -195,23 +195,23 @@ func (h *Handler) buildCredentialForCreate(ctx context.Context, req credentialCr
 			}
 			return nil, fmt.Errorf("get provider config: %w", err)
 		}
-		return &credentialmgr.Credential{
+		return &credential.Credential{
 			ID:           strings.TrimSpace(req.ID),
 			ProviderType: cfg.ProviderType,
 			ProviderID:   cfg.Id,
 			Scope:        strings.TrimSpace(req.Scope),
-			Type:         credentialmgr.TypeAPIKey,
+			Type:         credential.TypeAPIKey,
 			Label:        req.Label,
 			Attributes:   req.Attributes,
 			Disabled:     req.Disabled,
 		}, nil
-	case credentialmgr.TypeCLIAuthToken:
-		cred := &credentialmgr.Credential{
+	case credential.TypeOAuthToken:
+		cred := &credential.Credential{
 			ID:           strings.TrimSpace(req.ID),
 			ProviderType: strings.TrimSpace(req.ProviderType),
 			ProviderID:   strings.TrimSpace(req.ProviderID),
 			Scope:        strings.TrimSpace(req.Scope),
-			Type:         credentialmgr.TypeCLIAuthToken,
+			Type:         credential.TypeOAuthToken,
 			Label:        req.Label,
 			Attributes:   req.Attributes,
 			Metadata:     req.Metadata,
@@ -229,12 +229,12 @@ func (h *Handler) buildCredentialForCreate(ctx context.Context, req credentialCr
 	}
 }
 
-func (h *Handler) buildCredentialForUpdate(existing *credentialmgr.ManagedCredential, req credentialUpdateRequest) (*credentialmgr.Credential, error) {
+func (h *Handler) buildCredentialForUpdate(existing *credential.ManagedCredential, req credentialUpdateRequest) (*credential.Credential, error) {
 	if existing == nil {
 		return nil, fmt.Errorf("credential not found")
 	}
 	switch existing.Type {
-	case credentialmgr.TypeAPIKey:
+	case credential.TypeAPIKey:
 		updated := existing.Credential.Clone()
 		updated.Label = req.Label
 		updated.Disabled = req.Disabled
@@ -245,7 +245,7 @@ func (h *Handler) buildCredentialForUpdate(existing *credentialmgr.ManagedCreden
 			updated.Attributes = req.Attributes
 		}
 		return updated, nil
-	case credentialmgr.TypeCLIAuthToken:
+	case credential.TypeOAuthToken:
 		updated := existing.Credential.Clone()
 		updated.Label = req.Label
 		updated.Disabled = req.Disabled
@@ -290,7 +290,7 @@ func (h *Handler) writeCredentialBuildError(w http.ResponseWriter, err error) {
 	_ = httpjson.Error(w, status, msg)
 }
 
-func matchesCredentialFilter(cred *credentialmgr.Credential, filter credentialmgr.Filter) bool {
+func matchesCredentialFilter(cred *credential.Credential, filter credential.Filter) bool {
 	if cred == nil {
 		return false
 	}

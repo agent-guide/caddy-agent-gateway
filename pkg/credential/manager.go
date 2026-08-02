@@ -1,4 +1,4 @@
-package credentialmgr
+package credential
 
 import (
 	"context"
@@ -9,13 +9,13 @@ import (
 	"time"
 
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/model"
+	"github.com/agent-guide/agent-gateway/pkg/credential/model"
 	"github.com/google/uuid"
 )
 
 const (
-	TypeAPIKey       = "api_key"
-	TypeCLIAuthToken = "cliauth_token"
+	TypeAPIKey     = "api_key"
+	TypeOAuthToken = "oauth_token"
 
 	CredentialScopeProviderTypePrefix = "type:"
 	CredentialScopeProviderIDPrefix   = "id:"
@@ -53,17 +53,29 @@ type CredentialLifecycleListener interface {
 type Manager struct {
 	store configstore.ConfigStore
 
-	mu               sync.RWMutex
-	creds            map[string]*ManagedCredential
-	listeners        []CredentialLifecycleListener
-	manualRefreshers map[string]ManualRefresher
+	mu              sync.RWMutex
+	refreshLocksMu  sync.Mutex
+	refreshLocks    map[string]*credentialRefreshLock
+	refreshFailures map[string]credentialRefreshFailure
+	creds           map[string]*ManagedCredential
+	listeners       []CredentialLifecycleListener
+	refresher       Refresher
+}
+
+type credentialRefreshLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+type credentialRefreshFailure struct {
+	err        error
+	retryAfter time.Time
 }
 
 func NewManager(store configstore.ConfigStore) *Manager {
 	m := &Manager{
-		store:            store,
-		creds:            make(map[string]*ManagedCredential),
-		manualRefreshers: make(map[string]ManualRefresher),
+		store: store,
+		creds: make(map[string]*ManagedCredential),
 	}
 	return m
 }
@@ -85,47 +97,25 @@ func DecodeCredential(data []byte) (any, error) {
 	return c.Normalize(), nil
 }
 
-func (m *Manager) SetManualRefresher(manualRefreshName string, refresher ManualRefresher) {
+// SetRefresher installs the request-time credential refresh transport. The
+// transport decides how the configured refresh command is executed.
+func (m *Manager) SetRefresher(refresher Refresher) {
 	if m == nil {
 		return
 	}
-	key := normalizeManualRefreshName(manualRefreshName)
-	if key == "" {
-		return
-	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if refresher == nil {
-		delete(m.manualRefreshers, key)
-		return
-	}
-	m.manualRefreshers[key] = refresher
-}
-
-func (m *Manager) RemoveManualRefresher(manualRefreshName string) {
-	if m == nil {
-		return
-	}
-	key := normalizeManualRefreshName(manualRefreshName)
-	if key == "" {
-		return
-	}
-	m.mu.Lock()
-	delete(m.manualRefreshers, key)
+	m.refresher = refresher
 	m.mu.Unlock()
+	m.clearAllRefreshFailures()
 }
 
-func (m *Manager) ManualRefresher(manualRefreshName string) ManualRefresher {
+func (m *Manager) Refresher() Refresher {
 	if m == nil {
-		return nil
-	}
-	key := normalizeManualRefreshName(manualRefreshName)
-	if key == "" {
 		return nil
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.manualRefreshers[key]
+	return m.refresher
 }
 
 func (m *Manager) Load(ctx context.Context) error {
@@ -172,6 +162,7 @@ func (m *Manager) ReloadFromStore(ctx context.Context) error {
 	m.mu.Lock()
 	m.creds = reloaded
 	m.mu.Unlock()
+	m.clearAllRefreshFailures()
 
 	m.notifyReplaced(ctx, managedCredentialMapSnapshot(reloaded))
 	return nil
@@ -211,6 +202,7 @@ func (m *Manager) RegisterCredential(ctx context.Context, cred *Credential) erro
 	m.mu.Lock()
 	m.creds[cred.ID] = managed
 	m.mu.Unlock()
+	m.clearRefreshFailure(cred.ID)
 
 	m.notifyRegistered(ctx, managed)
 	original.ID = cred.ID
@@ -243,6 +235,7 @@ func (m *Manager) UpdateCredential(ctx context.Context, cred *Credential) error 
 	managed := mergeManagedCredentialLocked(m.creds[cred.ID], cred)
 	m.creds[cred.ID] = managed
 	m.mu.Unlock()
+	m.clearRefreshFailure(cred.ID)
 
 	m.notifyUpdated(ctx, managed)
 	return nil
@@ -262,6 +255,7 @@ func (m *Manager) DeregisterCredential(ctx context.Context, id string) error {
 	_, ok := m.creds[id]
 	delete(m.creds, id)
 	m.mu.Unlock()
+	m.clearRefreshFailure(id)
 	if !ok {
 		return nil
 	}
@@ -342,21 +336,45 @@ func (m *Manager) RefreshCredentialIfNeeded(ctx context.Context, credID string) 
 	}
 
 	current := stored.Clone()
-	if current.Type != TypeCLIAuthToken {
+	if !credentialNeedsRefresh(&current.Credential, time.Now().UTC()) {
 		return current, nil
 	}
 
-	manualRefreshName := current.RefreshName()
-	if manualRefreshName == "" {
+	// Serialize rotation of one credential's refresh token, while allowing
+	// unrelated credentials to refresh concurrently. Re-read after acquiring
+	// the lock because another request may already have rotated this token.
+	unlockRefresh := m.lockCredentialRefresh(credID)
+	defer unlockRefresh()
+	m.mu.RLock()
+	stored = m.creds[credID]
+	m.mu.RUnlock()
+	if stored == nil {
+		return nil, &Error{Code: "credential_not_found", Message: "credential not found"}
+	}
+	current = stored.Clone()
+	if !credentialNeedsRefresh(&current.Credential, time.Now().UTC()) {
 		return current, nil
 	}
-	refresher := m.ManualRefresher(manualRefreshName)
-	if refresher == nil || !credentialNeedsManualRefresh(&current.Credential, time.Now().UTC()) {
-		return current, nil
+	if err := m.cachedRefreshFailure(credID, time.Now().UTC()); err != nil {
+		return nil, err
 	}
 
-	updated, err := refresher.Refresh(ctx, current.Credential.Clone())
+	refresher := m.Refresher()
+	if refresher == nil {
+		err := fmt.Errorf("credential manager: credential %q requires refresh but no refresher is configured", current.ID)
+		m.cacheRefreshFailure(credID, err)
+		return nil, err
+	}
+
+	// Refresh-token rotation and persistence form one critical operation. Once
+	// it starts, a disconnected client must not cancel either half: the
+	// upstream may already have consumed the old refresh token by the time the
+	// request context is canceled. The refresher still applies its own bounded
+	// execution timeout.
+	refreshCtx := context.WithoutCancel(ctx)
+	updated, err := refresher.Refresh(refreshCtx, current.Credential.Clone())
 	if err != nil {
+		m.cacheRefreshFailure(credID, err)
 		return nil, err
 	}
 	if updated == nil {
@@ -364,31 +382,104 @@ func (m *Manager) RefreshCredentialIfNeeded(ctx context.Context, credID string) 
 	}
 
 	updated = updated.Clone().Normalize()
-	if updated.ID == "" {
-		updated.ID = current.ID
-	}
-	if updated.ProviderType == "" {
-		updated.ProviderType = current.ProviderType
-	}
-	if updated.ProviderID == "" {
-		updated.ProviderID = current.ProviderID
-	}
-	if updated.Type == "" {
-		updated.Type = current.Type
-	}
+	// The external refresher may update token material and descriptive
+	// metadata, but it cannot move or reclassify the persisted credential.
+	updated.ID = current.ID
+	updated.ProviderType = current.ProviderType
+	updated.ProviderID = current.ProviderID
+	updated.Type = current.Type
+	updated.Scope = current.Scope
+	updated.Disabled = current.Disabled
+	updated.CreatedAt = current.CreatedAt
 	if updated.Label == "" {
 		updated.Label = current.Label
 	}
-	if updated.Metadata == nil {
-		updated.Metadata = make(map[string]any)
-	}
-	if updated.RefreshName() == "" && manualRefreshName != "" {
-		updated.Metadata[MetadataRefreshNameKey] = manualRefreshName
-	}
-	if err := m.UpdateCredential(ctx, updated); err != nil {
+	updated.Metadata = mergeCredentialMetadata(current.Metadata, updated.Metadata)
+	if err := m.UpdateCredential(refreshCtx, updated); err != nil {
+		m.cacheRefreshFailure(credID, err)
 		return nil, err
 	}
 	return m.GetCredential(updated.ID), nil
+}
+
+func (m *Manager) cachedRefreshFailure(credID string, now time.Time) error {
+	m.refreshLocksMu.Lock()
+	defer m.refreshLocksMu.Unlock()
+	failure, ok := m.refreshFailures[credID]
+	if !ok {
+		return nil
+	}
+	if !failure.retryAfter.After(now) {
+		delete(m.refreshFailures, credID)
+		return nil
+	}
+	return failure.err
+}
+
+func (m *Manager) cacheRefreshFailure(credID string, err error) {
+	if err == nil {
+		return
+	}
+	m.refreshLocksMu.Lock()
+	if m.refreshFailures == nil {
+		m.refreshFailures = make(map[string]credentialRefreshFailure)
+	}
+	m.refreshFailures[credID] = credentialRefreshFailure{
+		err:        err,
+		retryAfter: time.Now().UTC().Add(RefreshFailureCooldown),
+	}
+	m.refreshLocksMu.Unlock()
+}
+
+func (m *Manager) clearRefreshFailure(credID string) {
+	m.refreshLocksMu.Lock()
+	delete(m.refreshFailures, credID)
+	m.refreshLocksMu.Unlock()
+}
+
+func (m *Manager) clearAllRefreshFailures() {
+	m.refreshLocksMu.Lock()
+	clear(m.refreshFailures)
+	m.refreshLocksMu.Unlock()
+}
+
+func mergeCredentialMetadata(current, updated map[string]any) map[string]any {
+	if len(current) == 0 && len(updated) == 0 {
+		return nil
+	}
+	merged := make(map[string]any, len(current)+len(updated))
+	for key, value := range current {
+		merged[key] = value
+	}
+	for key, value := range updated {
+		merged[key] = value
+	}
+	return merged
+}
+
+func (m *Manager) lockCredentialRefresh(credID string) func() {
+	m.refreshLocksMu.Lock()
+	if m.refreshLocks == nil {
+		m.refreshLocks = make(map[string]*credentialRefreshLock)
+	}
+	lock := m.refreshLocks[credID]
+	if lock == nil {
+		lock = &credentialRefreshLock{}
+		m.refreshLocks[credID] = lock
+	}
+	lock.refs++
+	m.refreshLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		m.refreshLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(m.refreshLocks, credID)
+		}
+		m.refreshLocksMu.Unlock()
+	}
 }
 
 func (m *Manager) create(ctx context.Context, cred *Credential) error {

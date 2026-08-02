@@ -71,6 +71,9 @@ func isCredentialBlockedForModel(cred *ManagedCredential, model string, now time
 	if cred.Disabled || cred.AuthInvalid {
 		return true, blockReasonDisabled, time.Time{}
 	}
+	if cred.CredentialWideUnavailable && cred.CredentialWideNextRetryAfter.After(now) {
+		return true, blockReasonOther, cred.CredentialWideNextRetryAfter
+	}
 
 	// Check per-model state first.
 	if model != "" && len(cred.ModelStates) > 0 {

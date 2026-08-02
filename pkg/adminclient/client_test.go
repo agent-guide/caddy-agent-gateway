@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 )
 
@@ -186,44 +185,6 @@ func TestRefreshProviderModels(t *testing.T) {
 		t.Fatalf("RefreshProviderModels error: %v", err)
 	}
 	if resp.ProviderID != "openai-main" || len(resp.Items) != 1 {
-		t.Fatalf("unexpected response: %+v", resp)
-	}
-}
-
-func TestUpdateCLIAuthAuthenticatorAllowsCreated(t *testing.T) {
-	t.Parallel()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Fatalf("unexpected method: %s", r.Method)
-		}
-		if r.URL.Path != "/admin/cliauth/authenticators/codex" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(CLIAuthUpdateAuthenticatorResponse{
-			Status: "enabled",
-			Authenticator: CLIAuthAuthenticator{
-				Name:    "codex",
-				Enabled: true,
-				Config: cliauth.AuthenticatorConfig{
-					NoBrowser: true,
-				},
-			},
-		})
-	}))
-	defer srv.Close()
-
-	client := New(Config{BaseURL: srv.URL, Token: "preset-token"})
-	enabled := true
-	resp, err := client.UpdateCLIAuthAuthenticator(context.Background(), "codex", UpdateCLIAuthAuthenticatorRequest{
-		Enabled: &enabled,
-		Config:  &cliauth.AuthenticatorConfig{NoBrowser: true},
-	})
-	if err != nil {
-		t.Fatalf("UpdateCLIAuthAuthenticator error: %v", err)
-	}
-	if resp.Authenticator.Name != "codex" || !resp.Authenticator.Enabled {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 }

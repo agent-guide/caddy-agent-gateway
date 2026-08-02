@@ -1,4 +1,4 @@
-package credentialmgr
+package credential
 
 // Filter identifies credentials for manager-side listing and storage operations.
 type Filter struct {

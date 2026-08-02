@@ -11,7 +11,7 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "agwctl",
-	Short: "Agent Gateway CLI — manage the gateway, Caddy, and CLI auth state",
+	Short: "Agent Gateway CLI — manage Gateway and Caddy state",
 }
 
 func init() {

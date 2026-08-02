@@ -24,6 +24,7 @@ func TestParseAppFromCaddyfile(t *testing.T) {
 		config_store sqlite {
 			path /tmp/agent-gateway.db
 		}
+		credential_refresh_command /opt/agw-auth refresh --profile oauth
 
 		metrics {
 			retention_days 14
@@ -70,6 +71,12 @@ func TestParseAppFromCaddyfile(t *testing.T) {
 
 	if len(app.ConfigStoreRaw) != 1 {
 		t.Fatalf("config_store count = %d, want 1", len(app.ConfigStoreRaw))
+	}
+	if app.CredentialRefreshCommand != "/opt/agw-auth" {
+		t.Fatalf("credential_refresh_command = %q, want /opt/agw-auth", app.CredentialRefreshCommand)
+	}
+	if got, want := strings.Join(app.CredentialRefreshArgs, " "), "refresh --profile oauth"; got != want {
+		t.Fatalf("credential_refresh_args = %q, want %q", got, want)
 	}
 	if len(app.Providers) != 1 {
 		t.Fatalf("provider count = %d, want 1", len(app.Providers))

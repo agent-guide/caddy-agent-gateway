@@ -26,9 +26,10 @@ providers:
   #   options:
   #     compact: cc
 
-  # Alternative: Claude Code CLI credentials obtained through CLI auth.
+  # Alternative: Claude Code CLI credentials obtained through the external
+  # agw-auth tool.
   # Route settings: protocol=cc, provider_id=claudecode-cli,
-  # credential_type_order=[cliauth_token].
+  # credential_type_order=[oauth_token].
   # The provider sends the Claude Code CLI fingerprint by default. Override
   # individual network.extra_headers only when matching a newer CLI release.
   # - id: claudecode-cli
@@ -37,9 +38,10 @@ providers:
   #   network:
   #     proxy_url: http://127.0.0.1:7890
 
-  # Alternative: Codex CLI credentials obtained through CLI auth.
+  # Alternative: Codex CLI credentials obtained through the external agw-auth
+  # tool.
   # Route settings: protocol=openai, provider_id=codex-cli,
-  # credential_type_order=[cliauth_token].
+  # credential_type_order=[oauth_token].
   # - id: codex-cli
   #   provider_type: codex
   #   default_model: gpt-5.4
@@ -92,7 +94,7 @@ llmRoutes:
       provider_target:
         # Set this to the id of the enabled provider profile above.
         provider_id: deepseek-main
-      # CLI-auth profiles use cliauth_token instead.
+      # Profiles provisioned by agw-auth use oauth_token instead.
       credential_type_order:
         - api_key
 

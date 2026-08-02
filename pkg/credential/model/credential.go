@@ -17,7 +17,7 @@ type Credential struct {
 	ProviderType string `json:"provider_type"`
 	// ProviderID identifies the concrete provider instance this credential belongs to.
 	ProviderID string `json:"provider_id"`
-	// Type identifies the credential kind (e.g. api_key, cliauth_token).
+	// Type identifies the credential kind (e.g. api_key, oauth_token).
 	Type string `json:"type"`
 	// Label is a human-readable label for logging and display.
 	Label string `json:"label,omitempty"`
@@ -40,6 +40,10 @@ type ManagedCredential struct {
 	Credential
 	// Unavailable flags transient provider unavailability (e.g. quota exceeded).
 	Unavailable bool `json:"unavailable,omitempty"`
+	// CredentialWideUnavailable flags a transient block across every model.
+	CredentialWideUnavailable bool `json:"credential_wide_unavailable,omitempty"`
+	// CredentialWideNextRetryAfter bounds a credential-wide transient block.
+	CredentialWideNextRetryAfter time.Time `json:"credential_wide_next_retry_after,omitempty"`
 	// NextRetryAfter is the earliest time a retry should be attempted.
 	NextRetryAfter time.Time `json:"next_retry_after,omitempty"`
 	// Quota captures recent quota information for load-balancing decisions.
@@ -189,19 +193,6 @@ func (c *Credential) ExpirationTime() (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return utils.ExpirationFromMap(c.Metadata)
-}
-
-// RefreshName returns the refresh handler name associated with this credential.
-func (c *Credential) RefreshName() string {
-	if c == nil || c.Metadata == nil {
-		return ""
-	}
-	if val, ok := c.Metadata["refresh_name"]; ok {
-		if s, ok := val.(string); ok {
-			return strings.ToLower(strings.TrimSpace(s))
-		}
-	}
-	return ""
 }
 
 // RefreshExpiryDelta returns the per-credential refresh lead time.

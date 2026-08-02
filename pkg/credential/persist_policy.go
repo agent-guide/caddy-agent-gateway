@@ -1,4 +1,4 @@
-package credentialmgr
+package credential
 
 import "context"
 

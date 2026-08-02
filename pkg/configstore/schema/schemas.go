@@ -8,11 +8,11 @@ import (
 
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	credmodel "github.com/agent-guide/agent-gateway/pkg/credential/model"
 	modelcatalog "github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 	routecore "github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	credmodel "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/model"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
 )
@@ -57,6 +57,8 @@ var ProviderConfigSchema = configstore.StoreSchema{
 	},
 }
 
+// CredentialSchema keeps the historical SQLite table name so existing
+// credential data remains visible after the broader credential-domain rename.
 var CredentialSchema = configstore.StoreSchema{
 	Name:              StoreCredentials,
 	Kind:              "credential",
@@ -67,7 +69,7 @@ var CredentialSchema = configstore.StoreSchema{
 	Timestamped:       true,
 	Codec: typedJSONCodec{
 		kind:     "credential",
-		decode:   credentialmgr.DecodeCredential,
+		decode:   credential.DecodeCredential,
 		validate: validateCredentialObject,
 	},
 	Metadata: configstore.MetadataFuncs{

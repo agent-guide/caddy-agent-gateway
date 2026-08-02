@@ -9,11 +9,12 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	credentialscheduler "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	credentialmgrscheduler "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/cloudwego/eino/schema"
+	"go.uber.org/zap"
 )
 
 type RoutedProvider struct {
@@ -22,21 +23,23 @@ type RoutedProvider struct {
 	providerResolver    ProviderResolver
 	providerConfigs     llmroutepkg.ProviderConfigResolver
 	modelCatalog        llmroutepkg.ModelCatalogResolver
-	credentialMgr       *credentialmgr.Manager
-	scheduler           credentialmgrscheduler.CredentialScheduler
+	credentialMgr       *credential.Manager
+	scheduler           credentialscheduler.CredentialScheduler
+	logger              *zap.Logger
 }
 
 type executionState struct {
 	triedCandidates          map[string]struct{}
 	triedCredentials         map[string]struct{}
 	triedProviderConfigAuths map[string]struct{}
+	lastCredentialRefreshID  string
 	modelFallbacks           int
 }
 
 type resolvedAttempt struct {
 	target *llmroutepkg.ResolvedTarget
 	base   provider.Provider
-	cred   *credentialmgr.ManagedCredential
+	cred   *credential.ManagedCredential
 	ctx    context.Context
 }
 
@@ -283,7 +286,7 @@ func (p *RoutedProvider) resolveProvider(ctx context.Context, providerID string)
 	return prov, nil
 }
 
-func (p *RoutedProvider) selectCredential(ctx context.Context, target *llmroutepkg.ResolvedTarget, state *executionState) (context.Context, *credentialmgr.ManagedCredential, error) {
+func (p *RoutedProvider) selectCredential(ctx context.Context, target *llmroutepkg.ResolvedTarget, state *executionState) (context.Context, *credential.ManagedCredential, error) {
 	if p.scheduler == nil || p.credentialMgr == nil {
 		return ctx, nil, nil
 	}
@@ -293,7 +296,7 @@ func (p *RoutedProvider) selectCredential(ctx context.Context, target *llmroutep
 			continue
 		}
 		for _, credentialType := range p.route.TargetPolicy.CredentialTypeOrder() {
-			cred, err := p.scheduler.Pick(ctx, credentialmgrscheduler.Filter{
+			cred, err := p.scheduler.Pick(ctx, credentialscheduler.Filter{
 				Type:            string(credentialType),
 				CredentialScope: scope,
 				Model:           target.UpstreamModel,
@@ -302,9 +305,19 @@ func (p *RoutedProvider) selectCredential(ctx context.Context, target *llmroutep
 			if err != nil || cred == nil {
 				continue
 			}
-			if cred.Type == credentialmgr.TypeCLIAuthToken {
+			if cred.Type == credential.TypeOAuthToken {
 				refreshed, err := p.credentialMgr.RefreshCredentialIfNeeded(ctx, cred.ID)
 				if err != nil {
+					state.lastCredentialRefreshID = cred.ID
+					if p.logger != nil {
+						p.logger.Error("credential refresh failed",
+							zap.String("credential_id", cred.ID),
+							zap.String("provider_id", target.ProviderID),
+							zap.String("upstream_model", target.UpstreamModel),
+							zap.Error(err),
+						)
+					}
+					p.markCredentialRefreshFailure(ctx, cred.ID, err)
 					state.triedCredentials[cred.ID] = struct{}{}
 					continue
 				}
@@ -314,7 +327,11 @@ func (p *RoutedProvider) selectCredential(ctx context.Context, target *llmroutep
 			return provider.WithCredential(ctx, cred.Credential.Clone()), cred, nil
 		}
 	}
-	return ctx, nil, fmt.Errorf("%w: %s", errManagedCredentialUnavailable, fmt.Sprintf("no managed credential available for provider %q model %q", target.ProviderID, target.UpstreamModel))
+	err := fmt.Errorf("%w: no managed credential available for provider %q model %q", errManagedCredentialUnavailable, target.ProviderID, target.UpstreamModel)
+	if state.lastCredentialRefreshID != "" {
+		err = fmt.Errorf("%w; credential refresh failed for credential %q", err, state.lastCredentialRefreshID)
+	}
+	return ctx, nil, err
 }
 
 func (p *RoutedProvider) markProviderConfigFallbackAttempt(state *executionState, target *llmroutepkg.ResolvedTarget, base provider.Provider) bool {
@@ -342,7 +359,7 @@ func (p *RoutedProvider) expandCredentialScopes(target *llmroutepkg.ResolvedTarg
 				out = append(out, target.CredentialScope)
 			}
 		case llmroutepkg.RouteCredentialScopeProviderID:
-			out = append(out, credentialmgr.ProviderIDCredentialScope(target.ProviderID))
+			out = append(out, credential.ProviderIDCredentialScope(target.ProviderID))
 		}
 	}
 	return out
@@ -368,18 +385,39 @@ func (p *RoutedProvider) classifyFailure(err error) failureAction {
 	}
 }
 
+// markCredentialRefreshFailure cools a credential briefly after a refresh
+// failure so later requests do not each invoke the failing refresh subprocess
+// before failing over.
+func (p *RoutedProvider) markCredentialRefreshFailure(ctx context.Context, credentialID string, err error) {
+	if p.scheduler == nil {
+		return
+	}
+	retryAfter := credential.RefreshFailureCooldown
+	p.scheduler.MarkResult(ctx, credentialscheduler.Result{
+		CredentialID:   credentialID,
+		CredentialWide: true,
+		Error: &credentialscheduler.Error{
+			Code:       http.StatusText(http.StatusBadGateway),
+			Message:    fmt.Sprintf("refresh credential: %v", err),
+			HTTPStatus: http.StatusBadGateway,
+			Retryable:  true,
+		},
+		RetryAfter: &retryAfter,
+	})
+}
+
 func (p *RoutedProvider) markResult(ctx context.Context, attempt *resolvedAttempt, err error) {
 	if p.scheduler == nil || attempt == nil || attempt.cred == nil {
 		return
 	}
-	result := credentialmgrscheduler.Result{
+	result := credentialscheduler.Result{
 		CredentialID: attempt.cred.ID,
 		Model:        attempt.target.UpstreamModel,
 		Success:      err == nil,
 	}
 	if err != nil {
 		status := statuserr.StatusCode(err, http.StatusBadGateway)
-		result.Error = &credentialmgrscheduler.Error{
+		result.Error = &credentialscheduler.Error{
 			Code:       http.StatusText(status),
 			Message:    err.Error(),
 			HTTPStatus: status,

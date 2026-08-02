@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
@@ -13,13 +14,12 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/observability/otelexport"
 	"github.com/agent-guide/agent-gateway/internal/observability/pipeline"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
-	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	credentialscheduler "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 	runtimegateway "github.com/agent-guide/agent-gateway/pkg/gateway"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	credentialmgrscheduler "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
@@ -36,21 +36,26 @@ type App struct {
 	ConfigStoreRaw caddy.ModuleMap `json:"config_store,omitempty" caddy:"namespace=agent_gateway.config_store_backends"`
 	// ProviderTypes configures startup-only provider type availability.
 	ProviderTypes []provider.ProviderTypeSetting `json:"provider_types,omitempty"`
+	// CredentialRefreshCommand is the external executable used for
+	// request-time credential refresh. It defaults to agw-auth.
+	CredentialRefreshCommand string `json:"credential_refresh_command,omitempty"`
+	// CredentialRefreshArgs are static arguments passed to the external
+	// credential refresh executable. They default to ["refresh"] when the
+	// command is omitted.
+	CredentialRefreshArgs []string `json:"credential_refresh_args,omitempty"`
 	// LLMRoutes lists statically configured gateway LLM route configs from the Caddyfile app block.
 	LLMRoutes []routecore.AgentRouteConfig `json:"llm_routes,omitempty"`
 	// Metrics configures observability retention, agent-chain governance, and
 	// optional OTLP span export of usage events.
 	Metrics usage.Config `json:"metrics,omitzero"`
 
-	logger           *zap.Logger
-	cliauthManager   *cliauth.Manager
-	cliauthRefresher *cliauth.AutoRefresher
-	credentialMgr    *credentialmgr.Manager
-	credentialSched  credentialmgrscheduler.CredentialScheduler
-	configBackend    configstore.ConfigStoreBackend
-	providers        map[string]provider.Provider
-	agentGateway     *runtimegateway.AgentGateway
-	usageService     *usage.UsageService
+	logger          *zap.Logger
+	credentialMgr   *credential.Manager
+	credentialSched credentialscheduler.CredentialScheduler
+	configBackend   configstore.ConfigStoreBackend
+	providers       map[string]provider.Provider
+	agentGateway    *runtimegateway.AgentGateway
+	usageService    *usage.UsageService
 }
 
 // CaddyModule returns the Caddy module information.
@@ -85,30 +90,31 @@ func (a *App) Provision(ctx caddy.Context) error {
 		return fmt.Errorf("get credential store: %w", err)
 	}
 
-	credentialScheduler := credentialmgrscheduler.NewScheduler(nil)
+	credentialScheduler := credentialscheduler.NewScheduler(nil)
 	a.credentialSched = credentialScheduler
-	a.credentialMgr = credentialmgr.NewManager(credentialStore)
-	if schedulerListener, ok := credentialScheduler.(credentialmgr.CredentialLifecycleListener); ok {
+	a.credentialMgr = credential.NewManager(credentialStore)
+	refreshCommand := strings.TrimSpace(a.CredentialRefreshCommand)
+	refreshArgs := append([]string(nil), a.CredentialRefreshArgs...)
+	if refreshCommand == "" {
+		refreshCommand = credential.DefaultRefreshCommand
+		if len(refreshArgs) == 0 {
+			refreshArgs = []string{credential.DefaultRefreshCommandArg}
+		}
+	}
+	a.credentialMgr.SetRefresher(credential.NewCommandRefresher(refreshCommand, refreshArgs...))
+	if schedulerListener, ok := credentialScheduler.(credential.CredentialLifecycleListener); ok {
 		a.credentialMgr.AddListener(schedulerListener)
 	}
-	a.cliauthManager = cliauth.NewManager()
-	a.cliauthManager.SetCredentialManager(a.credentialMgr)
-	a.cliauthRefresher = cliauth.NewAutoRefresher(cliauth.WrapSharedCredentialManager(a.credentialMgr), a.cliauthManager)
 	if err := a.provisionProviders(ctx); err != nil {
 		return fmt.Errorf("provision providers: %w", err)
 	}
 	if err := a.credentialMgr.Load(ctx); err != nil {
 		return fmt.Errorf("load credentials: %w", err)
 	}
-	if err := a.cliauthRefresher.Load(ctx); err != nil {
-		return fmt.Errorf("load cliauth credentials: %w", err)
-	}
 	if err := a.agentGateway.Bootstrap(ctx, runtimegateway.BootstrapOptions{
 		StaticLLMRoutes:     a.LLMRoutes,
 		StaticProviders:     a.providers,
 		ConfigStoreBackend:  a.configBackend,
-		CLIAuthManager:      a.cliauthManager,
-		CLIAuthRefresher:    a.cliauthRefresher,
 		CredentialManager:   a.credentialMgr,
 		CredentialScheduler: a.credentialSched,
 		UsageObserver:       a.usageService.Observer(),
@@ -132,18 +138,8 @@ func (a *App) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-// CLIAuthManager returns the CLI authenticator manager shared across the gateway.
-func (a *App) CLIAuthManager() *cliauth.Manager {
-	return a.cliauthManager
-}
-
-// CLIAuthRefresher returns the CLI credential refresher shared across the gateway.
-func (a *App) CLIAuthRefresher() *cliauth.AutoRefresher {
-	return a.cliauthRefresher
-}
-
 // CredentialManager returns the shared upstream credential manager.
-func (a *App) CredentialManager() *credentialmgr.Manager {
+func (a *App) CredentialManager() *credential.Manager {
 	return a.credentialMgr
 }
 
@@ -176,18 +172,12 @@ func (a *App) Start() error {
 	if a.usageService != nil {
 		a.usageService.Start()
 	}
-	if a.cliauthRefresher != nil {
-		a.cliauthRefresher.Start(context.Background())
-	}
 	a.logger.Info("Agent Gateway started")
 	return nil
 }
 
 // Stop stops the app.
 func (a *App) Stop() error {
-	if a.cliauthRefresher != nil {
-		a.cliauthRefresher.Stop()
-	}
 	if a.agentGateway != nil {
 		a.agentGateway.Close()
 	}

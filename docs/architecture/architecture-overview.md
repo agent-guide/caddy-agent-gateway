@@ -40,11 +40,11 @@ Dispatcher / protocol modules
   v
 Shared gateway runtime
   - provider loading and resolution
-  - authenticator loading
+  - credential loading and refresh-strategy registration
   - config store loading
   - llmroute, mcproute, and agentroute registries
   - virtual key lookup
-  - credential and auth managers
+  - credential manager
   - MCP runtime registry
   - Agent-owned ACP runtime/process manager
   - agent manager (Agent CRUD + immutable definition snapshot)
@@ -78,8 +78,8 @@ Its responsibilities are:
 
 - Provision the configured config store
 - Load static provider configs and instantiate runtime providers through the provider registry
-- Initialize authenticator factories registered by runtime imports
 - Initialize the credential manager
+- Configure the external request-time credential refresh command
 - Restore persisted credentials from storage
 - Build route loading and provider resolution dependencies
 - Construct the shared `pkg/gateway.AgentGateway` runtime used by HTTP handlers
@@ -189,23 +189,19 @@ Built-in providers:
 
 The provider layer uses shared helpers for HTTP client construction, auth/header injection, and OpenAI-compatible behavior. The design keeps provider implementations narrow while still allowing provider-specific behavior.
 
-### 4.5 `pkg/cliauth/`: Credential Lifecycle
+### 4.5 Credential Lifecycle
 
-Credential management is split into:
+`pkg/credential` owns registration, persistence, selection state, expiry
+detection, and the generic external refresh-command transport. Agent Gateway
+contains no provider-specific token refresh implementation.
 
-- `manager/`: registration, lookup, persistence, selection, refresh lifecycle
-- `authenticator/`: provider-specific CLI login flows
-- `credential/`: stored credential model and status types
+Interactive OAuth login is deliberately outside the gateway binary. The
+separate `agw-auth` tool performs browser, PKCE, callback, or device flows and
+registers the resulting `oauth_token` through `/admin/credentials`. Before
+an upstream request, the gateway invokes the configured external refresh argv
+when a selected credential is close to expiry and persists the returned token.
 
-Built-in authenticators are:
-
-- `codex`
-- `claude`
-- `gemini`
-
-The admin CLI login API triggers an authenticator asynchronously, then stores the resulting credential through the shared auth manager.
-
-This is distinct from local gateway API keys. Upstream provider credentials and local gateway caller credentials are two separate concerns.
+Upstream provider credentials and gateway caller VirtualKeys remain separate concerns.
 
 ### 4.6 `pkg/configstore/` And `caddy/configstore/`: Persistent Control Data
 
@@ -281,7 +277,6 @@ Static configuration lives in the global `agent_gateway` Caddyfile block:
             ...
         }
         config_store sqlite { ... }
-        authenticator codex { ... }
         route chat { ... }
     }
 }
@@ -291,7 +286,6 @@ The parser currently supports:
 
 - `provider <provider-id>`
 - `config_store <name>`
-- `authenticator <name>`
 - `route <id>`
 
 Static route parsing is intentionally small right now. Supported route subdirectives are:
@@ -418,27 +412,17 @@ HTTP admin request
 
 This is why the project can support operational changes without treating the Caddyfile as the only mutable state.
 
-### 7.4 CLI Login
-
-CLI login flow:
+### 7.4 External CLI Login
 
 ```text
-POST /admin/cliauth/authenticators/{authenticator_name}/enable
-  -> request body must include config; use {"config":{}} for factory defaults
-  -> create runtime authenticator from registered factory
-  -> register authenticator in auth manager
-POST /admin/cliauth/authenticators/{authenticator_name}/login
-  -> lookup authenticator
-  -> allocate login_id
-  -> start async login goroutine
-  -> authenticator.Login()
-  -> auth manager RegisterCredential()
-  -> persist credential
-  -> poll /admin/cliauth/logins/{login_id}
+agw-auth login
+  -> resolve the target provider through the Gateway Admin API
+  -> run the interactive provider OAuth flow locally
+  -> POST the resulting oauth_token to /admin/credentials
+  -> Gateway selects and refreshes that credential on model requests
 ```
 
-The login flow is async because the provider login step may require browser or human interaction.
-Authenticators configured by Caddyfile are read-only and cannot be disabled through the admin API.
+The Gateway has no authenticator configuration or login-session endpoints.
 
 ## 8. Current Implementation Boundaries
 
@@ -447,7 +431,7 @@ The following are implemented enough to be production-shape code, even if still 
 - Caddy app provisioning
 - standalone server assembly
 - provider module loading
-- authenticator module loading
+- request-time OAuth credential refresh
 - SQLite config persistence
 - provider CRUD
 - route CRUD
@@ -495,11 +479,12 @@ Implement `provider.Provider` in `pkg/llm/provider/<name>`. If the provider shou
 
 This is the most mature extension path in the project today.
 
-### 9.2 New Authenticator
+### 9.2 New OAuth Credential Source
 
-Implement the auth manager's authenticator contract and register its factory. If it should be available in the Caddy-based runtime, ensure the linked registration path remains included in `cmd/agw/main.go`.
-
-This integrates naturally with the existing admin CLI login API.
+Add both interactive login and provider-specific refresh support to the
+external `agw-auth` project. The login result declares `refresh_name` for the
+external tool's internal dispatch plus expiry and `refresh_expiry_delta`
+metadata for request-time renewal.
 
 ### 9.3 New Config Store
 

@@ -9,20 +9,20 @@ import (
 	"time"
 
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 )
 
 type credentialContextKey struct{}
 
-func WithCredential(ctx context.Context, cred *credentialmgr.Credential) context.Context {
+func WithCredential(ctx context.Context, cred *credential.Credential) context.Context {
 	if cred == nil {
 		return ctx
 	}
 	return context.WithValue(ctx, credentialContextKey{}, cred)
 }
 
-func CredentialFromContext(ctx context.Context) (*credentialmgr.Credential, bool) {
-	cred, ok := ctx.Value(credentialContextKey{}).(*credentialmgr.Credential)
+func CredentialFromContext(ctx context.Context) (*credential.Credential, bool) {
+	cred, ok := ctx.Value(credentialContextKey{}).(*credential.Credential)
 	if !ok || cred == nil {
 		return nil, false
 	}

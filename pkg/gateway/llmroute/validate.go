@@ -57,7 +57,7 @@ func (c RouteTargetPolicyCommon) validateCredentialPolicy(routeID string) error 
 	seenTypes := map[RouteCredentialType]struct{}{}
 	for _, credentialType := range c.CredentialTypeOrder() {
 		switch credentialType {
-		case RouteCredentialTypeAPIKey, RouteCredentialTypeCLIAuthToken:
+		case RouteCredentialTypeAPIKey, RouteCredentialTypeOAuthToken:
 		default:
 			return fmt.Errorf("route %q invalid credential_type_order %q", routeID, credentialType)
 		}

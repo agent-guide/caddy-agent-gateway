@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	credmodel "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/model"
+	credmodel "github.com/agent-guide/agent-gateway/pkg/credential/model"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 

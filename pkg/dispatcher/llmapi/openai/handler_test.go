@@ -12,9 +12,9 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
+	sched "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 	dispatcher "github.com/agent-guide/agent-gateway/pkg/dispatcher"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
-	sched "github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -186,15 +186,15 @@ func newHandler() *Handler {
 	return NewHandler()
 }
 
-func newTestCredentialScheduler(t *testing.T, mgr *credentialmgr.Manager) sched.CredentialScheduler {
+func newTestCredentialScheduler(t *testing.T, mgr *credential.Manager) sched.CredentialScheduler {
 	t.Helper()
 	scheduler := sched.NewScheduler(nil)
-	listener, ok := scheduler.(credentialmgr.CredentialLifecycleListener)
+	listener, ok := scheduler.(credential.CredentialLifecycleListener)
 	if !ok {
 		t.Fatal("scheduler does not implement CredentialLifecycleListener")
 	}
 	mgr.AddListener(listener)
-	scheduler.Rebuild(mgr.ListCredentials(credentialmgr.Filter{}))
+	scheduler.Rebuild(mgr.ListCredentials(credential.Filter{}))
 	return scheduler
 }
 
@@ -250,13 +250,13 @@ func TestServeLLMApiListsModels(t *testing.T) {
 }
 
 func TestServeLLMApiMarksOpenAIStreamFailures(t *testing.T) {
-	credMgr := credentialmgr.NewManager(nil)
-	if err := credMgr.RegisterCredential(context.Background(), &credentialmgr.Credential{
+	credMgr := credential.NewManager(nil)
+	if err := credMgr.RegisterCredential(context.Background(), &credential.Credential{
 		ID:           "cred-openai-1",
 		ProviderType: "openai",
 		ProviderID:   "openai",
 		Scope:        "id:openai",
-		Type:         credentialmgr.TypeAPIKey,
+		Type:         credential.TypeAPIKey,
 	}); err != nil {
 		t.Fatalf("register credential: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestServeLLMApiMarksOpenAIStreamFailures(t *testing.T) {
 	}
 
 	_, err = scheduler.Pick(context.Background(), sched.Filter{
-		Type:            credentialmgr.TypeAPIKey,
+		Type:            credential.TypeAPIKey,
 		CredentialScope: "id:openai",
 		Model:           "gpt-4o-mini",
 	}, nil)

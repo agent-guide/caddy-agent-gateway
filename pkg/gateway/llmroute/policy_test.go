@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
@@ -38,6 +38,19 @@ func (r testProviderConfigResolver) GetConfig(_ context.Context, providerID stri
 	return r.configs[providerID], nil
 }
 
+func TestCredentialTypeOrderDefaultsToAPIKeyThenOAuthToken(t *testing.T) {
+	got := (RouteTargetPolicyCommon{}).CredentialTypeOrder()
+	want := []RouteCredentialType{RouteCredentialTypeAPIKey, RouteCredentialTypeOAuthToken}
+	if len(got) != len(want) {
+		t.Fatalf("CredentialTypeOrder() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("CredentialTypeOrder() = %v, want %v", got, want)
+		}
+	}
+}
+
 func TestAgentRouteResolveTargetUsesRouteDefaultModel(t *testing.T) {
 	route := LLMRoute{
 		AgentRouteConfig: AgentRouteConfig{ID: "chat-prod"},
@@ -61,7 +74,7 @@ func TestAgentRouteResolveTargetUsesRouteDefaultModel(t *testing.T) {
 					ManagedModel: modelcatalog.ManagedModel{
 						ProviderID:      "openai-main",
 						UpstreamModel:   "gpt-4.1-mini",
-						CredentialScope: credentialmgr.ProviderIDCredentialScope("openai-main"),
+						CredentialScope: credential.ProviderIDCredentialScope("openai-main"),
 						Enabled:         true,
 					},
 					Capabilities: provider.ModelCapabilities{Streaming: true},
@@ -87,8 +100,8 @@ func TestAgentRouteResolveTargetUsesRouteDefaultModel(t *testing.T) {
 	if target.UpstreamModel != "gpt-4.1-mini" {
 		t.Fatalf("UpstreamModel = %q, want gpt-4.1-mini", target.UpstreamModel)
 	}
-	if target.CredentialScope != credentialmgr.ProviderIDCredentialScope("openai-main") {
-		t.Fatalf("CredentialScope = %q, want %q", target.CredentialScope, credentialmgr.ProviderIDCredentialScope("openai-main"))
+	if target.CredentialScope != credential.ProviderIDCredentialScope("openai-main") {
+		t.Fatalf("CredentialScope = %q, want %q", target.CredentialScope, credential.ProviderIDCredentialScope("openai-main"))
 	}
 }
 
@@ -126,7 +139,7 @@ func TestAgentRouteResolveTargetUsesDirectProvider(t *testing.T) {
 					ManagedModel: modelcatalog.ManagedModel{
 						ProviderID:      "openai-main",
 						UpstreamModel:   "gpt-4.1",
-						CredentialScope: credentialmgr.ProviderIDCredentialScope("tenant-a"),
+						CredentialScope: credential.ProviderIDCredentialScope("tenant-a"),
 					},
 				},
 			},
@@ -153,8 +166,8 @@ func TestAgentRouteResolveTargetUsesDirectProvider(t *testing.T) {
 	if target.UpstreamModel != "gpt-4.1" {
 		t.Fatalf("UpstreamModel = %q, want gpt-4.1", target.UpstreamModel)
 	}
-	if target.CredentialScope != credentialmgr.ProviderIDCredentialScope("openai-main") {
-		t.Fatalf("CredentialScope = %q, want %q", target.CredentialScope, credentialmgr.ProviderIDCredentialScope("openai-main"))
+	if target.CredentialScope != credential.ProviderIDCredentialScope("openai-main") {
+		t.Fatalf("CredentialScope = %q, want %q", target.CredentialScope, credential.ProviderIDCredentialScope("openai-main"))
 	}
 }
 

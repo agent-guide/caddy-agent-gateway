@@ -11,7 +11,9 @@
 ## `agwd`
 
 - the standalone gateway daemon
-- uses `--config-store`, optional `--static-config`, and optional repeated `--provider-type`
+- uses `--config-store`, optional `--static-config`, optional repeated
+  `--provider-type`, `--credential-refresh-command`, and repeatable
+  `--credential-refresh-arg` (together defaulting to `agw-auth refresh`)
 - does not use a Caddyfile runtime
 - if any `--provider-type` flag is set, only those provider types are enabled for the process
 
@@ -24,26 +26,24 @@ Current static config restriction:
 ## `agwctl`
 
 - the management CLI
-- talks to the gateway Admin API, the Caddy admin API, or local CLI auth flows depending on the command group
+- talks to the gateway Admin API or the Caddy admin API
 
 Primary command families:
 
 - `agwctl gateway ...`
 - `agwctl caddy ...`
-- `agwctl cliauth ...`
 
 Recommended workflows:
 
 - use `agwctl gateway apply/export/validate` for bundle-based configuration management
 - use `agwctl gateway credential ...` for remote gateway credential management
-- use `agwctl cliauth ...` for local login flows
+- use the external `agw-auth` tool for interactive OAuth login flows
 - use `agwctl caddy ...` for direct Caddy admin API operations
 
 Bundle YAML examples used by current workflows:
 
 - `examples/gateway.bundle.llm.direct-provider.yaml`
 - `examples/gateway.bundle.llm.logical-model.yaml`
-- `examples/gateway.bundle.cliauth-authenticators.yaml`
 
 ## Related Docs
 

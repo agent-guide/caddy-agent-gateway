@@ -46,7 +46,7 @@ Provider delegation status:
 | deepseek | eino-ext (deepseek-go underneath) | `model/deepseek` v0.1.7 |
 | zhipu | eino-ext openai component (no zhipu/glm component exists) | — |
 | codex | self-implemented (ChatGPT Codex backend: non-standard auth and Responses endpoint) | — |
-| claudecode | self-implemented on `anthropicbase` (Claude Code fingerprint headers, beta flags, OAuth/CLI-auth token flows) | — |
+| claudecode | self-implemented on `anthropicbase` (Claude Code fingerprint headers, beta flags, OAuth token flows) | — |
 
 deepseek uses its dedicated component so DeepSeek-specific thinking and
 `reasoning_content` behavior stays owned by the maintained integration. The
@@ -59,7 +59,7 @@ forwarding around that component.
    mapping) to eino-ext components backed by official SDKs whenever one
    exists and is actively maintained.
 2. Keep gateway-differentiating logic in this repository: credential
-   scheduling and per-request credential override, CLI-auth token flows,
+   scheduling and per-request credential override, OAuth token flows,
    client fingerprint/compat shims (claudecode, codex, `compact: cc`),
    route policies, VirtualKey, config store, Admin APIs, and MCP/ACP
    protocol serving.

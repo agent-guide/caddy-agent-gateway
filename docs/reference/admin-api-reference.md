@@ -173,38 +173,12 @@ Credential notes:
 - `GET /admin/llm/models/managed`
 - `PUT /admin/llm/models/managed/{provider_id}/{upstream_model}`
 
-## CLI Auth
+## External OAuth Authentication
 
-- `GET /admin/cliauth/authenticators`
-- `GET /admin/cliauth/authenticators/{authenticator_name}`
-- `PUT /admin/cliauth/authenticators/{authenticator_name}`
-- `POST /admin/cliauth/authenticators/{authenticator_name}/login`
-- `GET /admin/cliauth/logins/{login_id}`
-
-CLI auth behavior:
-
-- login runs asynchronously and returns `202 Accepted`
-- poll the login status endpoint for completion
-- the login request body must include `provider_id`
-- authenticator config set through the admin API is runtime-only
-- disabling an authenticator or restarting the server resets it to factory defaults
-
-Examples:
-
-```bash
-curl -X PUT http://localhost:8019/admin/cliauth/authenticators/codex \  -H 'Content-Type: application/json' \
-  --data '{"enabled":true,"config":{}}'
-```
-
-```bash
-curl -X PUT http://localhost:8019/admin/cliauth/authenticators/codex \  -H 'Content-Type: application/json' \
-  --data '{"enabled":true,"config":{"callback_port":9002,"no_browser":true,"device_flow":true}}'
-```
-
-```bash
-curl -X POST http://localhost:8019/admin/cliauth/authenticators/codex/login \  -H 'Content-Type: application/json' \
-  --data '{"provider_id":"openai-main","scope":"type:openai"}'
-```
+The Gateway does not expose `/admin/cliauth/...` endpoints. Use the separate
+`agw-auth` tool for interactive login; it writes the resulting
+`oauth_token` through `/admin/credentials`. When required, the Gateway
+delegates request-time token refresh back to the external `agw-auth` command.
 
 ## MCP Admin Families
 

@@ -18,11 +18,14 @@ Managed credentials are for upstream provider authentication. VirtualKeys are fo
 Current built-in credential types are:
 
 - `api_key`
-- `cliauth_token`
+- `oauth_token`
 
 `api_key` is the normal upstream API-key credential form.
 
-`cliauth_token` is used for upstream credentials produced by CLI-auth login flows such as `codex`, `claudecode`, or `gemini`.
+`oauth_token` is used for upstream credentials produced by the external
+`agw-auth` login tool for `codex` or `claudecode`. The `gemini` provider uses a
+Google AI Studio API key and does not currently consume Gemini CLI OAuth
+credentials.
 
 ## Core Credential Fields
 
@@ -64,7 +67,7 @@ Examples:
 - `id:tenant-a`
 - `type:openai`
 
-The `type:<provider_type>` form is also supported and is commonly used as an explicit CLI-auth login scope.
+The `type:<provider_type>` form is also supported and can be passed explicitly to `agw-auth login`.
 
 ## How Routes Select Credentials
 
@@ -77,7 +80,7 @@ Routes do not hardcode one credential ID. They select credentials by:
 
 Current default route behavior is:
 
-- `credential_type_order`: `api_key`, then `cliauth_token`
+- `credential_type_order`: `api_key`, then `oauth_token`
 - `credential_selector`: `round_robin`
 
 For direct-provider routes, the default credential scope order is:
@@ -132,7 +135,7 @@ curl -X POST http://localhost:8019/admin/credentials \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{
-    "type": "cliauth_token",
+    "type": "oauth_token",
     "provider_type": "openai",
     "provider_id": "openai-main",
     "scope": "type:openai",
@@ -140,17 +143,17 @@ curl -X POST http://localhost:8019/admin/credentials \
   }'
 ```
 
-In most cases, CLI-auth-token credentials should be produced through the CLI-auth login flow instead of being hand-authored.
+In most cases, CLI-auth-token credentials should be produced through `agw-auth login` instead of being hand-authored.
 
 ## Operational Notes
 
 - disabled credentials remain persisted but are excluded from scheduling
 - credential priority is read from `attributes.priority`
-- CLI-auth-backed credentials can refresh through `metadata.refresh_name`
+- OAuth credentials with expiry and `refresh_expiry_delta` metadata trigger the configured external refresh command on the request path
 - runtime scheduler state can mark credentials temporarily unavailable without changing the persisted definition
 
 ## Related Docs
 
-- [cli-auth.md](cli-auth.md)
+- [oauth-credentials.md](oauth-credentials.md)
 - [../reference/admin-api-reference.md](../reference/admin-api-reference.md)
 - [../reference/agwctl-reference.md](../reference/agwctl-reference.md)

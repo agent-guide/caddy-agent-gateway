@@ -22,8 +22,8 @@ The relevant package ownership is:
   - owns `RoutedProvider`, provider resolution, credential scheduling, and fallback execution
 - `pkg/gateway/modelcatalog`
   - owns managed model overlays and discovered provider model facts
-- `pkg/llm/credentialmgr`
-  - owns credential persistence, refresh, and scheduling primitives
+- `pkg/credential`
+  - owns credential persistence, expiry detection, external refresh transport, and scheduling primitives
 - `pkg/dispatcher`
   - owns protocol parsing and protocol-specific response generation
 
@@ -155,7 +155,7 @@ Current credential scope values:
 Current credential type values:
 
 - `api_key`
-- `cliauth_token`
+- `oauth_token`
 
 These values are stored on `RouteTargetPolicy` as:
 
@@ -320,7 +320,7 @@ Current scope expansion rules:
 - `model_custom`
   - uses `ResolvedTarget.CredentialScope` when present
 - `provider_id`
-  - uses `credentialmgr.ProviderIDCredentialScope(target.ProviderID)`
+  - uses `credential.ProviderIDCredentialScope(target.ProviderID)`
 
 Scope expansion preserves the route-configured order. Empty scopes are skipped.
 
@@ -331,9 +331,10 @@ Within each expanded scope, `RoutedProvider` checks credential types in the conf
 Current credential type handling:
 
 - `api_key`
-- `cliauth_token`
+- `oauth_token`
 
-If a CLI auth token credential is selected, the credential manager refresh path may run before execution proceeds.
+If an OAuth token credential is selected, the credential manager may invoke
+the configured external refresh command before execution proceeds.
 
 ## 17. RoutedProvider Responsibilities
 

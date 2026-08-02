@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"sync"
 
 	"github.com/agent-guide/agent-gateway/internal/httpcapture"
 	"github.com/agent-guide/agent-gateway/internal/httplog"
@@ -13,8 +12,8 @@ import (
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
 	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
-	"github.com/agent-guide/agent-gateway/pkg/cliauth"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	llmroute "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
@@ -22,7 +21,6 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
 	"go.uber.org/zap"
@@ -30,9 +28,7 @@ import (
 
 // Handler handles Admin API requests under /admin/.
 type Handler struct {
-	cliauthManager           *cliauth.Manager
-	cliauthRefresher         *cliauth.AutoRefresher
-	credentialManager        *credentialmgr.Manager
+	credentialManager        *credential.Manager
 	configStoreBackend       configstore.ConfigStoreBackend
 	routeConfigManager       *routecore.AgentRouteConfigManager
 	sharedLLMRouteResolver   *llmroute.LLMRouteResolver
@@ -56,9 +52,6 @@ type Handler struct {
 	mux                      *http.ServeMux
 	agentRoutesMux           *http.ServeMux
 	logger                   *zap.Logger
-	cliAuthMu                sync.RWMutex
-	cliAuthSessions          map[string]cliAuthStatus // login_id -> cliAuthStatus
-	cliAuthActive            map[string]string        // cliname -> login_id
 }
 
 // NewHandler constructs an admin Handler.
@@ -68,9 +61,7 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 		logger = zap.NewNop()
 	}
 
-	var cliauthMgr *cliauth.Manager
-	var cliauthRefresher *cliauth.AutoRefresher
-	var credentialMgr *credentialmgr.Manager
+	var credentialMgr *credential.Manager
 	var configStoreBackend configstore.ConfigStoreBackend
 	var routeConfigManager *routecore.AgentRouteConfigManager
 	var sharedLLMRouteResolver *llmroute.LLMRouteResolver
@@ -92,8 +83,6 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 	var usageStats usage.RuntimeStats
 	var usagePrometheus usage.PrometheusProvider
 	if agentGateway != nil {
-		cliauthMgr = agentGateway.CLIAuthManager()
-		cliauthRefresher = agentGateway.CLIAuthRefresher()
 		credentialMgr = agentGateway.CredentialManager()
 		configStoreBackend = agentGateway.ConfigStoreBackend()
 		routeConfigManager = agentGateway.AgentRouteConfigManager()
@@ -118,8 +107,6 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 	}
 
 	h := &Handler{
-		cliauthManager:           cliauthMgr,
-		cliauthRefresher:         cliauthRefresher,
 		credentialManager:        credentialMgr,
 		configStoreBackend:       configStoreBackend,
 		routeConfigManager:       routeConfigManager,
@@ -142,8 +129,6 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 		usageStats:               usageStats,
 		usagePrometheus:          usagePrometheus,
 		logger:                   logger,
-		cliAuthSessions:          map[string]cliAuthStatus{},
-		cliAuthActive:            map[string]string{},
 	}
 	h.mux = http.NewServeMux()
 	h.agentRoutesMux = http.NewServeMux()

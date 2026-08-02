@@ -11,12 +11,12 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/httpclient"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
-func TestChatUsesCLIAuthTokenBearerHeaders(t *testing.T) {
+func TestChatUsesOAuthTokenBearerHeaders(t *testing.T) {
 	var authHeader string
 	var betaHeader string
 	var acceptHeader string
@@ -46,8 +46,8 @@ func TestChatUsesCLIAuthTokenBearerHeaders(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
-		Type: credentialmgr.TypeCLIAuthToken,
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
+		Type: credential.TypeOAuthToken,
 		Metadata: map[string]any{
 			"access_token": "sk-ant-oat-test",
 		},
@@ -285,8 +285,8 @@ func TestChatUsesAPIKeyHeaderForManagedAPIKeyCredential(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
-		Type: credentialmgr.TypeAPIKey,
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
+		Type: credential.TypeAPIKey,
 		Attributes: map[string]string{
 			"api_key": "sk-ant-api-test",
 		},
@@ -933,8 +933,8 @@ func TestStreamChatParsesAnthropicSSE(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
-		Type: credentialmgr.TypeCLIAuthToken,
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
+		Type: credential.TypeOAuthToken,
 		Metadata: map[string]any{
 			"access_token": "sk-ant-oat-test",
 		},

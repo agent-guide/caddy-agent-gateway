@@ -8,13 +8,42 @@ This repository builds three binaries:
 
 - `agw`: Caddy-based gateway runtime
 - `agwd`: standalone gateway daemon
-- `agwctl`: management CLI for gateway and local CLI auth flows
+- `agwctl`: management CLI for the gateway and Caddy Admin APIs
+
+> [!IMPORTANT]
+> When upgrading from the integrated CLI-auth implementation, install the
+> separate `agw-auth` executable on the gateway's `PATH`, or configure its
+> full command with `credential_refresh_command` (Caddy) or
+> `--credential-refresh-command` plus repeatable `--credential-refresh-arg`
+> flags (`agwd`). OAuth credential refresh is now
+> request-driven, so the first request after an idle period can add up to 30
+> seconds of refresh latency. A refresh failure rejects that credential for the
+> current attempt; the request fails if no alternate credential or configured
+> provider authentication is available. Set `AGW_AUTH_PROXY_URL` or
+> `AGW_AUTH_TRANSPORT_PROFILE` on the Gateway process when the refresh
+> subprocess needs those network settings.
+
+The store keeps the historical `cliauth_credentials` table name, but this
+breaking cutover does not translate legacy credential or route type values.
+Before starting the new binary against an existing SQLite store, back up the
+database and run:
+
+```sql
+UPDATE cliauth_credentials
+SET data = json_set(data, '$.type', 'oauth_token')
+WHERE json_extract(data, '$.type') = 'cliauth_token';
+
+UPDATE routes
+SET config = replace(config, '"cliauth_token"', '"oauth_token"')
+WHERE config LIKE '%"cliauth_token"%';
+```
 
 ## What It Does
 
 - expose OpenAI-compatible and Anthropic-compatible HTTP APIs
 - route requests to direct providers or logical model targets
-- manage providers, routes, VirtualKeys, credentials, and CLI auth through an Admin API
+- manage providers, routes, VirtualKeys, and credentials through an Admin API
+- consume `oauth_token` credentials created by an external tool and invoke the configured refresh command for expiring tokens on the request path
 - support MCP gateway routing, discovery, execution, and runtime inspection
 - expose the first native ACP control surface for codex/opencode agent routing
 - host builtin agents in-process on eino ADK and serve them through the same `POST /<agent-route>/turn` SSE contract as ACP-backed Agents; interactive tool permissions can suspend a turn on an ADK checkpoint until a human allows or denies each call
@@ -58,6 +87,7 @@ Create a minimal `Caddyfile` (no providers or routes). LLM providers and routes 
 		config_store sqlite {
 			path ./data/configstore.db
 		}
+		credential_refresh_command agw-auth refresh
 	}
 }
 
@@ -382,7 +412,7 @@ for the full Admin API surface.
 
 - `agw` uses a Caddyfile plus the shared config store
 - `agwd` runs as a standalone daemon with `--config-store` and optional `--static-config`
-- `agwctl` talks to the gateway Admin API, the Caddy admin API, or local CLI auth flows depending on the command
+- `agwctl` talks to the gateway Admin API or the Caddy admin API; interactive CLI login is provided by the separate `agw-auth` project
 
 See [docs/README.md](docs/README.md) for runtime-specific guides and references.
 

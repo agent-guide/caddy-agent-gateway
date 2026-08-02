@@ -8,7 +8,6 @@ import (
 	"time"
 
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
-	_ "github.com/agent-guide/agent-gateway/pkg/cliauth/authenticator"
 	_ "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/openai"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
@@ -55,13 +54,6 @@ virtualKeys:
       llm:
         requests_per_minute: 60
         burst: 10
-cliAuthAuthenticators:
-  - name: claudecode
-    enabled: true
-    config:
-      callback_port: 9002
-      no_browser: true
-      transport_profile: browser_like_tls
 `))
 	if err != nil {
 		t.Fatalf("DecodeYAML() error = %v", err)
@@ -99,9 +91,6 @@ cliAuthAuthenticators:
 	if bundle.VirtualKeys[0].RateLimits == nil || bundle.VirtualKeys[0].RateLimits.LLM == nil ||
 		bundle.VirtualKeys[0].RateLimits.LLM.RequestsPerMinute != 60 || bundle.VirtualKeys[0].RateLimits.LLM.Burst != 10 {
 		t.Fatalf("VirtualKeys[0].RateLimits = %#v", bundle.VirtualKeys[0].RateLimits)
-	}
-	if len(bundle.CLIAuthAuthenticators) != 1 || bundle.CLIAuthAuthenticators[0].Name != "claudecode" || !bundle.CLIAuthAuthenticators[0].Enabled || bundle.CLIAuthAuthenticators[0].Config.CallbackPort != 9002 || bundle.CLIAuthAuthenticators[0].Config.TransportProfile != "browser_like_tls" {
-		t.Fatalf("CLIAuthAuthenticators = %#v", bundle.CLIAuthAuthenticators)
 	}
 }
 
@@ -366,6 +355,19 @@ providerTypes:
 	}
 }
 
+func TestDecodeYAMLRejectsCLIAuthAuthenticators(t *testing.T) {
+	_, err := DecodeYAML([]byte(`
+apiVersion: gateway.agw/v1alpha1
+kind: GatewayBundle
+cliAuthAuthenticators:
+  - name: codex
+    enabled: true
+`))
+	if err == nil || !strings.Contains(err.Error(), "use the external agw-auth tool") {
+		t.Fatalf("DecodeYAML() error = %v, want agw-auth migration guidance", err)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	bundle, err := DecodeYAML([]byte(`
 apiVersion: gateway.agw/v1alpha1
@@ -389,9 +391,6 @@ virtualKeys:
   - id: vk-local-test
     allowed_route_ids:
       - chat-prod
-cliAuthAuthenticators:
-  - name: codex
-    enabled: true
 `))
 	if err != nil {
 		t.Fatalf("DecodeYAML() error = %v", err)
@@ -507,10 +506,6 @@ virtualKeys:
     allowed_route_ids:
       - missing-route
   - id: vk-a
-cliAuthAuthenticators:
-  - name: codex
-  - name: codex
-  - name: missing-authenticator
 `))
 	if err != nil {
 		t.Fatalf("DecodeYAML() error = %v", err)
@@ -535,8 +530,6 @@ cliAuthAuthenticators:
 		`llmRoutes["route-a"]: duplicate id`,
 		`virtualKeys["vk-a"]: allowed_route_id "missing-route" does not exist in bundle routes`,
 		`virtualKeys["vk-a"]: duplicate id`,
-		`cliAuthAuthenticators["codex"]: duplicate name`,
-		`cliAuthAuthenticators["missing-authenticator"]: unknown authenticator`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("Validate() error = %v, want substring %q", err, want)

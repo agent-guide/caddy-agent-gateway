@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
@@ -24,7 +24,7 @@ func (c *RouteTargetPolicyCommon) Normalize() {
 		c.CredentialScopeOrderValue = []RouteCredentialScope{RouteCredentialScopeProviderID}
 	}
 	if len(c.CredentialTypeOrderValue) == 0 {
-		c.CredentialTypeOrderValue = []RouteCredentialType{RouteCredentialTypeAPIKey, RouteCredentialTypeCLIAuthToken}
+		c.CredentialTypeOrderValue = []RouteCredentialType{RouteCredentialTypeAPIKey, RouteCredentialTypeOAuthToken}
 	}
 }
 
@@ -44,7 +44,7 @@ func (c RouteTargetPolicyCommon) CredentialScopeOrder() []RouteCredentialScope {
 
 func (c RouteTargetPolicyCommon) CredentialTypeOrder() []RouteCredentialType {
 	if len(c.CredentialTypeOrderValue) == 0 {
-		return []RouteCredentialType{RouteCredentialTypeAPIKey, RouteCredentialTypeCLIAuthToken}
+		return []RouteCredentialType{RouteCredentialTypeAPIKey, RouteCredentialTypeOAuthToken}
 	}
 	return append([]RouteCredentialType(nil), c.CredentialTypeOrderValue...)
 }
@@ -95,7 +95,7 @@ func (p *RouteDirectProviderPolicy) FallbackPolicy() RouteFallbackPolicy {
 func (p *RouteDirectProviderPolicy) ResolveTarget(ctx context.Context, routeID string, _ ModelCatalogResolver, providers ProviderConfigResolver, req RequestRequirements) (*ResolvedTarget, error) {
 	p.Normalize()
 	providerID := p.ProviderID
-	credentialScope := credentialmgr.ProviderIDCredentialScope(providerID)
+	credentialScope := credential.ProviderIDCredentialScope(providerID)
 	cfg, err := providers.GetConfig(ctx, providerID)
 	if err != nil {
 		return nil, err

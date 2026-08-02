@@ -10,7 +10,7 @@ import (
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
@@ -178,7 +178,7 @@ func generateAndCaptureRequest(t *testing.T, options map[string]any, req *provid
 	}
 	p := prov.(*Provider)
 
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
 		Attributes: map[string]string{"api_key": "test-key"},
 	})
 	resp, err := p.Chat(ctx, req)

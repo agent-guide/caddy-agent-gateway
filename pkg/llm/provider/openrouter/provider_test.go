@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/agent-guide/agent-gateway/pkg/llm/credentialmgr"
+	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
@@ -61,7 +61,7 @@ func TestChatCarriesResponsesContextToOpenRouterPayload(t *testing.T) {
 		t.Fatalf("ResponsesToChatRequest returned error: %v", err)
 	}
 
-	ctx := provider.WithCredential(context.Background(), &credentialmgr.Credential{
+	ctx := provider.WithCredential(context.Background(), &credential.Credential{
 		Attributes: map[string]string{"api_key": "test-key"},
 	})
 	if _, err := p.Chat(ctx, chatReq); err != nil {

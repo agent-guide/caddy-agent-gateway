@@ -104,9 +104,6 @@ func runGatewayApply(ctx context.Context, path string) error {
 	if err := applyVirtualKeys(ctx, client, bundle, record); err != nil {
 		return err
 	}
-	if err := applyCLIAuthAuthenticators(ctx, client, bundle, record); err != nil {
-		return err
-	}
 
 	if outputFormat == "json" {
 		if err := printJSON(summary); err != nil {
@@ -267,45 +264,6 @@ func applyLLMRoutes(ctx context.Context, client *adminclient.Client, bundle *gat
 			record("llm_route", desired.ID, "error", fmt.Errorf("llm route %q update: %w", desired.ID, err))
 		} else {
 			record("llm_route", desired.ID, "update", nil)
-		}
-	}
-	return nil
-}
-
-func applyCLIAuthAuthenticators(ctx context.Context, client *adminclient.Client, bundle *gatewaybundle.GatewayBundle, record func(kind, id, action string, err error)) error {
-	items, err := client.ListCLIAuthAuthenticators(ctx)
-	if err != nil {
-		return err
-	}
-	current := map[string]adminclient.CLIAuthAuthenticator{}
-	for _, item := range items {
-		current[strings.ToLower(strings.TrimSpace(item.Name))] = item
-	}
-	for _, desired := range bundle.CLIAuthAuthenticators {
-		name := strings.ToLower(strings.TrimSpace(desired.Name))
-		item, ok := current[name]
-		if ok && item.Enabled == desired.Enabled {
-			if !desired.Enabled || reflect.DeepEqual(item.Config, desired.Config) {
-				record("cliauth_authenticator", name, "skip", nil)
-				continue
-			}
-		}
-
-		req := adminclient.UpdateCLIAuthAuthenticatorRequest{
-			Enabled: &desired.Enabled,
-		}
-		if desired.Enabled {
-			cfg := desired.Config
-			req.Config = &cfg
-		}
-		if _, err := client.UpdateCLIAuthAuthenticator(ctx, name, req); err != nil {
-			record("cliauth_authenticator", name, "error", fmt.Errorf("cliauth authenticator %q update: %w", name, err))
-			continue
-		}
-		if ok {
-			record("cliauth_authenticator", name, "update", nil)
-		} else {
-			record("cliauth_authenticator", name, "create", nil)
 		}
 	}
 	return nil

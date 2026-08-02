@@ -100,7 +100,6 @@ Configuration-type objects are:
 - `mcpRoutes`
 - `agents`
 - `agentRoutes`
-- `cliAuthAuthenticators`
 
 These objects are expected to converge on one declarative workflow centered on gateway bundle YAML.
 
@@ -112,7 +111,7 @@ bundle is therefore not a complete backup of gateway authentication state.
 
 Operational-type objects are:
 
-- CLI-auth login sessions, login status, and refresher runtime state
+- interactive OAuth login state, which belongs to the external `agw-auth` tool
 - ephemeral provider, MCP, Agent, and dispatcher runtime state
 
 These remain command-oriented runtime operations and should continue to use explicit CLI arguments and subcommands rather than bundle YAML.
@@ -230,9 +229,6 @@ agentRoutes:
     match_policy:
       path_prefix: /agents/assistant
 
-cliAuthAuthenticators:
-  - name: codex
-    enabled: true
 ```
 
 `virtualKeys[].id` is the declarative identifier for config-store bundle workflows such as `agwctl gateway apply`. Standalone `--static-config` does not support `virtualKeys`.
@@ -247,7 +243,6 @@ The current implemented bundle path covers:
 - `managedModels`
 - `llmRoutes`
 - `virtualKeys`
-- `cliAuthAuthenticators`
 - `mcpServices`
 - `mcpRoutes`
 - `agents`
@@ -256,8 +251,7 @@ The current implemented bundle path covers:
 The current implemented bundle path does not yet cover:
 
 - `credentials`
-- remote CLI login sessions and login status
-- CLI-auth refresher runtime state
+- interactive OAuth login sessions and authenticator configuration
 - ephemeral runtime state
 
 That means `credentials` are already classified as configuration-type objects, but are not yet represented in the current bundle implementation.
@@ -294,7 +288,6 @@ Current validation includes:
 - duplicate virtual key keys
 - duplicate MCP service IDs
 - duplicate Agent IDs
-- duplicate CLI-authenticator names
 - provider type existence checks
 - route target references to provider IDs inside the bundle
 - virtual key route references inside the bundle
@@ -327,7 +320,6 @@ Current object application order:
 6. `agents`
 7. `agentRoutes`
 8. `virtualKeys`
-9. `cliAuthAuthenticators`
 
 Current non-behavior:
 
@@ -348,8 +340,8 @@ Current non-behavior:
 
 Current behavior:
 
-- export providers, managed models, LLM routes, virtual keys, CLI-authenticator
-  configuration, MCP services/routes, and Agents/AgentRoutes
+- export providers, managed models, LLM routes, virtual keys, MCP
+  services/routes, and Agents/AgentRoutes
 - omit Admin API read-only/source wrapper fields from the re-apply file
 - emit a re-usable bundle shape intended for later `validate` and `apply`
 
@@ -454,7 +446,7 @@ The implementation must continue to protect the following invariants:
 - static bundle objects must remain read-only through Admin API mutation paths
 - field naming must stay aligned with the underlying runtime object model
 - export output must stay suitable for validate/apply round-trip use
-- action-oriented `cliauth` flows must not be forced into static configuration
+- interactive OAuth flows remain outside static configuration in `agw-auth`
 
 The main architectural risk remains semantic drift between:
 

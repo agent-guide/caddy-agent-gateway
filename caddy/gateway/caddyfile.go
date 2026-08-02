@@ -44,6 +44,18 @@ func parseApp(d *caddyfile.Dispenser, existingVal any) (any, error) {
 			if err := parseConfigStore(d, app); err != nil {
 				return nil, err
 			}
+		case "credential_refresh_command":
+			if !d.NextArg() {
+				return nil, d.ArgErr()
+			}
+			app.CredentialRefreshCommand = strings.TrimSpace(d.Val())
+			if app.CredentialRefreshCommand == "" {
+				return nil, d.ArgErr()
+			}
+			app.CredentialRefreshArgs = nil
+			for d.NextArg() {
+				app.CredentialRefreshArgs = append(app.CredentialRefreshArgs, d.Val())
+			}
 		case "route":
 			if err := parseRoute(d, app); err != nil {
 				return nil, err

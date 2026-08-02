@@ -19,9 +19,6 @@ import (
 	_ "github.com/agent-guide/agent-gateway/pkg/acp/agent/codex"
 	_ "github.com/agent-guide/agent-gateway/pkg/acp/agent/opencode"
 
-	// CLI authenticators (register as factory + Caddy modules via init())
-	_ "github.com/agent-guide/agent-gateway/pkg/cliauth/authenticator"
-
 	// LLM Providers (register runtime factories via init())
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropic"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/claudecode"

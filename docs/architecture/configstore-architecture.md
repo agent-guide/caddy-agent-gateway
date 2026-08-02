@@ -271,7 +271,7 @@ The provider config codec delegates decoding to `provider.DecodeStoredProviderCo
 - schema variable: `schema.CredentialSchema`
 - store name: `credentials`
 - kind: `credential`
-- table: `cliauth_credentials`
+- table: `cliauth_credentials` (legacy table name; stores all managed upstream credential types)
 - primary key: `id`
 - tag column: `tag`
 - tag value: `Credential.ProviderType`
@@ -280,7 +280,7 @@ The provider config codec delegates decoding to `provider.DecodeStoredProviderCo
 - timestamped: yes
 - decoded type: `*model.Credential`
 
-The credential codec delegates decoding to `credentialmgr.DecodeCredential`.
+The credential codec delegates decoding to `credential.DecodeCredential`.
 
 ### 6.3 Routes
 
@@ -559,7 +559,7 @@ During provisioning:
 1. the Caddy config store module opens the runtime backend
 2. the app calls `schema.RegisterDefaultStores`
 3. the app retrieves the credential store
-4. the app constructs the shared credential manager and CLI auth refresher
+4. the app constructs the shared credential manager and configures the external request-time refresh command
 5. the app bootstraps `pkg/gateway.AgentGateway` with the backend
 
 ### 10.2 Standalone Server

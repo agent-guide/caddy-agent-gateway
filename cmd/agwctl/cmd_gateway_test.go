@@ -13,30 +13,6 @@ import (
 	"testing"
 )
 
-func TestLocalAndGatewayCLIAuthHelpAreDistinct(t *testing.T) {
-	localOut, localErr, err := executeAGWCTL(t, "cliauth", "--help")
-	if err != nil {
-		t.Fatalf("local cliauth help: %v\nstderr=%s", err, localErr)
-	}
-	if !strings.Contains(localOut, "gateway CLI auth login flows and local authenticator support") {
-		t.Fatalf("local help missing gateway wording:\n%s", localOut)
-	}
-	if strings.Contains(localOut, "authenticators") {
-		t.Fatalf("local help should not expose hidden authenticators command:\n%s", localOut)
-	}
-	if strings.Contains(localOut, "\n  list") || strings.Contains(localOut, "\n  get") || strings.Contains(localOut, "\n  delete") {
-		t.Fatalf("local help still exposes removed credential commands:\n%s", localOut)
-	}
-
-	remoteOut, remoteErr, err := executeAGWCTL(t, "gateway", "cliauth", "--help")
-	if err != nil {
-		t.Fatalf("gateway cliauth help: %v\nstderr=%s", err, remoteErr)
-	}
-	if !strings.Contains(remoteOut, "remote gateway CLI auth runtime via the admin API") {
-		t.Fatalf("gateway help missing remote wording:\n%s", remoteOut)
-	}
-}
-
 func TestGatewayCredentialListCommandUsesTypeFilterAndDisplaysType(t *testing.T) {
 	var gotBasicAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -51,8 +27,8 @@ func TestGatewayCredentialListCommandUsesTypeFilterAndDisplaysType(t *testing.T)
 			if ok {
 				gotBasicAuth = user + ":" + pass
 			}
-			if r.URL.Query().Get("type") != "cliauth_token" {
-				t.Fatalf("type query = %q, want cliauth_token", r.URL.Query().Get("type"))
+			if r.URL.Query().Get("type") != "oauth_token" {
+				t.Fatalf("type query = %q, want oauth_token", r.URL.Query().Get("type"))
 			}
 			if r.URL.Query().Get("provider_type") != "openai" {
 				t.Fatalf("provider_type query = %q, want openai", r.URL.Query().Get("provider_type"))
@@ -66,7 +42,7 @@ func TestGatewayCredentialListCommandUsesTypeFilterAndDisplaysType(t *testing.T)
 						"id":            "cred-1",
 						"provider_type": "openai",
 						"provider_id":   "openai-main",
-						"type":          "cliauth_token",
+						"type":          "oauth_token",
 					},
 				},
 			})
@@ -82,7 +58,7 @@ func TestGatewayCredentialListCommandUsesTypeFilterAndDisplaysType(t *testing.T)
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"credential", "list",
-		"--type", "cliauth_token",
+		"--type", "oauth_token",
 		"--provider-type", "openai",
 		"--provider-id", "openai-main",
 	)
@@ -92,7 +68,7 @@ func TestGatewayCredentialListCommandUsesTypeFilterAndDisplaysType(t *testing.T)
 	if gotBasicAuth != "admin:secret" {
 		t.Fatalf("Basic Auth = %q, want admin:secret", gotBasicAuth)
 	}
-	if !strings.Contains(stdout, "TYPE") || !strings.Contains(stdout, "cliauth_token") {
+	if !strings.Contains(stdout, "TYPE") || !strings.Contains(stdout, "oauth_token") {
 		t.Fatalf("stdout missing type column or value:\n%s", stdout)
 	}
 }
@@ -117,7 +93,7 @@ func TestGatewayCredentialListCommandSurfacesAdminAuthErrors(t *testing.T) {
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:wrong-secret",
 		"credential", "list",
-		"--type", "cliauth_token",
+		"--type", "oauth_token",
 	)
 	if err == nil {
 		t.Fatalf("expected admin auth error, got nil\nstdout=%s\nstderr=%s", stdout, stderr)
@@ -171,49 +147,6 @@ func TestGatewayProviderTypesListCommand(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"provider_type": "openai"`) {
 		t.Fatalf("stdout missing provider type:\n%s", stdout)
-	}
-}
-
-func TestGatewayCLIAuthAuthenticatorsListCommand(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/admin/auth/login":
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"token":    "test-token",
-				"username": "admin",
-			})
-		case "/admin/cliauth/authenticators":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"items": []map[string]any{
-					{
-						"name":          "codex",
-						"provider_type": "openai",
-						"enabled":       true,
-						"config": map[string]any{
-							"no_browser": true,
-						},
-					},
-				},
-			})
-		default:
-			t.Fatalf("unexpected path: %s", r.URL.Path)
-		}
-	}))
-	defer srv.Close()
-
-	stdout, stderr, err := executeAGWCTL(
-		t,
-		"--output", "json",
-		"gateway",
-		"--admin-addr", srv.URL,
-		"--admin-basic-auth", "admin:secret",
-		"cliauth", "authenticators", "list",
-	)
-	if err != nil {
-		t.Fatalf("gateway cliauth authenticators list: %v\nstderr=%s", err, stderr)
-	}
-	if !strings.Contains(stdout, `"name": "codex"`) {
-		t.Fatalf("stdout missing authenticator:\n%s", stdout)
 	}
 }
 
@@ -920,42 +853,6 @@ func TestGatewayMCPRuntimeCommands(t *testing.T) {
 	}
 }
 
-func TestCLIAuthLoginRequiresAuthenticatorWithClearUsage(t *testing.T) {
-	stdout, stderr, err := executeAGWCTL(t, "cliauth", "login")
-	if err == nil {
-		t.Fatalf("expected login error\nstdout=%s\nstderr=%s", stdout, stderr)
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "--authenticator is required") {
-		t.Fatalf("error = %q, want missing authenticator message", msg)
-	}
-	if !strings.Contains(msg, "supported authenticators: claudecode, codex, gemini") &&
-		!strings.Contains(msg, "supported authenticators: codex, claudecode, gemini") &&
-		!strings.Contains(msg, "supported authenticators: gemini, codex, claudecode") {
-		t.Fatalf("error = %q, want supported authenticators", msg)
-	}
-	if !strings.Contains(msg, "Usage:\n  agwctl cliauth login") {
-		t.Fatalf("error = %q, want login usage", msg)
-	}
-}
-
-func TestCLIAuthLoginRejectsUnknownAuthenticatorWithClearUsage(t *testing.T) {
-	stdout, stderr, err := executeAGWCTL(t, "cliauth", "login", "--authenticator", "bad-auth")
-	if err == nil {
-		t.Fatalf("expected login error\nstdout=%s\nstderr=%s", stdout, stderr)
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, `unsupported --authenticator "bad-auth"`) {
-		t.Fatalf("error = %q, want unsupported authenticator message", msg)
-	}
-	if !strings.Contains(msg, "supported authenticators:") {
-		t.Fatalf("error = %q, want supported authenticators", msg)
-	}
-	if !strings.Contains(msg, "Usage:\n  agwctl cliauth login") {
-		t.Fatalf("error = %q, want login usage", msg)
-	}
-}
-
 func TestGatewayValidateCommand(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gateway.yaml")
@@ -1069,19 +966,12 @@ providers:
 virtualKeys:
   - id: vk-local-test
     allowed_route_ids: []
-cliAuthAuthenticators:
-  - name: claudecode
-    enabled: true
-    config:
-      no_browser: true
-      transport_profile: browser_like_tls
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
 	var providerUpdated atomic.Bool
 	var virtualKeyCreated atomic.Bool
-	var authenticatorUpdated atomic.Bool
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1135,39 +1025,12 @@ cliAuthAuthenticators:
 				"id":  "vk-local-test",
 				"key": "vk-generated",
 			})
-		case r.URL.Path == "/admin/cliauth/authenticators" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/agents/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/services" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
-		case r.URL.Path == "/admin/cliauth/authenticators/claudecode" && r.Method == http.MethodPut:
-			authenticatorUpdated.Store(true)
-			var req map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				t.Fatalf("decode cliauth authenticator request: %v", err)
-			}
-			config, ok := req["config"].(map[string]any)
-			if !ok {
-				t.Fatalf("cliauth authenticator request config = %#v, want object", req["config"])
-			}
-			if got := config["transport_profile"]; got != "browser_like_tls" {
-				t.Fatalf("transport_profile = %#v, want browser_like_tls", got)
-			}
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": "enabled",
-				"authenticator": map[string]any{
-					"name":    "claudecode",
-					"enabled": true,
-					"config": map[string]any{
-						"no_browser":        true,
-						"transport_profile": "browser_like_tls",
-					},
-				},
-			})
 		default:
 			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
 		}
@@ -1191,9 +1054,6 @@ cliAuthAuthenticators:
 	}
 	if !virtualKeyCreated.Load() {
 		t.Fatal("expected virtual key create request")
-	}
-	if !authenticatorUpdated.Load() {
-		t.Fatal("expected cliauth authenticator update request")
 	}
 	if !strings.Contains(stdout, `"status": "ok"`) {
 		t.Fatalf("stdout missing ok status:\n%s", stdout)
@@ -1219,16 +1079,12 @@ providers:
 virtualKeys:
   - id: vk-local-test
     allowed_route_ids: []
-cliAuthAuthenticators:
-  - name: codex
-    enabled: false
 `), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
 	var providerWriteCount atomic.Int32
 	var virtualKeyWriteCount atomic.Int32
-	var authenticatorWriteCount atomic.Int32
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1276,20 +1132,6 @@ cliAuthAuthenticators:
 		case r.URL.Path == "/admin/virtual_keys/vk-local-test" && r.Method == http.MethodPut:
 			virtualKeyWriteCount.Add(1)
 			t.Fatalf("unexpected virtual key update request for unchanged object")
-		case r.URL.Path == "/admin/cliauth/authenticators" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"items": []map[string]any{
-					{
-						"name":          "codex",
-						"provider_type": "openai",
-						"enabled":       false,
-						"config":        map[string]any{},
-					},
-				},
-			})
-		case r.URL.Path == "/admin/cliauth/authenticators/codex" && r.Method == http.MethodPut:
-			authenticatorWriteCount.Add(1)
-			t.Fatalf("unexpected cliauth authenticator update request for unchanged object")
 		case r.URL.Path == "/admin/agents/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/mcp/services" && r.Method == http.MethodGet:
@@ -1314,8 +1156,8 @@ cliAuthAuthenticators:
 	if err != nil {
 		t.Fatalf("gateway apply unchanged: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
 	}
-	if providerWriteCount.Load() != 0 || virtualKeyWriteCount.Load() != 0 || authenticatorWriteCount.Load() != 0 {
-		t.Fatalf("unexpected writes: provider=%d virtualKey=%d authenticator=%d", providerWriteCount.Load(), virtualKeyWriteCount.Load(), authenticatorWriteCount.Load())
+	if providerWriteCount.Load() != 0 || virtualKeyWriteCount.Load() != 0 {
+		t.Fatalf("unexpected writes: provider=%d virtualKey=%d", providerWriteCount.Load(), virtualKeyWriteCount.Load())
 	}
 	if !strings.Contains(stdout, `"action": "skip"`) {
 		t.Fatalf("stdout missing skip action:\n%s", stdout)
@@ -1362,8 +1204,6 @@ providers:
 		case r.URL.Path == "/admin/llm/routes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/virtual_keys" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
-		case r.URL.Path == "/admin/cliauth/authenticators" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/agents/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
@@ -1471,19 +1311,6 @@ func TestGatewayExportCommand(t *testing.T) {
 					},
 				},
 			})
-		case "/admin/cliauth/authenticators":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"items": []map[string]any{
-					{
-						"name":          "codex",
-						"provider_type": "openai",
-						"enabled":       true,
-						"config": map[string]any{
-							"no_browser": true,
-						},
-					},
-				},
-			})
 		case "/admin/agents/routes", "/admin/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/mcp/services":
@@ -1512,10 +1339,8 @@ func TestGatewayExportCommand(t *testing.T) {
 		"providers:",
 		"llmRoutes:",
 		"virtualKeys:",
-		"cliAuthAuthenticators:",
 		"id: openai-main",
 		"id: vk-local-test",
-		"name: codex",
 	} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout missing %q:\n%s", want, stdout)
@@ -1592,19 +1417,6 @@ func TestGatewayExportThenValidateRoundTrip(t *testing.T) {
 					},
 				},
 			})
-		case "/admin/cliauth/authenticators":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"items": []map[string]any{
-					{
-						"name":          "codex",
-						"provider_type": "openai",
-						"enabled":       true,
-						"config": map[string]any{
-							"device_flow": true,
-						},
-					},
-				},
-			})
 		case "/admin/agents/routes", "/admin/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/mcp/services":
@@ -1652,8 +1464,6 @@ func TestGatewayExportCommandIncludesMCPServicesAndRoutes(t *testing.T) {
 		case "/admin/llm/routes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/virtual_keys":
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
-		case "/admin/cliauth/authenticators":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case "/admin/agents/routes", "/admin/agents":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
@@ -1755,8 +1565,6 @@ mcpRoutes:
 		case r.URL.Path == "/admin/llm/routes":
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/virtual_keys" && r.Method == http.MethodGet:
-			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
-		case r.URL.Path == "/admin/cliauth/authenticators" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})
 		case r.URL.Path == "/admin/agents/routes" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"items": []map[string]any{}})

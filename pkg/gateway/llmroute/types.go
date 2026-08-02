@@ -63,8 +63,8 @@ const (
 type RouteCredentialType string
 
 const (
-	RouteCredentialTypeAPIKey       RouteCredentialType = "api_key"
-	RouteCredentialTypeCLIAuthToken RouteCredentialType = "cliauth_token"
+	RouteCredentialTypeAPIKey     RouteCredentialType = "api_key"
+	RouteCredentialTypeOAuthToken RouteCredentialType = "oauth_token"
 )
 
 type RouteTargetPolicy interface {

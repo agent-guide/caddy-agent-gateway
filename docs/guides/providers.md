@@ -74,14 +74,14 @@ Use managed credentials when you need:
 
 - multiple upstream credentials for one provider
 - scheduling or rotation behavior
-- CLI-auth-backed upstream tokens
+- OAuth-backed upstream tokens provisioned by `agw-auth`
 
 ## Current Defaults And Notes
 
 - `openai` defaults to `https://api.openai.com/v1`
 - `anthropic` defaults to `https://api.anthropic.com`
 - `codex` defaults to `https://chatgpt.com/backend-api/codex` and sends OpenAI-compatible `POST /responses` requests; custom `base_url` values depend on the upstream codex-compatible deployment. Use `option compact cc` when routing Claude Code CLI traffic through a Codex-compatible upstream that cannot reliably sequence Claude Code stateful tools.
-- `claudecode` accepts either an Anthropic-style `api_key` or a managed `cliauth_token`. A managed `cliauth_token` and any `sk-ant-oat-` OAuth token always use `Authorization: Bearer`. A plain API key follows `option api_key_header`, which defaults to `authorization` (`Authorization: Bearer`); set it to `x-api-key` to send the key in the `x-api-key` header instead. Use `option compact codex` when routing Codex CLI traffic through an upstream that gates on Claude Code tool names: it rewrites Codex tool names (e.g. `exec_command`) to their Claude Code equivalents (e.g. `Bash`) on the outbound request and restores the original names on the response. The `claudecode` provider also sends the full Claude Code CLI client fingerprint (`User-Agent`, `X-App`, `X-Stainless-*`, `anthropic-version`, `anthropic-beta`) by default, so a config that omits these still presents as the standard CLI; set `network.extra_headers` only to override individual values when matching a newer CLI release.
+- `claudecode` accepts either an Anthropic-style `api_key` or a managed `oauth_token`. A managed `oauth_token` and any `sk-ant-oat-` OAuth token always use `Authorization: Bearer`. A plain API key follows `option api_key_header`, which defaults to `authorization` (`Authorization: Bearer`); set it to `x-api-key` to send the key in the `x-api-key` header instead. Use `option compact codex` when routing Codex CLI traffic through an upstream that gates on Claude Code tool names: it rewrites Codex tool names (e.g. `exec_command`) to their Claude Code equivalents (e.g. `Bash`) on the outbound request and restores the original names on the response. The `claudecode` provider also sends the full Claude Code CLI client fingerprint (`User-Agent`, `X-App`, `X-Stainless-*`, `anthropic-version`, `anthropic-beta`) by default, so a config that omits these still presents as the standard CLI; set `network.extra_headers` only to override individual values when matching a newer CLI release.
 - `openrouter` defaults to `https://openrouter.ai/api/v1`
 - `deepseek` defaults to `https://api.deepseek.com`
 - `zhipu` defaults to `https://open.bigmodel.cn/api/paas/v4`

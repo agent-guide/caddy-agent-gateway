@@ -5,12 +5,13 @@
 This repository builds a custom Caddy binary that acts as an AI gateway for LLM, MCP, and ACP traffic.
 The current primary LLM path is:
 
-1. `agent_gateway` app loads providers, routes, virtual keys, credentials, and CLI auth state
+1. `agent_gateway` app loads providers, routes, virtual keys, and credentials, and configures the external credential refresh command
 2. `agent_route_dispatcher` matches an incoming HTTP request to a route
 3. the route's `protocol` selects the protocol adapter (`openai` or `anthropic`)
 4. the gateway validates the VirtualKey
 5. in logical-model routes, the model catalog resolves the logical model to one concrete `(provider_id, upstream_model)` binding
-6. the selected provider executes `Generate` or `Stream`
+6. the credential manager invokes the configured external refresh command for an expiring `oauth_token` credential when required
+7. the selected provider executes `Generate` or `Stream`
 
 MCP is active through `agent_route_dispatcher` with MCP enabled. ACP and builtin execution now enter through unified `kind=agent` routes (`pkg/gateway/agentroute`, dispatcher `agent` enablement, `POST /<agent-route>/turn` SSE); the target Agent's `runtime.type` selects the registered backend. ACP execution config is owned inline by `Agent.runtime.acp`, while builtin definitions are materialized by the in-process eino ADK host. The agent control plane is exposed through `/admin/agents` and `/admin/agents/routes`. Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
 
@@ -82,7 +83,7 @@ Notes:
 - Main entry: `caddy/gateway/app.go`
 
 Bootstraps the config store, loads static providers from the Caddyfile,
-creates the shared credential manager and CLI auth refresher, and creates the
+creates the shared credential manager and external request-time refresh transport, and creates the
 runtime `AgentGateway`. Caddyfile parsing lives in `caddy/gateway/caddyfile.go`.
 
 ### HTTP middleware
@@ -94,8 +95,10 @@ runtime `AgentGateway`. Caddyfile parsing lives in `caddy/gateway/caddyfile.go`.
 Resolves the matching route, selects the route `protocol`, rewrites the path
 by removing the route `path_prefix`, validates the VirtualKey, prepares the
 provider payload, resolves the logical model or direct provider target
-(rewriting the provider-facing model for logical-model routes), and invokes
-the LLM protocol handler. With `mcp` or `agent` enabled it also
+(rewriting the provider-facing model for logical-model routes), and invokes the
+LLM protocol handler. The runtime `RoutedProvider` selects and, when required,
+refreshes an OAuth-backed credential before provider execution. With `mcp` or
+`agent` enabled the dispatcher also
 resolves those route kinds and dispatches to `pkg/mcp/service` or the
 registered `runtimeapi` ACP/builtin adapters, tracks in-flight turns, and
 stamps Agent identity on the interaction span. Subsystem detail:
@@ -142,9 +145,9 @@ or a cross-cutting adapter for it (for example `caddy/admin`,
 
 - `pkg/gateway/` — runtime route/VirtualKey/provider resolution (`AgentGateway`) and the public route-model packages (`llmroute`, `modelcatalog`, `mcproute`, `agentroute`, `virtualkey`) → `pkg/gateway/AGENTS.md`
 - `pkg/acp/` — native ACP runtime (`codex`, `opencode`): pooling, sessions, permissions, transcripts → `pkg/acp/AGENTS.md`
-- `pkg/llm/` — provider interface/registry, built-in providers, the `einomodel` eino bridge, `credentialmgr` → `pkg/llm/AGENTS.md`
+- `pkg/credential/` — cross-cutting credential model, persistence, scheduling, expiry detection, and external refresh transport → `pkg/credential/AGENTS.md`
+- `pkg/llm/` — provider interface/registry, built-in providers, and the `einomodel` eino bridge → `pkg/llm/AGENTS.md`
 - `pkg/mcp/` — MCP service runtime and the `einotool` eino bridge → `pkg/mcp/AGENTS.md`
-- `pkg/cliauth/` — CLI auth authenticators and refresh → `pkg/cliauth/AGENTS.md`
 - `pkg/configstore/` — generic config store/backends (persisted backend: `sqlite`; stores `providers`, `credentials`, `routes`, `mcp_services`, `agents`, `virtual_keys`, `managed_models`) → `pkg/configstore/AGENTS.md`
 - `pkg/agent/` — agent control plane (`runtimeapi` contracts, `Agent` model, route/service → agent index) → `pkg/agent/AGENTS.md`; builtin eino ADK host → `pkg/agent/builtin/AGENTS.md`
 - `internal/observability/` — usage events, event pipeline, OTLP export, `einotap` → `internal/observability/AGENTS.md`
@@ -155,7 +158,7 @@ Cross-cutting invariants:
 
 - dependency direction: `pkg/agent` composes the LLM/MCP/ACP/metrics surfaces; the lower protocol packages must not depend on `pkg/agent`
 - no config-store reads in per-request hot paths (provider resolution, route matching); manager snapshots are refreshed on mutation
-- factory registration (providers, CLI-auth authenticators, builtin custom agents) requires blank imports in the binaries that link them (`cmd/agw/main.go`, `cmd/agwd/main.go`, `cmd/agwctl/cmd_gateway.go`); see each subtree file for the exact rule
+- factory registration (providers and builtin custom agents) requires blank imports in the binaries that link them; see each subtree file for the exact rule
 - gateway request pipelines never add an `agent` step, durable execution/event store,
   scheduler, human-task model, or Temporal dependency to lower runtime packages
 
@@ -171,6 +174,7 @@ HTTP request
   -> protocol handler PrepareLLMApiRequest(...)
   -> if route uses model targets: resolve the requested route model name to one concrete binding and rewrite request model
   -> else: use route.target_policy.provider_target.provider_id
+  -> select a credential and invoke the external refresher when close to expiry
   -> resolve provider instance
   -> provider.Chat(...) or provider.StreamChat(...)
   -> protocol handler writes JSON or SSE response
@@ -197,7 +201,6 @@ Implemented families:
 
 - LLM: `/admin/llm/providers/...`, `/admin/llm/provider_types` (read-only listing), `/admin/llm/api_handler_types`, `/admin/llm/routes/...`, `/admin/llm/models/providers/{provider_id}/discovered`, `/admin/llm/models/providers/{provider_id}/refresh`, `/admin/llm/models/managed/...`
 - `/admin/virtual_keys/...`, `/admin/credentials/...`
-- CLI auth: `/admin/cliauth/authenticators/...`, `/admin/cliauth/refresher/...`, `/admin/cliauth/logins/...` (configure and trigger authenticators; logins bind one `provider_id` plus an optional credential scope)
 - MCP: `/admin/mcp/services/...`, `/admin/mcp/routes/...`, `/admin/mcp/runtime/...` (discovery, execution, dispatcher runtime inspection)
 - ACP: `/admin/acp/runtime/...` (native diagnostics keyed by `agent_id`)
 - builtin: `/admin/builtin/runtime/...`

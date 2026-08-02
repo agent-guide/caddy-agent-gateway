@@ -10,6 +10,7 @@ The gateway is configured in the global `agent_gateway` block:
 {
 	agent_gateway {
 		config_store sqlite { ... }
+		credential_refresh_command agw-auth refresh
 		metrics { ... }
 		provider <provider-id> { ... }
 		route <route-id> { ... }
@@ -46,6 +47,18 @@ config_store sqlite {
 
 - `path` sets the SQLite database path
 - if `path` is omitted in `agw`, the store defaults to Caddy's app data directory under `agent-gateway/configstore.db`
+
+## `credential_refresh_command`
+
+`credential_refresh_command <executable> [args...]` selects the executable and
+static arguments used when a managed credential reaches its request-time
+refresh window. It defaults to `agw-auth refresh`. The gateway executes this
+argv directly without a shell or variable expansion and does not append any
+arguments. Dynamic refresh data is carried only by the credential JSON on
+stdin. The command must implement the protocol documented in the OAuth
+credential guide. Because an explicit directive replaces the complete argv,
+use `credential_refresh_command agw-auth refresh`; an explicit
+`credential_refresh_command agw-auth` runs `agw-auth` with no subcommand.
 
 ## `metrics`
 
