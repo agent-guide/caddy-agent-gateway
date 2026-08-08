@@ -99,7 +99,7 @@ Important files:
   dispatch; store/process/transport I/O belongs in prepare or cleanup.
 
 Agents are a first-class gateway-bundle object (apply/export/validate) and have
-an `agwctl gateway agent` read surface; create/update flow through the bundle.
+an `agwctl agent` read surface; create/update flow through the bundle.
 See `docs/design/agents-control-plane.md` for the cross-runtime direction and
 `docs/design/builtin-agent-runtime.md` for the builtin runtime design and
 implementation status.

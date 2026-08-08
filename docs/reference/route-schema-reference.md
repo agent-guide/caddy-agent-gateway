@@ -133,7 +133,7 @@ When `id` is omitted, it defaults to the deterministic, slash-free
 (the path prefix lowercased, non-alphanumeric runs collapsed to `-`, `/` →
 `root`). Route ids must be slash-free so they are addressable as a single Admin
 API path segment. Manage these routes through bundle `agentRoutes`,
-`/admin/agents/routes`, or `agwctl gateway agent-route`.
+`/admin/agents/routes`, or `agwctl agent-route`.
 
 ## Static Config Restrictions
 

@@ -6,7 +6,7 @@ kind: GatewayBundle
 # the compiled-in eino ADK host).
 #
 # Apply with:
-#   agwctl gateway apply -f examples/gateway.bundle.builtin.yaml
+#   agwctl apply -f examples/gateway.bundle.builtin.yaml
 #
 # Prerequisites:
 #   - DEEPSEEK_API_KEY set before apply

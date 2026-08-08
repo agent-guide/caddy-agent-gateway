@@ -98,10 +98,10 @@ Save it as `gateway.bundle.acp.yaml`, then apply and inspect it:
 
 ```bash
 export AGW_ADMIN_BASIC_AUTH=admin:your-password
-./agwctl gateway apply -f gateway.bundle.acp.yaml
-./agwctl gateway agent get codex-main
-./agwctl gateway agent-route get agent-codex
-./agwctl gateway acp-runtime get
+./agwctl apply -f gateway.bundle.acp.yaml
+./agwctl agent get codex-main
+./agwctl agent-route get agent-codex
+./agwctl acp-runtime get
 ```
 
 `runtime.acp.permission_mode` is `deny` by default. `auto_approve` selects an
@@ -111,7 +111,7 @@ explicit client or operator decision.
 ## 3. Send A Turn
 
 ```bash
-ACP_API_KEY=$(./agwctl gateway virtualkey get codex-key | jq -r '.key')
+ACP_API_KEY=$(./agwctl virtualkey get codex-key | jq -r '.key')
 
 curl -N -s http://127.0.0.1:8080/agents/codex/turn \
   -H 'Content-Type: application/json' \
@@ -138,22 +138,22 @@ curl -s "http://127.0.0.1:8080/agents/codex/sessions/<session-id>/transcript?cwd
 The equivalent operator reads are Agent-scoped:
 
 ```bash
-./agwctl gateway agent sessions codex-main --cwd /tmp/acp-codex-test
-./agwctl gateway agent transcript codex-main <session-id> --cwd /tmp/acp-codex-test
+./agwctl agent sessions codex-main --cwd /tmp/acp-codex-test
+./agwctl agent transcript codex-main <session-id> --cwd /tmp/acp-codex-test
 ```
 
 For `permission_mode: interactive`, inspect and resolve pending requests with:
 
 ```bash
-./agwctl gateway agent permissions codex-main
-./agwctl gateway agent decide codex-main <request-id> \
+./agwctl agent permissions codex-main
+./agwctl agent decide codex-main <request-id> \
   --outcome selected --option-id <option-id>
 ```
 
 ACP-specific pool recovery remains available by Agent identity:
 
 ```bash
-./agwctl gateway acp-runtime close-thread codex-main t-demo-1
+./agwctl acp-runtime close-thread codex-main t-demo-1
 ```
 
 AgentRoute IDs default to the deterministic slash-free

@@ -1,6 +1,6 @@
 # Quick Start: MCP Gateway
 
-This guide runs the MCP gateway with one upstream MCP service, one MCP route, one VirtualKey, and one verified end-to-end MCP request. All configuration is applied dynamically via `agwctl gateway apply`.
+This guide runs the MCP gateway with one upstream MCP service, one MCP route, one VirtualKey, and one verified end-to-end MCP request. All configuration is applied dynamically via `agwctl apply`.
 
 ## Prerequisites
 
@@ -139,16 +139,16 @@ Set admin credentials as environment variables, then apply:
 export AGW_ADMIN_BASIC_AUTH=admin:your-password
 
 # Option A
-MCP_SERVICE_URL=https://your-mcp-server/mcp ./agwctl gateway apply -f gateway.bundle.mcp.yaml
+MCP_SERVICE_URL=https://your-mcp-server/mcp ./agwctl apply -f gateway.bundle.mcp.yaml
 
 # Option B (stdio — no extra env var needed)
-./agwctl gateway apply -f gateway.bundle.mcp.yaml
+./agwctl apply -f gateway.bundle.mcp.yaml
 ```
 
 Expected output:
 
 ```
-gateway apply: gateway.bundle.mcp.yaml
+apply: gateway.bundle.mcp.yaml
   create mcp_service mcp-main
   create mcp_route mcp-main-route
   create virtual_key mcp-key
@@ -160,14 +160,14 @@ summary: create=3 update=0 skip=0 error=0
 Confirm the service is registered and the upstream session is initialized:
 
 ```bash
-./agwctl gateway mcp-service list
-./agwctl gateway mcp-service session mcp-main   # or mcp-fs for Option B
+./agwctl mcp-service list
+./agwctl mcp-service session mcp-main   # or mcp-fs for Option B
 ```
 
 Discover tools exposed by the upstream:
 
 ```bash
-./agwctl gateway mcp-service tools mcp-main
+./agwctl mcp-service tools mcp-main
 ```
 
 ## 8. Send an MCP Request
@@ -175,7 +175,7 @@ Discover tools exposed by the upstream:
 Retrieve the generated VirtualKey value:
 
 ```bash
-MCP_API_KEY=$(./agwctl gateway virtualkey get mcp-key | jq -r '.key')
+MCP_API_KEY=$(./agwctl virtualkey get mcp-key | jq -r '.key')
 ```
 
 Initialize the MCP session and list tools through the gateway route:
@@ -202,9 +202,9 @@ For a complete Python-based end-to-end client, see [`examples/test_mcp_gateway_c
 
 - The MCP dispatcher is enabled by the `mcp` directive inside `agent_route_dispatcher`. LLM routes and MCP routes share the same dispatcher and config store.
 - MCP route IDs are auto-generated as the deterministic, slash-free `mcp:<service_id>:<path-slug>` when `id` is omitted in the bundle (path prefix lowercased, non-alphanumeric runs collapsed to `-`, `/` → `root`).
-- The gateway initializes an upstream session on first use and caches it. Inspect session state with `agwctl gateway mcp-service session <id>`.
+- The gateway initializes an upstream session on first use and caches it. Inspect session state with `agwctl mcp-service session <id>`.
 - The Admin API has no built-in sessions; authentication is handled by the HTTP mount layer.
-- Run `agwctl gateway export` to dump the current gateway state as a bundle YAML.
+- Run `agwctl export` to dump the current gateway state as a bundle YAML.
 
 ## Next
 

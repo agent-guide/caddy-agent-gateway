@@ -75,7 +75,7 @@ Build the binaries:
 make build
 ```
 
-Keep the Caddyfile minimal and declare providers, routes, and VirtualKeys in bundle YAML files applied at runtime via `agwctl gateway apply`.
+Keep the Caddyfile minimal and declare providers, routes, and VirtualKeys in bundle YAML files applied at runtime via `agwctl apply`.
 
 Create a minimal `Caddyfile` (no providers or routes). LLM providers and routes can also be declared statically in the Caddyfile; see [docs/getting-started/quickstart-llm.md](docs/getting-started/quickstart-llm.md) for that flow:
 
@@ -120,7 +120,7 @@ OPENAI_API_KEY=sk-... ./agw run --config ./Caddyfile
 
 ## LLM Quick Start
 
-Declare an LLM provider, route, and VirtualKey in a bundle YAML applied at runtime via `agwctl gateway apply`.
+Declare an LLM provider, route, and VirtualKey in a bundle YAML applied at runtime via `agwctl apply`.
 
 Create a bundle file `gateway.bundle.yaml`:
 
@@ -163,29 +163,39 @@ Set the admin Basic Auth credentials for agwctl as an environment variable, then
 ```bash
 export AGW_ADMIN_BASIC_AUTH=admin:your-password
 
-OPENAI_API_KEY=sk-... ./agwctl gateway apply -f gateway.bundle.yaml
+OPENAI_API_KEY=sk-... ./agwctl apply -f gateway.bundle.yaml
 ```
 
 `apply` is idempotent — it creates objects that do not exist, updates those that have changed, and skips unchanged ones:
 
 ```
-gateway apply: gateway.bundle.yaml
+apply: gateway.bundle.yaml
   create provider openai-main
   create llm_route openai-chat
   create virtual_key test-key
 summary: create=3 update=0 skip=0 error=0
 ```
 
-Retrieve the generated VirtualKey value and verify with `agwctl chat`:
+Retrieve the generated VirtualKey value and verify the OpenAI-compatible data
+plane directly:
 
 ```bash
-AGW_API_KEY=$(./agwctl gateway virtualkey get test-key | jq -r '.key')
-./agwctl chat "hello" --api-key "$AGW_API_KEY"
+AGW_API_KEY=$(./agwctl virtualkey get test-key | jq -r '.key')
+curl -sS http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer $AGW_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"hello"}]}'
+
+curl -sS http://127.0.0.1:8080/v1/responses \
+  -H "Authorization: Bearer $AGW_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"hello"}'
 ```
 
-`agwctl chat` defaults to the OpenAI API at `http://127.0.0.1:8080/v1`. Pass `--stream` for SSE streaming, `--api anthropic` for the Anthropic-compatible surface, or `--api cc` for the Claude Code CLI-compatible surface.
+`agwctl` is a control-plane management CLI; protocol data-plane checks use
+the corresponding HTTP, MCP, or Agent client directly.
 
-The `AGW_ADMIN_ADDR` environment variable sets the admin API address (default: `http://localhost:8019`). Run `agwctl gateway export` to dump the current gateway state as a bundle YAML.
+The `AGW_ADMIN_ADDR` environment variable sets the admin API address (default: `http://localhost:8019`). Run `agwctl export` to dump the current gateway state as a bundle YAML.
 
 Provider `options.compact` selects compatibility request shaping. In Caddyfile provider blocks, configure it as `option compact <cc|codex|none>`. In bundle YAML, configure it as `options.compact`. Providers ignore modes they do not implement.
 
@@ -256,13 +266,13 @@ Apply and verify:
 ```bash
 export AGW_ADMIN_BASIC_AUTH=admin:your-password
 
-MCP_SERVICE_URL=https://your-mcp-server/mcp ./agwctl gateway apply -f gateway.bundle.mcp.yaml
+MCP_SERVICE_URL=https://your-mcp-server/mcp ./agwctl apply -f gateway.bundle.mcp.yaml
 
 # Discover tools via admin API
-./agwctl gateway mcp-service tools mcp-main
+./agwctl mcp-service tools mcp-main
 
 # Retrieve the VirtualKey and send an MCP request
-MCP_API_KEY=$(./agwctl gateway virtualkey get mcp-key | jq -r '.key')
+MCP_API_KEY=$(./agwctl virtualkey get mcp-key | jq -r '.key')
 
 curl -s http://127.0.0.1:8080/mcp \
   -H 'Content-Type: application/json' \
@@ -324,17 +334,17 @@ Apply and verify:
 ```bash
 export AGW_ADMIN_BASIC_AUTH=admin:your-password
 
-./agwctl gateway apply -f gateway.bundle.acp.yaml
+./agwctl apply -f gateway.bundle.acp.yaml
 
-./agwctl gateway agent get codex-main
-./agwctl gateway agent-route list
-./agwctl gateway acp-runtime get
+./agwctl agent get codex-main
+./agwctl agent-route list
+./agwctl acp-runtime get
 ```
 
 Send a streamed turn through the dispatcher:
 
 ```bash
-ACP_API_KEY=$(./agwctl gateway virtualkey get acp-key | jq -r '.key')
+ACP_API_KEY=$(./agwctl virtualkey get acp-key | jq -r '.key')
 
 curl -N -s http://127.0.0.1:8080/acp/codex/turn \
   -H 'Content-Type: application/json' \
@@ -355,11 +365,11 @@ curl -s "http://127.0.0.1:8080/acp/codex/sessions/<session-id>/transcript" \
 Inspect sessions, replay transcripts, or operate on runtime state through Agent-level capability APIs:
 
 ```bash
-./agwctl gateway agent sessions codex-main --cwd /tmp/acp-codex-test
-./agwctl gateway agent transcript codex-main <session-id>
+./agwctl agent sessions codex-main --cwd /tmp/acp-codex-test
+./agwctl agent transcript codex-main <session-id>
 
-./agwctl gateway acp-runtime inflight
-./agwctl gateway acp-runtime close-thread codex-main t-demo-1
+./agwctl acp-runtime inflight
+./agwctl acp-runtime close-thread codex-main t-demo-1
 ```
 
 Agent route IDs are auto-generated as `agent:<agent_id>:<path-slug>` when omitted. Permission modes are `deny`, `auto_approve`, and `interactive`; clients must follow the runtime capability's advertised resume mode.

@@ -1153,7 +1153,7 @@ an Agent health view, but it must not introduce `/admin/http/routes`.
 CLI changes:
 
 ```text
-agwctl gateway agent-route list|get|create|update|delete
+agwctl agent-route list|get|create|update|delete
 ```
 
 Remove `acp-route`, `builtin-route`, and `acp-service`. Keep `acp-runtime`, with
@@ -1539,7 +1539,7 @@ Verification:
   or fallback lookup; the unbound legacy ACP exception remains explicitly out
   of scope until M5;
 - make unsupported operations return the normalized capability error;
-- expose equivalent `agwctl gateway agent` read/control commands.
+- expose equivalent `agwctl agent` read/control commands.
 
 Verification:
 
@@ -1687,7 +1687,7 @@ cutover; the doubled migration-only allowance is not a supported steady state.
 - ship the versioned offline bundle migration helper defined in §9; it consumes
   an old-binary export, emits the new bundle plus an old-to-new route ID map,
   and rewrites every VirtualKey `allowed_route_ids` reference atomically;
-- remove `/admin/acp/services`, `agwctl gateway acp-service`, and the
+- remove `/admin/acp/services`, `agwctl acp-service`, and the
   `acp_services` config-store registration; Agent CRUD is the only write
   surface for ACP runtime config;
 - remove ingress route IDs from Agent persistence and validation;
@@ -1724,7 +1724,7 @@ Verification:
 
 Implemented M5 evidence:
 
-- `/admin/agents/routes`, the Admin client, `agwctl gateway agent-route`, bundle
+- `/admin/agents/routes`, the Admin client, `agwctl agent-route`, bundle
   apply/export, Caddy `agent`, and standalone dispatch all use `kind=agent` and
   target a stable `agent_id`;
 - ACP backend snapshots are built only from `Agent.runtime.acp`; Agent updates
@@ -2052,8 +2052,8 @@ scripts/migrate-unified-agent-runtime \
   --route-map unified.route-map.yaml
 
 # Run against a clean/new-version store with the new binary.
-agwctl gateway validate -f unified.bundle.yaml
-agwctl gateway apply -f unified.bundle.yaml
+agwctl validate -f unified.bundle.yaml
+agwctl apply -f unified.bundle.yaml
 ```
 
 The helper computes each resulting AgentRoute ID before writing output,

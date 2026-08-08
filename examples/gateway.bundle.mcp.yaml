@@ -4,7 +4,7 @@ kind: GatewayBundle
 # MCP bundle example — three upstream transport types
 #
 # Apply with:
-#   agwctl gateway apply -f examples/gateway.bundle.mcp.yaml
+#   agwctl apply -f examples/gateway.bundle.mcp.yaml
 #
 # Required env vars (set before apply):
 #   MCP_HTTP_URL   — base URL of a Streamable HTTP MCP server

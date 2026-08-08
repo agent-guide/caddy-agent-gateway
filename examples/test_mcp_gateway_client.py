@@ -10,10 +10,10 @@ Prerequisites
        npm install -g @modelcontextprotocol/server-filesystem
 
 2. Apply the MCP bundle (creates the service, route, and virtual key):
-       agwctl gateway apply -f examples/gateway.bundle.mcp.yaml
+       agwctl apply -f examples/gateway.bundle.mcp.yaml
 
 3. Retrieve the generated virtual key value:
-       agwctl gateway list virtual-keys
+       agwctl virtualkey get vk-mcp-test
 
 4. Run the gateway:
        ./agw run --config ./Caddyfile.example
@@ -196,7 +196,7 @@ def main() -> int:
         print(
             "Warning: no AGW_MCP_API_KEY set. Requests will be unauthenticated.\n"
             "  If the gateway requires a virtual key, retrieve it with:\n"
-            "  agwctl gateway list virtual-keys",
+            "  agwctl virtualkey get vk-mcp-test",
             file=sys.stderr,
         )
 

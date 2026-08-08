@@ -28,14 +28,14 @@ The same bundle schema is used in two different runtime modes:
 ```text
 gateway bundle YAML
   |
-  +-> agwctl gateway validate
+  +-> agwctl validate
   |      -> local parse + local validation
   |
-  +-> agwctl gateway apply
+  +-> agwctl apply
   |      -> local parse + local validation
   |      -> remote Admin API create/update
   |
-  +-> agwctl gateway export
+  +-> agwctl export
   |      -> remote Admin API read
   |      -> bundle YAML serialization
   |
@@ -46,7 +46,7 @@ gateway bundle YAML
 
 The object schema is shared, but the runtime semantics are not:
 
-- `agwctl gateway apply` is a dynamic mutation path
+- `agwctl apply` is a dynamic mutation path
 - `agwd --static-config` is a startup-only static configuration path
 
 This separation is the core design rule.
@@ -80,7 +80,7 @@ Static bundle objects are intentionally equivalent to Caddyfile-owned static obj
 Static route limitation:
 
 - standalone `--static-config` `llmRoutes` only support direct-provider targets
-- logical-model routes remain valid in config-store bundle workflows such as `agwctl gateway apply`
+- logical-model routes remain valid in config-store bundle workflows such as `agwctl apply`
 
 Dynamic objects remain writable through the Admin API and are persisted in SQLite.
 
@@ -123,9 +123,9 @@ These remain command-oriented runtime operations and should continue to use expl
 The formal configuration workflow is:
 
 ```bash
-agwctl gateway export -f gateway.yaml
-agwctl gateway validate -f gateway.yaml
-agwctl gateway apply -f gateway.yaml
+agwctl export -f gateway.yaml
+agwctl validate -f gateway.yaml
+agwctl apply -f gateway.yaml
 ```
 
 The semantics are:
@@ -231,7 +231,7 @@ agentRoutes:
 
 ```
 
-`virtualKeys[].id` is the declarative identifier for config-store bundle workflows such as `agwctl gateway apply`. Standalone `--static-config` does not support `virtualKeys`.
+`virtualKeys[].id` is the declarative identifier for config-store bundle workflows such as `agwctl apply`. Standalone `--static-config` does not support `virtualKeys`.
 
 Field naming is intentionally kept close to existing JSON model fields so the bundle can reuse current runtime types.
 
@@ -301,7 +301,7 @@ Validation errors are aggregated so users can see multiple file problems in one 
 
 ## 11. Apply Semantics
 
-`agwctl gateway apply -f gateway.yaml` is a declarative create-or-update operation.
+`agwctl apply -f gateway.yaml` is a declarative create-or-update operation.
 
 Current behavior:
 
@@ -336,7 +336,7 @@ Current non-behavior:
 
 ## 12. Export Semantics
 
-`agwctl gateway export` reads remote configuration objects from the Admin API and serializes them as a gateway bundle YAML file.
+`agwctl export` reads remote configuration objects from the Admin API and serializes them as a gateway bundle YAML file.
 
 Current behavior:
 
@@ -365,7 +365,7 @@ Current standalone integration does the following:
 
 The shared schema contains more dynamic object families than standalone static
 loading supports. Standalone validates its own narrower startup boundary; the
-full schema is intended for config-store workflows through `agwctl gateway
+full schema is intended for config-store workflows through `agwctl
 apply`.
 
 The resulting runtime behavior matches the existing static-object model:

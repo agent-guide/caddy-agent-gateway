@@ -84,5 +84,5 @@ func init() {
 	gatewayAgentRouteCreateCmd.Flags().StringVarP(&gatewayAgentRouteFile, "file", "f", "", "Agent route YAML or JSON")
 	gatewayAgentRouteUpdateCmd.Flags().StringVarP(&gatewayAgentRouteFile, "file", "f", "", "Agent route YAML or JSON")
 	gatewayAgentRouteCmd.AddCommand(gatewayAgentRouteListCmd, gatewayAgentRouteGetCmd, gatewayAgentRouteCreateCmd, gatewayAgentRouteUpdateCmd, gatewayAgentRouteDeleteCmd)
-	gatewayCmd.AddCommand(gatewayAgentRouteCmd)
+	rootCmd.AddCommand(gatewayAgentRouteCmd)
 }

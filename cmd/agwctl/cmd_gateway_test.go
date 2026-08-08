@@ -54,7 +54,6 @@ func TestGatewayCredentialListCommandUsesTypeFilterAndDisplaysType(t *testing.T)
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"credential", "list",
@@ -89,7 +88,6 @@ func TestGatewayCredentialListCommandSurfacesAdminAuthErrors(t *testing.T) {
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:wrong-secret",
 		"credential", "list",
@@ -134,7 +132,6 @@ func TestGatewayProviderTypesListCommand(t *testing.T) {
 	stdout, stderr, err := executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"provider-type", "list",
@@ -168,7 +165,6 @@ func TestGatewayAgentP1ReadCommand(t *testing.T) {
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"agent", "health", "coding-agent",
 	)
@@ -219,7 +215,6 @@ func TestGatewayMCPServiceListCommand(t *testing.T) {
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "list",
@@ -252,7 +247,7 @@ func TestGatewayAgentListProminentlyShowsNonExecutableRuntime(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	stdout, stderr, err := executeAGWCTL(t, "gateway", "--admin-addr", srv.URL, "agent", "list")
+	stdout, stderr, err := executeAGWCTL(t, "--admin-addr", srv.URL, "agent", "list")
 	if err != nil {
 		t.Fatalf("gateway agent list: %v\nstderr=%s", err, stderr)
 	}
@@ -297,7 +292,6 @@ func TestGatewayMCPServiceGetAndDeleteCommands(t *testing.T) {
 	stdout, stderr, err := executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "get", "svc-1",
@@ -312,7 +306,6 @@ func TestGatewayMCPServiceGetAndDeleteCommands(t *testing.T) {
 	stdout, stderr, err = executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "delete", "svc-1",
@@ -460,7 +453,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "session", "svc-1",
@@ -475,7 +467,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 	stdout, stderr, err = executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "capabilities", "svc-1",
@@ -489,7 +480,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 
 	stdout, stderr, err = executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "tools", "svc-1",
@@ -504,7 +494,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 	stdout, stderr, err = executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "tool-call", "svc-1", "echo",
@@ -522,7 +511,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 
 	stdout, stderr, err = executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "resources", "svc-1",
@@ -536,7 +524,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 
 	stdout, stderr, err = executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "resource-templates", "svc-1",
@@ -551,7 +538,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 	stdout, stderr, err = executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "resource-read", "svc-1", "file:///tmp/example.txt",
@@ -568,7 +554,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 
 	stdout, stderr, err = executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "prompts", "svc-1",
@@ -583,7 +568,6 @@ func TestGatewayMCPServiceInteractionCommands(t *testing.T) {
 	stdout, stderr, err = executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-service", "prompt-get", "svc-1", "summarize",
@@ -657,7 +641,6 @@ func TestGatewayMCPRouteListGetAndDeleteCommands(t *testing.T) {
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-route", "list",
@@ -672,7 +655,6 @@ func TestGatewayMCPRouteListGetAndDeleteCommands(t *testing.T) {
 	stdout, stderr, err = executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-route", "get", "mcp:svc-1:/mcp",
@@ -687,7 +669,6 @@ func TestGatewayMCPRouteListGetAndDeleteCommands(t *testing.T) {
 	stdout, stderr, err = executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-route", "delete", "mcp:svc-1:/mcp",
@@ -794,7 +775,6 @@ func TestGatewayMCPRuntimeCommands(t *testing.T) {
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-runtime", "get",
@@ -808,7 +788,6 @@ func TestGatewayMCPRuntimeCommands(t *testing.T) {
 
 	stdout, stderr, err = executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-runtime", "inflight",
@@ -822,7 +801,6 @@ func TestGatewayMCPRuntimeCommands(t *testing.T) {
 
 	stdout, stderr, err = executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-runtime", "progress",
@@ -836,7 +814,6 @@ func TestGatewayMCPRuntimeCommands(t *testing.T) {
 
 	stdout, stderr, err = executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"mcp-runtime", "history",
@@ -882,7 +859,7 @@ virtualKeys:
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	stdout, stderr, err := executeAGWCTL(t, "gateway", "validate", "-f", path)
+	stdout, stderr, err := executeAGWCTL(t, "validate", "-f", path)
 	if err != nil {
 		t.Fatalf("gateway validate: %v\nstderr=%s", err, stderr)
 	}
@@ -920,7 +897,7 @@ virtualKeys:
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	stdout, stderr, err := executeAGWCTL(t, "gateway", "validate", "-f", path)
+	stdout, stderr, err := executeAGWCTL(t, "validate", "-f", path)
 	if err != nil {
 		t.Fatalf("gateway validate: %v\nstderr=%s", err, stderr)
 	}
@@ -944,7 +921,7 @@ providers:
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	stdout, stderr, err := executeAGWCTL(t, "gateway", "validate", "-f", path)
+	stdout, stderr, err := executeAGWCTL(t, "validate", "-f", path)
 	if err == nil {
 		t.Fatalf("gateway validate error = nil\nstdout=%s\nstderr=%s", stdout, stderr)
 	}
@@ -1040,14 +1017,13 @@ virtualKeys:
 	stdout, stderr, err := executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"apply",
 		"-f", path,
 	)
 	if err != nil {
-		t.Fatalf("gateway apply: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
+		t.Fatalf("apply: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
 	}
 	if !providerUpdated.Load() {
 		t.Fatal("expected provider update request")
@@ -1147,7 +1123,6 @@ virtualKeys:
 	stdout, stderr, err := executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"apply",
@@ -1220,7 +1195,6 @@ providers:
 	stdout, stderr, err := executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"apply",
@@ -1229,7 +1203,7 @@ providers:
 	if err == nil {
 		t.Fatalf("gateway apply read-only drift error = nil\nstdout=%s\nstderr=%s", stdout, stderr)
 	}
-	if !strings.Contains(err.Error(), "gateway apply finished with 1 error") {
+	if !strings.Contains(err.Error(), "apply finished with 1 error") {
 		t.Fatalf("apply error = %v", err)
 	}
 	if !strings.Contains(stdout, `"status": "error"`) {
@@ -1325,7 +1299,6 @@ func TestGatewayExportCommand(t *testing.T) {
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"export",
@@ -1431,7 +1404,6 @@ func TestGatewayExportThenValidateRoundTrip(t *testing.T) {
 
 	_, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"export",
@@ -1441,7 +1413,7 @@ func TestGatewayExportThenValidateRoundTrip(t *testing.T) {
 		t.Fatalf("gateway export: %v\nstderr=%s", err, stderr)
 	}
 
-	stdout, stderr, err := executeAGWCTL(t, "gateway", "validate", "-f", exportPath)
+	stdout, stderr, err := executeAGWCTL(t, "validate", "-f", exportPath)
 	if err != nil {
 		t.Fatalf("gateway validate exported file: %v\nstderr=%s", err, stderr)
 	}
@@ -1507,7 +1479,6 @@ func TestGatewayExportCommandIncludesMCPServicesAndRoutes(t *testing.T) {
 
 	stdout, stderr, err := executeAGWCTL(
 		t,
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"export",
@@ -1603,14 +1574,13 @@ mcpRoutes:
 	stdout, stderr, err := executeAGWCTL(
 		t,
 		"--output", "json",
-		"gateway",
 		"--admin-addr", srv.URL,
 		"--admin-basic-auth", "admin:secret",
 		"apply",
 		"-f", path,
 	)
 	if err != nil {
-		t.Fatalf("gateway apply: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
+		t.Fatalf("apply: %v\nstdout=%s\nstderr=%s", err, stdout, stderr)
 	}
 	if !mcpServiceCreated.Load() {
 		t.Fatal("expected mcp service create request")

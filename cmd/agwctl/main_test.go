@@ -3,16 +3,58 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
+func TestRootCommandExposesGatewayResourcesDirectly(t *testing.T) {
+	direct := map[string]bool{
+		"agent":       false,
+		"apply":       false,
+		"credential":  false,
+		"llm-route":   false,
+		"mcp-service": false,
+		"provider":    false,
+		"virtualkey":  false,
+	}
+	removed := map[string]struct{}{
+		"chat":      {},
+		"gateway":   {},
+		"responses": {},
+	}
+
+	for _, cmd := range rootCmd.Commands() {
+		if _, ok := direct[cmd.Name()]; ok {
+			direct[cmd.Name()] = true
+		}
+		if _, forbidden := removed[cmd.Name()]; forbidden {
+			t.Errorf("removed root command %q is still registered", cmd.Name())
+		}
+	}
+	for name, found := range direct {
+		if !found {
+			t.Errorf("root command %q is not registered", name)
+		}
+	}
+}
+
+func TestCaddyRejectsFormerAdminAddrAlias(t *testing.T) {
+	_, _, err := executeAGWCTL(t, "caddy", "--admin-addr", "http://remote:2019", "server", "list")
+	if err == nil {
+		t.Fatal("caddy --admin-addr unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "use --addr for the Caddy admin API") {
+		t.Fatalf("error = %q, want Caddy --addr guidance", err)
+	}
+}
+
 func TestLoadRuntimeEnvPriority(t *testing.T) {
-	t.Setenv("AGW_API_KEY", "from-shell")
-	unsetEnv(t, "AGW_MODEL")
+	t.Setenv("AGW_ADMIN_ADDR", "from-shell")
+	unsetEnv(t, "AGW_ADMIN_BASIC_AUTH")
 
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, ".env"), "AGW_API_KEY=from-dotenv\nAGW_MODEL=from-dotenv-model\n")
-	writeFile(t, filepath.Join(dir, ".env.local"), "AGW_API_KEY=from-dotenv-local\n")
+	writeFile(t, filepath.Join(dir, ".env"), "AGW_ADMIN_ADDR=from-dotenv\nAGW_ADMIN_BASIC_AUTH=from-dotenv-auth\n")
+	writeFile(t, filepath.Join(dir, ".env.local"), "AGW_ADMIN_ADDR=from-dotenv-local\n")
 
 	prev, err := os.Getwd()
 	if err != nil {
@@ -31,11 +73,11 @@ func TestLoadRuntimeEnvPriority(t *testing.T) {
 		t.Fatalf("loadRuntimeEnv() error = %v", err)
 	}
 
-	if got := os.Getenv("AGW_API_KEY"); got != "from-shell" {
-		t.Fatalf("AGW_API_KEY = %q, want %q", got, "from-shell")
+	if got := os.Getenv("AGW_ADMIN_ADDR"); got != "from-shell" {
+		t.Fatalf("AGW_ADMIN_ADDR = %q, want %q", got, "from-shell")
 	}
-	if got := os.Getenv("AGW_MODEL"); got != "from-dotenv-model" {
-		t.Fatalf("AGW_MODEL = %q, want %q", got, "from-dotenv-model")
+	if got := os.Getenv("AGW_ADMIN_BASIC_AUTH"); got != "from-dotenv-auth" {
+		t.Fatalf("AGW_ADMIN_BASIC_AUTH = %q, want %q", got, "from-dotenv-auth")
 	}
 }
 

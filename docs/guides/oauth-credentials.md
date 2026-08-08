@@ -75,7 +75,7 @@ over fast instead of each waiting on the failing refresh subprocess.
 Inspect the stored credential with:
 
 ```bash
-./agwctl gateway --admin-addr http://localhost:8019 \
+./agwctl --admin-addr http://localhost:8019 \
   credential list --type oauth_token
 ```
 

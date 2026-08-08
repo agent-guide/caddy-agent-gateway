@@ -100,7 +100,7 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 ## Option 2: Minimal Caddyfile + Dynamic Config via agwctl
 
-Keep the Caddyfile minimal and manage all providers, routes, and VirtualKeys through a bundle YAML applied at runtime via `agwctl gateway apply`.
+Keep the Caddyfile minimal and manage all providers, routes, and VirtualKeys through a bundle YAML applied at runtime via `agwctl apply`.
 
 ### 2b. Create a Minimal Caddyfile
 
@@ -186,13 +186,13 @@ Set the admin credentials as environment variables, then apply:
 ```bash
 export AGW_ADMIN_BASIC_AUTH=admin:your-password
 
-OPENAI_API_KEY=sk-... ./agwctl gateway apply -f gateway.bundle.yaml
+OPENAI_API_KEY=sk-... ./agwctl apply -f gateway.bundle.yaml
 ```
 
 `apply` is idempotent — it creates objects that do not exist, updates those that have changed, and skips unchanged ones:
 
 ```
-gateway apply: gateway.bundle.yaml
+apply: gateway.bundle.yaml
   create provider openai-main
   create llm_route openai-chat
   create virtual_key test-key
@@ -201,21 +201,26 @@ summary: create=3 update=0 skip=0 error=0
 
 The `AGW_ADMIN_ADDR` environment variable sets the admin API address (default: `http://localhost:8019`).
 
-### 7b. Verify with agwctl chat
+### 7b. Verify with curl
 
 The gateway generates the actual bearer key when the VirtualKey is created. Retrieve it and send a test request:
 
 ```bash
-AGW_API_KEY=$(./agwctl gateway virtualkey get test-key | jq -r '.key')
-./agwctl chat "hello" --api-key "$AGW_API_KEY"
+AGW_API_KEY=$(./agwctl virtualkey get test-key | jq -r '.key')
+curl -sS http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer $AGW_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"messages":[{"role":"user","content":"hello"}]}'
+
+curl -sS http://127.0.0.1:8080/v1/responses \
+  -H "Authorization: Bearer $AGW_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"input":"hello"}'
 ```
 
-`agwctl chat` defaults to the OpenAI API at `http://127.0.0.1:8080/v1`. Additional options:
-
-- `--stream`: use SSE streaming
-- `--api anthropic`: switch to the Anthropic-compatible surface
-- `--api cc`: switch to the Claude Code CLI-compatible surface
-- `--model <name>`: override the model name
+`agwctl` manages the gateway control plane. Use the corresponding protocol
+client directly when verifying OpenAI-, Anthropic-, or Claude Code-compatible
+data-plane traffic.
 
 ---
 
@@ -224,7 +229,7 @@ AGW_API_KEY=$(./agwctl gateway virtualkey get test-key | jq -r '.key')
 - In both options the admin API is served at `http://localhost:8019`. The LLM API is at `http://127.0.0.1:8080`.
 - The Admin API has no built-in sessions; authentication is handled by the HTTP mount layer.
 - In Option 2, the VirtualKey can be sent as `Authorization: Bearer <key>` or `x-api-key: <key>`.
-- Run `agwctl gateway export` to dump the current gateway state as a bundle YAML.
+- Run `agwctl export` to dump the current gateway state as a bundle YAML.
 
 ## Next
 

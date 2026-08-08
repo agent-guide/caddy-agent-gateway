@@ -32,5 +32,5 @@ var gatewayBuiltinRuntimeInFlightCmd = &cobra.Command{
 
 func init() {
 	gatewayBuiltinRuntimeCmd.AddCommand(gatewayBuiltinRuntimeGetCmd, gatewayBuiltinRuntimeInFlightCmd)
-	gatewayCmd.AddCommand(gatewayBuiltinRuntimeCmd)
+	rootCmd.AddCommand(gatewayBuiltinRuntimeCmd)
 }

@@ -89,7 +89,7 @@ providerTypes:
     enabled: true
 ```
 
-`agwctl gateway apply` validates that provider instances reference currently enabled provider types. It never enables or disables provider types.
+`agwctl apply` validates that provider instances reference currently enabled provider types. It never enables or disables provider types.
 
 ## Admin API
 

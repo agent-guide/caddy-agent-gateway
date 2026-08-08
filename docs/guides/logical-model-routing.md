@@ -122,7 +122,7 @@ Current runtime behavior:
 
 - logical-model routes are not accepted in Caddyfile routes
 - logical-model routes are rejected in `agwd --static-config`
-- use the Admin API or `agwctl gateway apply` for logical-model route creation
+- use the Admin API or `agwctl apply` for logical-model route creation
 
 ## Credential Selection Notes
 

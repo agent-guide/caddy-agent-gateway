@@ -13,7 +13,7 @@ import (
 // ── gateway agent ────────────────────────────────────────────────────────────
 //
 // Reads and lifecycle deletes only. Agents are created/updated through
-// `agwctl gateway apply` like every other gateway-bundle object.
+// `agwctl apply` like every other gateway-bundle object.
 
 var gatewayAgentCmd = &cobra.Command{
 	Use:   "agent",
@@ -228,5 +228,5 @@ func init() {
 		gatewayAgentSessionsCmd,
 		gatewayAgentTranscriptCmd,
 	)
-	gatewayCmd.AddCommand(gatewayAgentCmd)
+	rootCmd.AddCommand(gatewayAgentCmd)
 }

@@ -51,5 +51,5 @@ var gatewayACPRuntimeCloseThreadCmd = &cobra.Command{
 
 func init() {
 	gatewayACPRuntimeCmd.AddCommand(gatewayACPRuntimeGetCmd, gatewayACPRuntimeInFlightCmd, gatewayACPRuntimeCloseThreadCmd)
-	gatewayCmd.AddCommand(gatewayACPRuntimeCmd)
+	rootCmd.AddCommand(gatewayACPRuntimeCmd)
 }

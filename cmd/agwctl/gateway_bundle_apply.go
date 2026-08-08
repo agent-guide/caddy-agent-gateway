@@ -113,7 +113,7 @@ func runGatewayApply(ctx context.Context, path string) error {
 		printGatewayApplySummary(summary)
 	}
 	if len(applyErrs) > 0 {
-		return fmt.Errorf("gateway apply finished with %d error(s)", len(applyErrs))
+		return fmt.Errorf("apply finished with %d error(s)", len(applyErrs))
 	}
 	return nil
 }
@@ -635,7 +635,7 @@ func managedModelKey(providerID, upstreamModel string) string {
 }
 
 func printGatewayApplySummary(summary gatewayApplySummary) {
-	fmt.Fprintf(rootCmd.OutOrStdout(), "gateway apply: %s\n", summary.File)
+	fmt.Fprintf(rootCmd.OutOrStdout(), "apply: %s\n", summary.File)
 	for _, action := range summary.Actions {
 		if action.Error != "" {
 			fmt.Fprintf(rootCmd.OutOrStdout(), "  %s %s %s: %s\n", action.Action, action.Kind, action.ID, action.Error)

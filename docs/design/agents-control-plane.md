@@ -839,7 +839,7 @@ from the stored object plus the existing ACP endpoints.
   summary/index read model in [5.2](#52-agent-workspace)
 - wire `GET /admin/agents/{id}/workspace`
 - make `agents` a first-class gateway-bundle object (apply/export/validate)
-  with a complete `pkg/adminclient` CRUD surface and `agwctl gateway agent`
+  with a complete `pkg/adminclient` CRUD surface and `agwctl agent`
   CRUD subcommands (create/list/get/update/delete), matching the parity
   `acpServices`/`acpRoutes` already have
 
@@ -862,7 +862,7 @@ the same bundle apply/export/validate path as the objects they reference rather
 than being admin-API-only — this is required, not optional, because the bundle is
 the project's reproducible-config mechanism and an admin-only agent could not be
 version-controlled or applied. P0 ships full config-object parity (bundle CRUD +
-`adminclient` + `agwctl gateway agent` CRUD). The only deferred CLI surface is
+`adminclient` + `agwctl agent` CRUD). The only deferred CLI surface is
 the *read* subcommands that depend on later endpoints — `workspace`, `activity`,
 `usage`, `health` — which follow the same phasing as their admin endpoints
 (P1+). Apply ordering: because agents are pure references over existing bundle
@@ -1099,7 +1099,7 @@ not accepted by the released API or config store.
   services, VirtualKeys, LLM/MCP/ACP routes, and the runtime ACP service — plus
   intra-bundle `acp_route_id` → runtime-service consistency), apply (last, after
   referenced objects) and export, the `pkg/adminclient` agent surface, and
-  `agwctl gateway agent` subcommands. Each cross-object check is guarded by
+  `agwctl agent` subcommands. Each cross-object check is guarded by
   "the referenced family is present in the bundle" so a partial bundle that
   references existing config-store objects still applies.
 
@@ -1144,11 +1144,11 @@ Three points the design left open were resolved as follows; revisit if needed:
 
 ### 11.5 Convention notes
 
-- `agwctl gateway agent` provides `list`/`get`/`delete` plus the P0/P1 read
+- `agwctl agent` provides `list`/`get`/`delete` plus the P0/P1 read
   surfaces `workspace`/`activity`/`usage`/`interactions`/`resources`/`health`,
   and the M3 `capabilities`/`runs`/`cancel`/`permissions`/`decide`/`sessions`/
   `transcript` runtime controls.
-  Agent create/update go through `agwctl gateway apply` (the gateway-bundle
+  Agent create/update go through `agwctl apply` (the gateway-bundle
   path), the same convention every other config object follows; there is no
   per-object create-from-file CLI. This deliberately supersedes the literal
   "`create`/`update`" subcommand wording in §6.2/P0b: aligning agents with the
@@ -1192,7 +1192,7 @@ A post-implementation review tightened the following:
 - **Bundle reference integrity (§7 declarative-config note):** `validate` now
   rejects dangling agent references across all referenced families and enforces
   intra-bundle ACP route→service consistency, not just the runtime service and
-  ACP route ids. The `agwctl gateway apply` path mirrors this against live server
+  ACP route ids. The `agwctl apply` path mirrors this against live server
   state: before create/update, `applyAgents` loads every referenced family and
   rejects an agent with a dangling provider/service/route/key reference (agents
   apply last, after every referenced object is resolved).

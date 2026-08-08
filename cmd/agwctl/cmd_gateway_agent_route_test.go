@@ -33,7 +33,7 @@ func TestGatewayAgentRouteCommands(t *testing.T) {
 	defer srv.Close()
 
 	args := func(parts ...string) []string {
-		return append([]string{"gateway", "--admin-addr", srv.URL, "--admin-basic-auth", "admin:secret"}, parts...)
+		return append([]string{"--admin-addr", srv.URL, "--admin-basic-auth", "admin:secret"}, parts...)
 	}
 	stdout, stderr, err := executeAGWCTL(t, append([]string{"--output", "json"}, args("agent-route", "list")...)...)
 	if err != nil {

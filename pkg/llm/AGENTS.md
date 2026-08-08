@@ -50,4 +50,4 @@ Provider registration rules:
 
 - implement the `provider.Provider` interface
 - register the factory with `provider.RegisterProviderFactory(...)`
-- add a blank import for the runtime provider package in `cmd/agw/main.go`, `cmd/agwd/main.go`, and `cmd/agwctl/cmd_gateway.go`; agwctl needs it because `gateway validate`/`apply` check `provider_type` against the locally linked provider registry
+- add a blank import for the runtime provider package in `cmd/agw/main.go`, `cmd/agwd/main.go`, and `cmd/agwctl/cmd_gateway.go`; agwctl needs it because `validate`/`apply` check `provider_type` against the locally linked provider registry

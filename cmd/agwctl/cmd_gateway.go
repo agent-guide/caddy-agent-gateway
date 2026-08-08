@@ -41,19 +41,6 @@ var (
 	gatewayMCPPromptArguments     string
 )
 
-// ── gateway ───────────────────────────────────────────────────────────────────
-
-var gatewayCmd = &cobra.Command{
-	Use:   "gateway",
-	Short: "Manage the remote agent-gateway via its admin API",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if len(args) > 0 {
-			return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
-		}
-		return cmd.Help()
-	},
-}
-
 var gatewayValidateCmd = &cobra.Command{
 	Use:   "validate",
 	Short: "Validate a gateway bundle YAML file locally",
@@ -870,10 +857,6 @@ func parseOptionalJSONObjectFlag(raw string, flagName string) (map[string]any, e
 }
 
 func init() {
-	gatewayCmd.PersistentFlags().StringVar(&globalGatewayAddr, "admin-addr", envOr("AGW_ADMIN_ADDR", "http://localhost:8019"), "agent-gateway admin API address")
-	gatewayCmd.PersistentFlags().StringVar(&gwAdminBasicAuth, "admin-basic-auth", envOr("AGW_ADMIN_BASIC_AUTH", ""), "gateway admin Basic Auth request credentials as username:password")
-	gatewayCmd.PersistentFlags().StringArrayVar(&gwAdminHeaders, "admin-header", nil, "extra admin API header as 'Name: value'; repeat to send multiple headers")
-
 	gatewayModelsManagedListCmd.Flags().StringVar(&gatewayManagedModelProviderID, "provider-id", "", "filter managed models by provider ID")
 	gatewayCredentialListCmd.Flags().StringVar(&gatewayCredentialType, "type", "", "filter credentials by type (api_key or oauth_token)")
 	gatewayCredentialListCmd.Flags().StringVar(&gatewayCredentialProviderType, "provider-type", "", "filter credentials by provider type")
@@ -950,7 +933,7 @@ func init() {
 	gatewayLLMAPIHandlerTypesCmd.AddCommand(
 		gatewayLLMAPIHandlerTypesListCmd,
 	)
-	gatewayCmd.AddCommand(
+	rootCmd.AddCommand(
 		gatewayValidateCmd,
 		gatewayApplyCmd,
 		gatewayExportCmd,
@@ -965,5 +948,4 @@ func init() {
 		gatewayLLMAPIHandlerTypesCmd,
 		gatewayModelsCmd,
 	)
-	rootCmd.AddCommand(gatewayCmd)
 }

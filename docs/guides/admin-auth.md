@@ -43,7 +43,7 @@ curl -u admin:your-password http://localhost:8019/admin/health
 
 ```bash
 export AGW_ADMIN_BASIC_AUTH=admin:your-password
-./agwctl gateway provider list
+./agwctl provider list
 ```
 
 For proxy-based auth, use repeated `--admin-header 'Name: value'` flags instead.

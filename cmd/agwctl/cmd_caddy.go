@@ -15,7 +15,15 @@ import (
 var caddyCmd = &cobra.Command{
 	Use:   "caddy",
 	Short: "Manage Caddy servers and routes via the Caddy admin API",
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("admin-addr") {
+			return fmt.Errorf("--admin-addr configures the Agent Gateway admin API; use --addr for the Caddy admin API")
+		}
+		return nil
+	},
 }
+
+var rejectedCaddyAdminAddr string
 
 // ── caddy server ──────────────────────────────────────────────────────────────
 
@@ -270,12 +278,10 @@ func parseHandlers(specs []string) ([]caddyadminclient.HandlerConf, error) {
 
 func init() {
 	caddyCmd.PersistentFlags().StringVar(&globalCaddyAdmin, "addr", envOr("CADDY_ADMIN_ADDR", "http://localhost:2019"), "Caddy admin API address")
-	caddyCmd.PersistentFlags().StringVar(&globalCaddyAdmin, "admin-addr", envOr("CADDY_ADMIN_ADDR", "http://localhost:2019"), "deprecated alias for --addr")
-	caddyCmd.PersistentFlags().StringVar(&globalCaddyAdmin, "caddy-admin", envOr("CADDY_ADMIN_ADDR", "http://localhost:2019"), "deprecated alias for --addr")
-	_ = caddyCmd.PersistentFlags().MarkDeprecated("admin-addr", "use --addr instead")
-	_ = caddyCmd.PersistentFlags().MarkDeprecated("caddy-admin", "use --addr instead")
+	// Shadow the root gateway flag so the former Caddy alias fails explicitly
+	// instead of silently changing which admin endpoint it configures.
+	caddyCmd.PersistentFlags().StringVar(&rejectedCaddyAdminAddr, "admin-addr", "", "")
 	_ = caddyCmd.PersistentFlags().MarkHidden("admin-addr")
-	_ = caddyCmd.PersistentFlags().MarkHidden("caddy-admin")
 
 	// server create flags
 	caddyServerCreateCmd.Flags().StringVar(&serverCreateID, "id", "", "server ID (required)")

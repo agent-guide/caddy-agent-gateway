@@ -171,7 +171,7 @@ func (b *GatewayBundle) ValidateForStaticConfig() error {
 		return err
 	}
 	if len(b.ManagedModels) > 0 {
-		return fmt.Errorf("managedModels are not supported in static config; create managed models through the Admin API or agwctl gateway apply")
+		return fmt.Errorf("managedModels are not supported in static config; create managed models through the Admin API or agwctl apply")
 	}
 	for i := range b.LLMRoutes {
 		route, err := llmroutepkg.NewLLMRouteConfigFromConfig(b.LLMRoutes[i])

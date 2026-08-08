@@ -89,18 +89,18 @@ Thread close is for ACP pool recovery, not ordinary run cancellation.
 ## CLI Equivalents
 
 ```bash
-./agwctl gateway agent get <agent-id>
-./agwctl gateway agent-route get <agent-route-id>
-./agwctl gateway agent capabilities <agent-id>
-./agwctl gateway agent runs <agent-id>
-./agwctl gateway agent cancel <agent-id> <run-id> --mode force
-./agwctl gateway agent permissions <agent-id>
-./agwctl gateway agent decide <agent-id> <request-id> --outcome selected --option-id <option-id>
-./agwctl gateway agent sessions <agent-id> [--cwd <cwd>] [--cursor <cursor>]
-./agwctl gateway agent transcript <agent-id> <session-id> [--cwd <cwd>]
-./agwctl gateway acp-runtime get
-./agwctl gateway acp-runtime inflight
-./agwctl gateway acp-runtime close-thread <agent-id> <thread-id>
+./agwctl agent get <agent-id>
+./agwctl agent-route get <agent-route-id>
+./agwctl agent capabilities <agent-id>
+./agwctl agent runs <agent-id>
+./agwctl agent cancel <agent-id> <run-id> --mode force
+./agwctl agent permissions <agent-id>
+./agwctl agent decide <agent-id> <request-id> --outcome selected --option-id <option-id>
+./agwctl agent sessions <agent-id> [--cwd <cwd>] [--cursor <cursor>]
+./agwctl agent transcript <agent-id> <session-id> [--cwd <cwd>]
+./agwctl acp-runtime get
+./agwctl acp-runtime inflight
+./agwctl acp-runtime close-thread <agent-id> <thread-id>
 ```
 
 Agent definitions and AgentRoutes are created or updated through bundle apply,

@@ -30,13 +30,14 @@ Current static config restriction:
 
 Primary command families:
 
-- `agwctl gateway ...`
+- gateway bundle operations and resource commands are available directly under
+  `agwctl`
 - `agwctl caddy ...`
 
 Recommended workflows:
 
-- use `agwctl gateway apply/export/validate` for bundle-based configuration management
-- use `agwctl gateway credential ...` for remote gateway credential management
+- use `agwctl apply/export/validate` for bundle-based configuration management
+- use `agwctl credential ...` for remote gateway credential management
 - use the external `agw-auth` tool for interactive OAuth login flows
 - use `agwctl caddy ...` for direct Caddy admin API operations
 

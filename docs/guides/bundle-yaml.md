@@ -23,9 +23,9 @@ It is intentionally for configuration objects, not every runtime operation.
 Use this when you want to validate, export, and apply configuration against a running gateway:
 
 ```bash
-./agwctl gateway export -f ./gateway.bundle.yaml
-./agwctl gateway validate -f ./gateway.bundle.yaml
-./agwctl gateway apply -f ./gateway.bundle.yaml
+./agwctl export -f ./gateway.bundle.yaml
+./agwctl validate -f ./gateway.bundle.yaml
+./agwctl apply -f ./gateway.bundle.yaml
 ```
 
 Behavior:
@@ -130,8 +130,8 @@ Current static restrictions:
 
 Current dynamic workflow behavior:
 
-- `agwctl gateway apply` supports logical-model routes
-- `agwctl gateway apply` supports managed models
+- `agwctl apply` supports logical-model routes
+- `agwctl apply` supports managed models
 - VirtualKeys are valid in config-store-backed bundle workflows
 - VirtualKeys may include optional request-frequency limits:
 
