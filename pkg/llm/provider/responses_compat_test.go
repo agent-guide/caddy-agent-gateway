@@ -251,6 +251,38 @@ func TestResponsesToChatRequestCoalescesParallelToolCalls(t *testing.T) {
 	}
 }
 
+func TestResponsesToChatRequestCoalescesReasoningWithAdjacentAssistantText(t *testing.T) {
+	req := &ResponsesRequest{
+		Model: "glm-5.2",
+		Input: []any{
+			map[string]any{
+				"type": "reasoning",
+				"summary": []any{map[string]any{
+					"type": "summary_text", "text": "inspect first",
+				}},
+			},
+			map[string]any{
+				"type": "message", "role": "assistant",
+				"content": []any{map[string]any{
+					"type": "output_text", "text": "prior answer",
+				}},
+			},
+		},
+	}
+
+	chatReq, err := ResponsesToChatRequest(req)
+	if err != nil {
+		t.Fatalf("ResponsesToChatRequest() error = %v", err)
+	}
+	if len(chatReq.Messages) != 1 {
+		t.Fatalf("message count = %d, want 1", len(chatReq.Messages))
+	}
+	msg := chatReq.Messages[0]
+	if msg.Role != schema.Assistant || msg.ReasoningContent != "inspect first" || msg.Content != "prior answer" {
+		t.Fatalf("assistant message = %+v, want coalesced reasoning and text", msg)
+	}
+}
+
 func TestResponsesToChatRequestAcceptsAssistantOutputText(t *testing.T) {
 	req := &ResponsesRequest{
 		Model: "gpt-4.1",
@@ -309,6 +341,113 @@ func TestResponsesFromChatResponsePreservesToolCalls(t *testing.T) {
 	}
 	if resp.Output[1].Type != "function_call" || resp.Output[1].Name != "lookup" || resp.Output[1].Arguments != `{"q":"cat"}` {
 		t.Fatalf("second output = %+v, want function_call lookup", resp.Output[1])
+	}
+}
+
+func TestResponsesCompatibilityPreservesReasoningSummaryForReplay(t *testing.T) {
+	resp := ResponsesFromChatResponse(&ChatResponse{Message: &schema.Message{
+		Role: schema.Assistant, ReasoningContent: "inspect the repository",
+		ToolCalls: []schema.ToolCall{{
+			ID: "call_1", Type: "function",
+			Function: schema.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`},
+		}},
+	}}, "glm-5.2")
+	if len(resp.Output) != 2 || resp.Output[0].Type != "reasoning" || resp.Output[0].Summary[0].Text != "inspect the repository" {
+		t.Fatalf("response output = %+v", resp.Output)
+	}
+
+	input := make([]any, 0, len(resp.Output)+1)
+	for _, item := range resp.Output {
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("marshal item: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatalf("unmarshal item: %v", err)
+		}
+		input = append(input, decoded)
+	}
+	input = append(input, map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "contents"})
+	chatReq, err := ResponsesToChatRequest(&ResponsesRequest{Model: "glm-5.2", Input: input})
+	if err != nil {
+		t.Fatalf("ResponsesToChatRequest() error = %v", err)
+	}
+	if len(chatReq.Messages) != 2 || chatReq.Messages[0].ReasoningContent != "inspect the repository" || len(chatReq.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("replayed messages = %+v", chatReq.Messages)
+	}
+}
+
+func TestStreamResponsesViaChatEmitsReasoningSummaryEvents(t *testing.T) {
+	prov := &testResponsesCompatProvider{streamResp: schema.StreamReaderFromArray([]*schema.Message{
+		{Role: schema.Assistant, ReasoningContent: "inspect "},
+		{Role: schema.Assistant, ReasoningContent: "first"},
+	})}
+	stream, err := StreamResponsesViaChat(nil, prov, &ResponsesRequest{Model: "glm-5.2", Input: "hello"})
+	if err != nil {
+		t.Fatalf("StreamResponsesViaChat() error = %v", err)
+	}
+	defer stream.Close()
+	var delta string
+	var completed *ResponsesResponse
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr != nil {
+			break
+		}
+		if event.Type == "response.reasoning_summary_text.delta" {
+			delta += event.Delta
+		}
+		if event.Type == "response.completed" {
+			completed = event.Response
+		}
+	}
+	if delta != "inspect first" {
+		t.Fatalf("reasoning delta = %q", delta)
+	}
+	if completed == nil || len(completed.Output) != 1 || completed.Output[0].Summary[0].Text != "inspect first" {
+		t.Fatalf("completed response = %+v", completed)
+	}
+}
+
+func TestStreamResponsesViaChatClosesReasoningBeforeTextItem(t *testing.T) {
+	prov := &testResponsesCompatProvider{streamResp: schema.StreamReaderFromArray([]*schema.Message{
+		{Role: schema.Assistant, ReasoningContent: "inspect"},
+		{Role: schema.Assistant, Content: "done"},
+	})}
+	stream, err := StreamResponsesViaChat(nil, prov, &ResponsesRequest{Model: "glm-5.2", Input: "hello"})
+	if err != nil {
+		t.Fatalf("StreamResponsesViaChat() error = %v", err)
+	}
+	defer stream.Close()
+
+	var eventTypes []string
+	for {
+		event, recvErr := stream.Recv()
+		if recvErr != nil {
+			break
+		}
+		eventTypes = append(eventTypes, event.Type)
+	}
+	want := []string{
+		"response.created",
+		"response.output_item.added",
+		"response.reasoning_summary_part.added",
+		"response.reasoning_summary_text.delta",
+		"response.reasoning_summary_part.done",
+		"response.output_item.done",
+		"response.output_item.added",
+		"response.output_text.delta",
+		"response.output_item.done",
+		"response.completed",
+	}
+	if len(eventTypes) != len(want) {
+		t.Fatalf("event types = %#v, want %#v", eventTypes, want)
+	}
+	for i := range want {
+		if eventTypes[i] != want[i] {
+			t.Fatalf("event types = %#v, want %#v", eventTypes, want)
+		}
 	}
 }
 

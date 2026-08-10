@@ -456,8 +456,9 @@ func TestServeLLMApiReturnsChatCompletionResponse(t *testing.T) {
 	prov := &testProvider{
 		chatResp: &provider.ChatResponse{
 			Message: &schema.Message{
-				Role:    schema.RoleType("assistant"),
-				Content: "hello back",
+				Role:             schema.RoleType("assistant"),
+				Content:          "hello back",
+				ReasoningContent: "reasoning back",
 				ResponseMeta: &schema.ResponseMeta{
 					FinishReason: "stop",
 					Usage: &schema.TokenUsage{
@@ -509,6 +510,9 @@ func TestServeLLMApiReturnsChatCompletionResponse(t *testing.T) {
 	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello back" {
 		t.Fatalf("unexpected choices: %+v", resp.Choices)
 	}
+	if resp.Choices[0].Message.ReasoningContent != "reasoning back" {
+		t.Fatalf("reasoning_content = %q", resp.Choices[0].Message.ReasoningContent)
+	}
 	if resp.Usage.PromptTokens != 3 || resp.Usage.CompletionTokens != 5 || resp.Usage.TotalTokens != 13 {
 		t.Fatalf("usage = %+v, want upstream total 13 preserved", resp.Usage)
 	}
@@ -524,7 +528,7 @@ func TestPrepareLLMApiRequestPreservesChatCompletionToolingAndMultimodal(t *test
 				{"type":"text","text":"what is in this image?"},
 				{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"high"}}
 			]},
-			{"role":"assistant","content":"calling tool","tool_calls":[
+			{"role":"assistant","content":"calling tool","reasoning_content":"need lookup","tool_calls":[
 				{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":\"cat\"}"}}
 			]},
 			{"role":"tool","tool_call_id":"call_1","content":"tool result"}
@@ -567,6 +571,9 @@ func TestPrepareLLMApiRequestPreservesChatCompletionToolingAndMultimodal(t *test
 	if chatReq.Messages[2].ToolCalls[0].Function.Name != "lookup" {
 		t.Fatalf("assistant tool call = %+v, want lookup", chatReq.Messages[2].ToolCalls[0])
 	}
+	if chatReq.Messages[2].ReasoningContent != "need lookup" {
+		t.Fatalf("assistant reasoning_content = %q", chatReq.Messages[2].ReasoningContent)
+	}
 	if chatReq.Messages[3].Role != schema.Tool || chatReq.Messages[3].ToolCallID != "call_1" || chatReq.Messages[3].Content != "tool result" {
 		t.Fatalf("tool message = %+v, want tool_call_id + content", chatReq.Messages[3])
 	}
@@ -605,7 +612,10 @@ func TestPrepareLLMApiRequestPreservesChatCompletionResponseFormatAndReasoning(t
 		"parallel_tool_calls":false,
 		"store":true,
 		"reasoning":{"effort":"medium"},
+		"thinking":{"type":"enabled"},
 		"reasoning_effort":"high",
+		"tool_stream":true,
+		"stream_options":{"include_usage":true},
 		"response_format":{"type":"json_schema","json_schema":{"name":"weather","schema":{"type":"object"},"strict":true}}
 	}`)
 
@@ -621,6 +631,14 @@ func TestPrepareLLMApiRequestPreservesChatCompletionResponseFormatAndReasoning(t
 	fields := provider.ChatCompletionsExtraFieldsFromOptions(provider.ReasoningEffortField, prepared.ChatRequest.Options...)
 	if fields["reasoning_effort"] != "high" {
 		t.Fatalf("reasoning_effort = %#v, want high", fields["reasoning_effort"])
+	}
+	thinking, _ := fields["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" || fields["tool_stream"] != true {
+		t.Fatalf("thinking/tool_stream = %#v/%#v", fields["thinking"], fields["tool_stream"])
+	}
+	streamOptions, _ := fields["stream_options"].(map[string]any)
+	if streamOptions["include_usage"] != true {
+		t.Fatalf("stream_options = %#v", fields["stream_options"])
 	}
 	if fields["user"] != "user-1" {
 		t.Fatalf("user = %#v, want user-1", fields["user"])
@@ -710,8 +728,9 @@ func TestServeLLMApiReturnsChatCompletionToolCalls(t *testing.T) {
 func TestServeLLMApiStreamsOpenAIChunks(t *testing.T) {
 	prov := &testProvider{
 		streamResp: schema.StreamReaderFromArray([]*schema.Message{{
-			Role:    schema.RoleType("assistant"),
-			Content: "hello stream",
+			Role:             schema.RoleType("assistant"),
+			Content:          "hello stream",
+			ReasoningContent: "stream reasoning",
 			ResponseMeta: &schema.ResponseMeta{
 				FinishReason: "stop",
 			},
@@ -767,6 +786,9 @@ func TestServeLLMApiStreamsOpenAIChunks(t *testing.T) {
 	}
 	if chunk.Model != "gpt-4o-mini" || len(chunk.Choices) != 1 || chunk.Choices[0].Delta.Content != "hello stream" {
 		t.Fatalf("unexpected chunk: %+v", chunk)
+	}
+	if chunk.Choices[0].Delta.ReasoningContent != "stream reasoning" {
+		t.Fatalf("stream reasoning_content = %q", chunk.Choices[0].Delta.ReasoningContent)
 	}
 }
 

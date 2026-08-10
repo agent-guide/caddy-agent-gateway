@@ -129,7 +129,7 @@ Provider-specific notes:
 - `deepseek` defaults to `https://api.deepseek.com`
 - `deepseek` accepts `option path <path>`, `option response_format_type <text|json_object>`, `option thinking_type <disabled|enabled|none>`, and tuning options such as `max_tokens`, `temperature`, `top_p`, `presence_penalty`, `frequency_penalty`, `log_probs`, and `top_log_probs`
 - `zhipu` defaults to `https://open.bigmodel.cn/api/paas/v4`
-- `zhipu` accepts `option thinking_type <disabled|enabled|none>`
+- `zhipu` accepts `option api_profile <auto|standard|coding_plan>`, provider-level capability overrides (`context_window`, `max_output_tokens`, `vision`, `embeddings`), and `option thinking_type <disabled|enabled|none>`; explicitly select `coding_plan` for custom proxy URLs, and use managed-model `capability_overrides` for per-model differences
 - `ollama` can be used without an API key
 - `option` values are parsed as strings in the Caddyfile
 

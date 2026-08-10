@@ -49,17 +49,31 @@ func StreamResponsesViaChat(ctx context.Context, prov Provider, req *ResponsesRe
 		defer sw.Close()
 
 		resp := ResponsesFromChatResponse(&ChatResponse{}, chatReq.Model)
+		resp.Output = nil
 		sw.Send(ResponsesCreatedEvent(resp), nil)
 
 		toolOutputIndexByKey := map[string]int{}
 		var toolOutputIndexes []int
 		fallbackToolCallKey := ""
 		textOutputIndex := -1
+		reasoningOutputIndex := -1
+		reasoningDone := false
+		nonReasoningStarted := false
+		finishReasoning := func() {
+			if reasoningOutputIndex < 0 || reasoningDone {
+				return
+			}
+			item := resp.Output[reasoningOutputIndex]
+			sw.Send(ResponsesReasoningSummaryPartDoneEvent(item.ID, reasoningOutputIndex, &item.Summary[0]), nil)
+			sw.Send(ResponsesOutputItemDoneEvent(reasoningOutputIndex, &item), nil)
+			reasoningDone = true
+		}
 
 		for {
 			chunk, err := stream.Recv()
 			if err != nil {
 				if err == io.EOF {
+					finishReasoning()
 					if textOutputIndex >= 0 {
 						item := resp.Output[textOutputIndex]
 						sw.Send(ResponsesOutputItemDoneEvent(textOutputIndex, &item), nil)
@@ -78,7 +92,23 @@ func StreamResponsesViaChat(ctx context.Context, prov Provider, req *ResponsesRe
 			if chunk == nil {
 				continue
 			}
+			// Chat-compatible reasoning is expected to precede text and tools. A
+			// Responses item cannot be reopened after its done event, so discard
+			// malformed late reasoning rather than emit an invalid event sequence.
+			if reasoning := reasoningText(chunk); reasoning != "" && !nonReasoningStarted {
+				if reasoningOutputIndex < 0 {
+					item := reasoningOutput("")
+					resp.Output = append(resp.Output, item)
+					reasoningOutputIndex = len(resp.Output) - 1
+					sw.Send(ResponsesOutputItemAddedEvent(reasoningOutputIndex, &item), nil)
+					sw.Send(ResponsesReasoningSummaryPartAddedEvent(item.ID, reasoningOutputIndex, &item.Summary[0]), nil)
+				}
+				resp.Output[reasoningOutputIndex].Summary[0].Text += reasoning
+				sw.Send(ResponsesReasoningSummaryDeltaEvent(resp.Output[reasoningOutputIndex].ID, reasoningOutputIndex, reasoning), nil)
+			}
 			if text := messageText(chunk); text != "" {
+				finishReasoning()
+				nonReasoningStarted = true
 				ensureTextOutput(resp)
 				textIndex := firstTextOutputIndex(resp)
 				if textOutputIndex < 0 {
@@ -90,6 +120,8 @@ func StreamResponsesViaChat(ctx context.Context, prov Provider, req *ResponsesRe
 				sw.Send(ResponsesDeltaEvent(resp.Output[textIndex].ID, textIndex, text), nil)
 			}
 			for _, tc := range chunk.ToolCalls {
+				finishReasoning()
+				nonReasoningStarted = true
 				key := toolCallKey(tc, &fallbackToolCallKey)
 				outputIndex, seen := toolOutputIndexByKey[key]
 				if !seen {
@@ -293,6 +325,9 @@ func ResponsesFromChatResponse(resp *ChatResponse, model string) *ResponsesRespo
 			}},
 		})
 	}
+	if reasoning := reasoningText(msg); reasoning != "" {
+		out.Output = append([]ResponsesResponseOutput{reasoningOutput(reasoning)}, out.Output...)
+	}
 	for _, tc := range toolCallsOrEmpty(msg) {
 		out.Output = append(out.Output, functionCallOutputFromToolCall(tc))
 	}
@@ -316,6 +351,27 @@ func ResponsesDeltaEvent(itemID string, outputIndex int, delta string) *Response
 		OutputIndex:  outputIndex,
 		ContentIndex: 0,
 		Delta:        delta,
+	}
+}
+
+func ResponsesReasoningSummaryPartAddedEvent(itemID string, outputIndex int, part *ResponsesReasoningSummaryPart) *ResponsesStreamEvent {
+	return &ResponsesStreamEvent{
+		Type: "response.reasoning_summary_part.added", ItemID: itemID,
+		OutputIndex: outputIndex, SummaryIndex: 0, Part: part,
+	}
+}
+
+func ResponsesReasoningSummaryDeltaEvent(itemID string, outputIndex int, delta string) *ResponsesStreamEvent {
+	return &ResponsesStreamEvent{
+		Type: "response.reasoning_summary_text.delta", ItemID: itemID,
+		OutputIndex: outputIndex, SummaryIndex: 0, Delta: delta,
+	}
+}
+
+func ResponsesReasoningSummaryPartDoneEvent(itemID string, outputIndex int, part *ResponsesReasoningSummaryPart) *ResponsesStreamEvent {
+	return &ResponsesStreamEvent{
+		Type: "response.reasoning_summary_part.done", ItemID: itemID,
+		OutputIndex: outputIndex, SummaryIndex: 0, Part: part,
 	}
 }
 
@@ -395,9 +451,17 @@ func responsesInputToMessages(input any) ([]*schema.Message, error) {
 func coalesceResponsesToolCalls(messages []*schema.Message) []*schema.Message {
 	out := make([]*schema.Message, 0, len(messages))
 	for _, msg := range messages {
-		if msg != nil && msg.Role == schema.Assistant && len(msg.ToolCalls) > 0 && len(out) > 0 {
-			if prev := out[len(out)-1]; prev.Role == schema.Assistant && len(prev.ToolCalls) > 0 {
+		if msg != nil && msg.Role == schema.Assistant && len(out) > 0 {
+			if prev := out[len(out)-1]; prev.Role == schema.Assistant &&
+				(len(prev.ToolCalls) > 0 || len(msg.ToolCalls) > 0 || prev.ReasoningContent != "" || msg.ReasoningContent != "") {
 				prev.ToolCalls = append(prev.ToolCalls, msg.ToolCalls...)
+				if msg.ReasoningContent != "" {
+					if prev.ReasoningContent != "" {
+						prev.ReasoningContent += "\n" + msg.ReasoningContent
+					} else {
+						prev.ReasoningContent = msg.ReasoningContent
+					}
+				}
 				if text := strings.TrimSpace(msg.Content); text != "" {
 					if strings.TrimSpace(prev.Content) != "" {
 						prev.Content += "\n" + msg.Content
@@ -508,7 +572,9 @@ func responseInputItemToMessage(item any) (*schema.Message, error) {
 	}
 
 	role, _ := obj["role"].(string)
-	if typ, _ := obj["type"].(string); typ == "function_call_output" {
+	if typ, _ := obj["type"].(string); typ == "reasoning" {
+		return &schema.Message{Role: schema.Assistant, ReasoningContent: reasoningTextFromResponseItem(obj)}, nil
+	} else if typ == "function_call_output" {
 		output := responsesTextFromValue(obj["output"])
 		callID, _ := obj["call_id"].(string)
 		return &schema.Message{Role: schema.Tool, Content: output, ToolCallID: callID}, nil
@@ -638,6 +704,16 @@ func responsesTextFromValue(v any) string {
 		return fmt.Sprint(v)
 	}
 	return string(b)
+}
+
+func reasoningTextFromResponseItem(item map[string]any) string {
+	if summary, ok := item["summary"].([]any); ok {
+		return responsesTextFromValue(summary)
+	}
+	if content, ok := item["content"]; ok {
+		return responsesTextFromValue(content)
+	}
+	return ""
 }
 
 func responseTextFromChatResponseFormat(responseFormat any) map[string]any {
@@ -865,6 +941,13 @@ func messageText(msg *schema.Message) string {
 	return msg.Content
 }
 
+func reasoningText(msg *schema.Message) string {
+	if msg == nil {
+		return ""
+	}
+	return msg.ReasoningContent
+}
+
 func toolCallsOrEmpty(msg *schema.Message) []schema.ToolCall {
 	if msg == nil || len(msg.ToolCalls) == 0 {
 		return nil
@@ -893,6 +976,18 @@ func emptyTextOutput() ResponsesResponseOutput {
 			Type:        "output_text",
 			Text:        "",
 			Annotations: []any{},
+		}},
+	}
+}
+
+func reasoningOutput(reasoning string) ResponsesResponseOutput {
+	return ResponsesResponseOutput{
+		ID:     fmt.Sprintf("rs_%d", time.Now().UnixNano()),
+		Type:   "reasoning",
+		Status: "completed",
+		Summary: []ResponsesReasoningSummaryPart{{
+			Type: "summary_text",
+			Text: reasoning,
 		}},
 	}
 }

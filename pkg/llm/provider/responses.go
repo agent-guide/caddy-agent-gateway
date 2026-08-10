@@ -64,14 +64,20 @@ type ResponsesResponse struct {
 }
 
 type ResponsesResponseOutput struct {
-	ID        string                         `json:"id,omitempty"`
-	Type      string                         `json:"type"`
-	Role      string                         `json:"role,omitempty"`
-	Status    string                         `json:"status,omitempty"`
-	Content   []ResponsesResponseContentPart `json:"content,omitempty"`
-	CallID    string                         `json:"call_id,omitempty"`
-	Name      string                         `json:"name,omitempty"`
-	Arguments string                         `json:"arguments,omitempty"`
+	ID        string                          `json:"id,omitempty"`
+	Type      string                          `json:"type"`
+	Role      string                          `json:"role,omitempty"`
+	Status    string                          `json:"status,omitempty"`
+	Content   []ResponsesResponseContentPart  `json:"content,omitempty"`
+	CallID    string                          `json:"call_id,omitempty"`
+	Name      string                          `json:"name,omitempty"`
+	Arguments string                          `json:"arguments,omitempty"`
+	Summary   []ResponsesReasoningSummaryPart `json:"summary,omitempty"`
+}
+
+type ResponsesReasoningSummaryPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 type ResponsesResponseContentPart struct {
@@ -102,12 +108,14 @@ type ResponsesOutputTokensUsage struct {
 // ResponsesStreamEvent is the minimal event model currently required by the
 // gateway for OpenAI-compatible Responses API streaming.
 type ResponsesStreamEvent struct {
-	Type         string                   `json:"type"`
-	Response     *ResponsesResponse       `json:"response,omitempty"`
-	Item         *ResponsesResponseOutput `json:"item,omitempty"`
-	Delta        string                   `json:"delta,omitempty"`
-	ItemID       string                   `json:"item_id,omitempty"`
-	OutputIndex  int                      `json:"output_index,omitempty"`
-	ContentIndex int                      `json:"content_index,omitempty"`
-	RawJSON      json.RawMessage          `json:"-"`
+	Type         string                         `json:"type"`
+	Response     *ResponsesResponse             `json:"response,omitempty"`
+	Item         *ResponsesResponseOutput       `json:"item,omitempty"`
+	Delta        string                         `json:"delta,omitempty"`
+	ItemID       string                         `json:"item_id,omitempty"`
+	OutputIndex  int                            `json:"output_index,omitempty"`
+	ContentIndex int                            `json:"content_index,omitempty"`
+	SummaryIndex int                            `json:"summary_index,omitempty"`
+	Part         *ResponsesReasoningSummaryPart `json:"part,omitempty"`
+	RawJSON      json.RawMessage                `json:"-"`
 }

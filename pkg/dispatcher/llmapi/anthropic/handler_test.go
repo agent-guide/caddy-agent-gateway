@@ -631,6 +631,111 @@ func TestToInternalCarriesThinkingMetadataAndOutputConfig(t *testing.T) {
 	}
 }
 
+func TestAnthropicConverterRoundTripsProviderReasoning(t *testing.T) {
+	conv := &Converter{}
+	chatReq := conv.ToInternal(&MessagesRequest{
+		Model: "glm-5.2", MaxTokens: 4096,
+		Messages: []MessageItem{{
+			Role: "assistant",
+			Content: MessageContent{
+				{Type: "thinking", Thinking: "inspect first", Signature: "opaque"},
+				{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"README.md"}`)},
+			},
+		}},
+	})
+	if len(chatReq.Messages) != 1 || chatReq.Messages[0].ReasoningContent != "inspect first" || len(chatReq.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("chat messages = %+v", chatReq.Messages)
+	}
+
+	resp := conv.FromInternal(&provider.ChatResponse{Message: &schema.Message{
+		Role: schema.Assistant, Content: "done", ReasoningContent: "inspect first",
+	}}, "glm-5.2")
+	if len(resp.Content) != 2 || resp.Content[0].Type != "thinking" || resp.Content[0].Thinking != "inspect first" || resp.Content[0].Signature == "" {
+		t.Fatalf("response content = %+v", resp.Content)
+	}
+	if !strings.HasPrefix(resp.Content[0].Signature, "agw-thinking-") {
+		t.Fatalf("thinking signature = %q, want provider-neutral gateway prefix", resp.Content[0].Signature)
+	}
+	if resp.Content[1].Type != "text" || resp.Content[1].Text != "done" {
+		t.Fatalf("response text = %+v", resp.Content[1])
+	}
+}
+
+func TestServeLLMApiStreamsProviderReasoningAsThinkingBlock(t *testing.T) {
+	handler := NewHandler(nil)
+	prov := &testStreamingProvider{
+		cfg: provider.ProviderConfig{Id: "zhipu", ProviderType: "zhipu"},
+		chunks: []*schema.Message{
+			{Role: schema.Assistant, ReasoningContent: "inspect "},
+			{Role: schema.Assistant, ReasoningContent: "first"},
+			{Role: schema.Assistant, Content: "done", ResponseMeta: &schema.ResponseMeta{FinishReason: "stop"}},
+		},
+	}
+	body, err := json.Marshal(MessagesRequest{
+		Model: "glm-5.2", MaxTokens: 4096, Stream: true,
+		Messages: []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "inspect"}}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi returned error: %v", err)
+	}
+	bodyText := rec.Body.String()
+	for _, want := range []string{
+		`"content_block":{"signature":"","thinking":"","type":"thinking"}`,
+		`"delta":{"thinking":"inspect ","type":"thinking_delta"}`,
+		`"delta":{"thinking":"first","type":"thinking_delta"}`,
+		`"type":"signature_delta"`,
+		`"delta":{"text":"done","type":"text_delta"}`,
+	} {
+		if !strings.Contains(bodyText, want) {
+			t.Fatalf("stream missing %q: %s", want, bodyText)
+		}
+	}
+}
+
+func TestServeLLMApiDropsReasoningThatArrivesAfterText(t *testing.T) {
+	handler := NewHandler(nil)
+	prov := &testStreamingProvider{
+		cfg: provider.ProviderConfig{Id: "chat-provider", ProviderType: "chat-provider"},
+		chunks: []*schema.Message{
+			{Role: schema.Assistant, ReasoningContent: "before"},
+			{Role: schema.Assistant, Content: "answer"},
+			{Role: schema.Assistant, ReasoningContent: "late-secret"},
+		},
+	}
+	body, err := json.Marshal(MessagesRequest{
+		Model: "reasoning-model", MaxTokens: 4096, Stream: true,
+		Messages: []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "inspect"}}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi returned error: %v", err)
+	}
+	bodyText := rec.Body.String()
+	if !strings.Contains(bodyText, `"thinking":"before"`) || !strings.Contains(bodyText, `"text":"answer"`) {
+		t.Fatalf("expected ordered reasoning and text blocks: %s", bodyText)
+	}
+	if strings.Contains(bodyText, "late-secret") {
+		t.Fatalf("late reasoning must not be emitted after text: %s", bodyText)
+	}
+}
+
 func TestToInternalCarriesDisableParallelToolUse(t *testing.T) {
 	conv := &Converter{}
 	req := &MessagesRequest{

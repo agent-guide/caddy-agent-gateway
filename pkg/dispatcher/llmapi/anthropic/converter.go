@@ -1,7 +1,9 @@
 package anthropic
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	einojsonschema "github.com/eino-contrib/jsonschema"
@@ -212,12 +214,17 @@ func convertMessageItem(m MessageItem) []*schema.Message {
 
 func convertAssistantItem(content MessageContent) []*schema.Message {
 	var textParts []string
+	var reasoningParts []string
 	var toolCalls []schema.ToolCall
 	for _, block := range content {
 		switch block.Type {
 		case "text":
 			if block.Text != "" {
 				textParts = append(textParts, block.Text)
+			}
+		case "thinking":
+			if block.Thinking != "" {
+				reasoningParts = append(reasoningParts, block.Thinking)
 			}
 		case "tool_use":
 			inputStr := ""
@@ -235,13 +242,14 @@ func convertAssistantItem(content MessageContent) []*schema.Message {
 		}
 	}
 
-	if len(textParts) == 0 && len(toolCalls) == 0 {
+	if len(textParts) == 0 && len(reasoningParts) == 0 && len(toolCalls) == 0 {
 		return nil
 	}
 	return []*schema.Message{{
-		Role:      schema.Assistant,
-		Content:   strings.Join(textParts, "\n"),
-		ToolCalls: toolCalls,
+		Role:             schema.Assistant,
+		Content:          strings.Join(textParts, "\n"),
+		ToolCalls:        toolCalls,
+		ReasoningContent: strings.Join(reasoningParts, "\n"),
 	}}
 }
 
@@ -348,6 +356,13 @@ func contentFromMessage(msg *schema.Message) []ContentBlockResponse {
 		return []ContentBlockResponse{}
 	}
 	var blocks []ContentBlockResponse
+	if msg.ReasoningContent != "" {
+		blocks = append(blocks, ContentBlockResponse{
+			Type:      "thinking",
+			Thinking:  msg.ReasoningContent,
+			Signature: gatewayThinkingSignature(msg.ReasoningContent),
+		})
+	}
 	if msg.Content != "" {
 		blocks = append(blocks, ContentBlockResponse{Type: "text", Text: msg.Content})
 	}
@@ -367,6 +382,11 @@ func contentFromMessage(msg *schema.Message) []ContentBlockResponse {
 		})
 	}
 	return blocks
+}
+
+func gatewayThinkingSignature(reasoning string) string {
+	sum := sha256.Sum256([]byte(reasoning))
+	return fmt.Sprintf("agw-thinking-%x", sum[:])
 }
 
 func contentText(blocks []ContentBlock) string {
@@ -433,6 +453,9 @@ type ContentBlock struct {
 	Type string `json:"type"`
 	// type=text
 	Text string `json:"text,omitempty"`
+	// type=thinking
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 	// type=image
 	Source *ImageSource `json:"source,omitempty"`
 	// type=tool_use (assistant messages)
@@ -478,6 +501,9 @@ type ContentBlockResponse struct {
 	Type string `json:"type"`
 	// type=text
 	Text string `json:"text,omitempty"`
+	// type=thinking
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"`
 	// type=tool_use
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`

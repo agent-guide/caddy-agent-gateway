@@ -17,22 +17,43 @@ type Converter struct{}
 
 // ChatCompletionRequest is the OpenAI chat completion request format.
 type ChatCompletionRequest struct {
-	Model             string           `json:"model"`
-	Messages          []ChatMessage    `json:"messages"`
-	Tools             []ToolDefinition `json:"tools,omitempty"`
-	ToolChoice        json.RawMessage  `json:"tool_choice,omitempty"`
-	MaxTokens         int              `json:"max_tokens,omitempty"`
-	Temperature       float64          `json:"temperature,omitempty"`
-	TopP              float64          `json:"top_p,omitempty"`
-	Stream            bool             `json:"stream,omitempty"`
-	Stop              []string         `json:"stop,omitempty"`
-	ResponseFormat    json.RawMessage  `json:"response_format,omitempty"`
-	Reasoning         json.RawMessage  `json:"reasoning,omitempty"`
-	ReasoningEffort   string           `json:"reasoning_effort,omitempty"`
-	User              string           `json:"user,omitempty"`
-	Metadata          map[string]any   `json:"metadata,omitempty"`
-	ParallelToolCalls *bool            `json:"parallel_tool_calls,omitempty"`
-	Store             *bool            `json:"store,omitempty"`
+	Model               string           `json:"model"`
+	Messages            []ChatMessage    `json:"messages"`
+	Tools               []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice          json.RawMessage  `json:"tool_choice,omitempty"`
+	MaxTokens           int              `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int              `json:"max_completion_tokens,omitempty"`
+	Temperature         float64          `json:"temperature,omitempty"`
+	TopP                float64          `json:"top_p,omitempty"`
+	Stream              bool             `json:"stream,omitempty"`
+	Stop                StringList       `json:"stop,omitempty"`
+	ResponseFormat      json.RawMessage  `json:"response_format,omitempty"`
+	Reasoning           json.RawMessage  `json:"reasoning,omitempty"`
+	Thinking            json.RawMessage  `json:"thinking,omitempty"`
+	ReasoningEffort     string           `json:"reasoning_effort,omitempty"`
+	ToolStream          *bool            `json:"tool_stream,omitempty"`
+	StreamOptions       map[string]any   `json:"stream_options,omitempty"`
+	User                string           `json:"user,omitempty"`
+	Metadata            map[string]any   `json:"metadata,omitempty"`
+	ParallelToolCalls   *bool            `json:"parallel_tool_calls,omitempty"`
+	Store               *bool            `json:"store,omitempty"`
+}
+
+// StringList accepts the string-or-array shape used by Chat Completions stop.
+type StringList []string
+
+func (s *StringList) UnmarshalJSON(data []byte) error {
+	var one string
+	if err := json.Unmarshal(data, &one); err == nil {
+		*s = StringList{one}
+		return nil
+	}
+	var many []string
+	if err := json.Unmarshal(data, &many); err != nil {
+		return err
+	}
+	*s = many
+	return nil
 }
 
 // ChatMessage is a single message in an OpenAI chat request or response.
@@ -41,6 +62,9 @@ type ChatMessage struct {
 	Content    any               `json:"content,omitempty"`
 	ToolCalls  []schema.ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string            `json:"tool_call_id,omitempty"`
+	// ReasoningContent is the OpenAI-compatible extension used by GLM and
+	// other reasoning chat models. It must be replayed on assistant tool turns.
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type ToolDefinition struct {
@@ -102,8 +126,12 @@ func (c *Converter) ToInternal(req *ChatCompletionRequest) *provider.ChatRequest
 	if req.TopP != 0 {
 		opts = append(opts, einomodel.WithTopP(float32(req.TopP)))
 	}
-	if req.MaxTokens > 0 {
-		opts = append(opts, einomodel.WithMaxTokens(req.MaxTokens))
+	maxTokens := req.MaxTokens
+	if req.MaxCompletionTokens > 0 {
+		maxTokens = req.MaxCompletionTokens
+	}
+	if maxTokens > 0 {
+		opts = append(opts, einomodel.WithMaxTokens(maxTokens))
 	}
 	if len(req.Stop) > 0 {
 		opts = append(opts, einomodel.WithStop(req.Stop))
@@ -133,6 +161,8 @@ func chatExtraFields(req *ChatCompletionRequest) *provider.ChatExtraFields {
 		Metadata:          cloneMap(req.Metadata),
 		ParallelToolCalls: cloneBoolPtr(req.ParallelToolCalls),
 		Store:             cloneBoolPtr(req.Store),
+		ToolStream:        cloneBoolPtr(req.ToolStream),
+		StreamOptions:     cloneMap(req.StreamOptions),
 	}
 	if len(req.ResponseFormat) > 0 {
 		var format any
@@ -146,8 +176,15 @@ func chatExtraFields(req *ChatCompletionRequest) *provider.ChatExtraFields {
 			extra.Reasoning = reasoning
 		}
 	}
-	if extra.ResponseFormat == nil && len(extra.Reasoning) == 0 && extra.ReasoningEffort == "" &&
-		extra.User == "" && len(extra.Metadata) == 0 && extra.ParallelToolCalls == nil && extra.Store == nil {
+	if len(req.Thinking) > 0 {
+		var thinking map[string]any
+		if err := json.Unmarshal(req.Thinking, &thinking); err == nil {
+			extra.Thinking = thinking
+		}
+	}
+	if extra.ResponseFormat == nil && len(extra.Reasoning) == 0 && len(extra.Thinking) == 0 && extra.ReasoningEffort == "" &&
+		extra.ToolStream == nil && len(extra.StreamOptions) == 0 && extra.User == "" && len(extra.Metadata) == 0 &&
+		extra.ParallelToolCalls == nil && extra.Store == nil {
 		return nil
 	}
 	return extra
@@ -240,9 +277,10 @@ func convertMessage(m ChatMessage) []*schema.Message {
 		}}
 	case schema.Assistant:
 		return []*schema.Message{{
-			Role:      schema.Assistant,
-			Content:   contentText(m.Content),
-			ToolCalls: m.ToolCalls,
+			Role:             schema.Assistant,
+			Content:          contentText(m.Content),
+			ToolCalls:        m.ToolCalls,
+			ReasoningContent: m.ReasoningContent,
 		}}
 	case schema.User:
 		msg := &schema.Message{Role: schema.User}
@@ -347,9 +385,10 @@ func (c *Converter) FromInternal(resp *provider.ChatResponse, model string) *Cha
 		Choices: []Choice{{
 			Index: 0,
 			Message: ChatMessage{
-				Role:      "assistant",
-				Content:   messageText(resp.Message),
-				ToolCalls: toolCallsOrNil(resp.Message),
+				Role:             "assistant",
+				Content:          messageText(resp.Message),
+				ToolCalls:        toolCallsOrNil(resp.Message),
+				ReasoningContent: reasoningText(resp.Message),
 			},
 			FinishReason: provider.FinishReason(resp.Message),
 		}},
@@ -373,4 +412,11 @@ func messageText(msg *schema.Message) string {
 		return ""
 	}
 	return msg.Content
+}
+
+func reasoningText(msg *schema.Message) string {
+	if msg == nil {
+		return ""
+	}
+	return msg.ReasoningContent
 }

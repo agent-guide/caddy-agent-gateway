@@ -39,12 +39,8 @@ func TestGenerateUsesOpenAICompatibleAPI(t *testing.T) {
 	if got := captured["temperature"]; got != 0.2 {
 		t.Fatalf("temperature = %#v", got)
 	}
-	thinking, ok := captured["thinking"].(map[string]any)
-	if !ok {
-		t.Fatalf("thinking = %#v, want object", captured["thinking"])
-	}
-	if got := thinking["type"]; got != "disabled" {
-		t.Fatalf("thinking.type = %#v, want disabled", got)
+	if _, ok := captured["thinking"]; ok {
+		t.Fatalf("thinking should default to the upstream model behavior: %#v", captured["thinking"])
 	}
 }
 
@@ -102,8 +98,115 @@ func TestGenerateCarriesResponsesContextToOpenAICompatiblePayload(t *testing.T) 
 		t.Fatalf("response_format = %+v, want json_object", responseFormat)
 	}
 	thinking, ok := captured["thinking"].(map[string]any)
-	if !ok || thinking["type"] != "disabled" {
-		t.Fatalf("thinking = %#v, want disabled", captured["thinking"])
+	if !ok || thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %#v, want enabled for a reasoning request", captured["thinking"])
+	}
+}
+
+func TestGeneratePreservesStandardEndpointReasoningEffort(t *testing.T) {
+	req := &provider.ChatRequest{
+		Model:    "glm-standard",
+		Messages: []*schema.Message{{Role: schema.User, Content: "inspect"}},
+		Options: []einomodel.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
+			Thinking:        map[string]any{"type": "adaptive"},
+			ReasoningEffort: "xhigh",
+		})},
+	}
+	_, captured := generateAndCaptureRequest(t, nil, req)
+	thinking := captured["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %#v, want adaptive normalized to enabled", thinking)
+	}
+	if captured["reasoning_effort"] != "xhigh" {
+		t.Fatalf("reasoning_effort = %#v, want xhigh preserved", captured["reasoning_effort"])
+	}
+}
+
+func TestGeneratePreservesAssistantReasoningForToolReplay(t *testing.T) {
+	req := &provider.ChatRequest{
+		Model: "glm-5.2",
+		Messages: []*schema.Message{
+			{
+				Role:             schema.Assistant,
+				ReasoningContent: "需要先检查仓库",
+				ToolCalls: []schema.ToolCall{{
+					ID: "call_1", Type: "function",
+					Function: schema.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`},
+				}},
+			},
+			{Role: schema.Tool, ToolCallID: "call_1", Content: "contents"},
+		},
+		Options: []einomodel.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
+			Thinking: map[string]any{"type": "enabled"},
+		})},
+	}
+
+	_, captured := generateAndCaptureRequest(t, nil, req)
+	messages := captured["messages"].([]any)
+	assistant := messages[0].(map[string]any)
+	if assistant["reasoning_content"] != "需要先检查仓库" {
+		t.Fatalf("assistant reasoning_content = %#v", assistant["reasoning_content"])
+	}
+	thinking := captured["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %#v", thinking)
+	}
+}
+
+func TestGenerateNormalizesCodingClientReasoningControls(t *testing.T) {
+	req := &provider.ChatRequest{
+		Model:    "glm-5.2",
+		Messages: []*schema.Message{{Role: schema.User, Content: "inspect"}},
+		Options: []einomodel.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
+			Thinking:        map[string]any{"type": "adaptive"},
+			ReasoningEffort: "xhigh",
+		})},
+	}
+	_, captured := generateAndCaptureRequest(t, map[string]any{"api_profile": "coding_plan"}, req)
+	thinking := captured["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" {
+		t.Fatalf("thinking = %#v, want adaptive normalized to enabled", thinking)
+	}
+	if captured["reasoning_effort"] != "max" {
+		t.Fatalf("reasoning_effort = %#v, want xhigh normalized to max", captured["reasoning_effort"])
+	}
+}
+
+func TestStreamEnablesToolStreamAndReturnsReasoning(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"分析\"}}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	prov, err := New(provider.ProviderConfig{APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	stream, err := prov.StreamChat(context.Background(), &provider.ChatRequest{
+		Model:    "glm-5.2",
+		Messages: []*schema.Message{{Role: schema.User, Content: "inspect"}},
+		Options: []einomodel.Option{einomodel.WithTools([]*schema.ToolInfo{{
+			Name: "read_file", Desc: "Read a file",
+		}})},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat returned error: %v", err)
+	}
+	defer stream.Close()
+	chunk, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("Recv returned error: %v", err)
+	}
+	if chunk.ReasoningContent != "分析" {
+		t.Fatalf("reasoning_content = %q", chunk.ReasoningContent)
+	}
+	if captured["tool_stream"] != true {
+		t.Fatalf("tool_stream = %#v, want true", captured["tool_stream"])
 	}
 }
 
@@ -146,6 +249,105 @@ func TestNewDefaults(t *testing.T) {
 	}
 	if p.BaseURL != "https://open.bigmodel.cn/api/paas/v4" {
 		t.Fatalf("BaseURL = %q", p.BaseURL)
+	}
+}
+
+func TestCodingPlanCapabilitiesMatchGLM52(t *testing.T) {
+	prov, err := New(provider.ProviderConfig{BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	caps := prov.Capabilities()
+	if caps.ContextWindow != 1000000 || caps.MaxOutputTokens != 128000 {
+		t.Fatalf("capabilities = %+v, want 1M context and 128K output", caps)
+	}
+	if caps.Vision || caps.Embeddings {
+		t.Fatalf("coding endpoint capabilities = %+v, want text chat only", caps)
+	}
+}
+
+func TestStandardCapabilitiesRemainConservative(t *testing.T) {
+	prov, err := New(provider.ProviderConfig{BaseURL: "https://open.bigmodel.cn/api/paas/v4"})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	caps := prov.Capabilities()
+	if caps.ContextWindow != 128000 || caps.MaxOutputTokens != 8192 {
+		t.Fatalf("capabilities = %+v, want 128K context and 8K output", caps)
+	}
+	if !caps.Vision || !caps.Embeddings {
+		t.Fatalf("standard endpoint capabilities = %+v, want vision and embeddings", caps)
+	}
+}
+
+func TestExplicitAPIProfileOverridesURLInference(t *testing.T) {
+	tests := []struct {
+		name       string
+		baseURL    string
+		profile    string
+		wantCtx    int
+		wantOut    int
+		wantVision bool
+	}{
+		{
+			name: "coding plan through custom proxy path", baseURL: "https://proxy.example/v4",
+			profile: "coding_plan", wantCtx: 1000000, wantOut: 128000, wantVision: false,
+		},
+		{
+			name: "standard API mounted under coding-looking path", baseURL: "https://proxy.example/api/coding/v4",
+			profile: "standard", wantCtx: 128000, wantOut: 8192, wantVision: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prov, err := New(provider.ProviderConfig{
+				BaseURL: tt.baseURL,
+				Options: map[string]any{"api_profile": tt.profile},
+			})
+			if err != nil {
+				t.Fatalf("New returned error: %v", err)
+			}
+			caps := prov.Capabilities()
+			if caps.ContextWindow != tt.wantCtx || caps.MaxOutputTokens != tt.wantOut || caps.Vision != tt.wantVision {
+				t.Fatalf("capabilities = %+v", caps)
+			}
+		})
+	}
+}
+
+func TestCapabilityOptionsOverrideProfileDefaults(t *testing.T) {
+	prov, err := New(provider.ProviderConfig{
+		BaseURL: "https://proxy.example/v4",
+		Options: map[string]any{
+			"api_profile":       "coding_plan",
+			"context_window":    "262144",
+			"max_output_tokens": float64(32768),
+			"vision":            "true",
+			"embeddings":        true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New returned error: %v", err)
+	}
+	caps := prov.Capabilities()
+	if caps.ContextWindow != 262144 || caps.MaxOutputTokens != 32768 || !caps.Vision || !caps.Embeddings {
+		t.Fatalf("capabilities = %+v, want explicit overrides", caps)
+	}
+}
+
+func TestInvalidProfileAndCapabilityOptionsFailAtConstruction(t *testing.T) {
+	tests := []map[string]any{
+		{"api_profile": "other"},
+		{"api_profile": true},
+		{"context_window": "many"},
+		{"max_output_tokens": 0},
+		{"vision": "sometimes"},
+		{"embeddings": 1},
+	}
+	for _, options := range tests {
+		if _, err := New(provider.ProviderConfig{Options: options}); err == nil {
+			t.Fatalf("New(%#v) succeeded, want error", options)
+		}
 	}
 }
 

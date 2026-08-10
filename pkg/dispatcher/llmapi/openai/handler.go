@@ -649,9 +649,10 @@ type chunkChoice struct {
 }
 
 type chunkDelta struct {
-	Role      string            `json:"role,omitempty"`
-	Content   string            `json:"content,omitempty"`
-	ToolCalls []schema.ToolCall `json:"tool_calls,omitempty"`
+	Role             string            `json:"role,omitempty"`
+	Content          string            `json:"content,omitempty"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	ToolCalls        []schema.ToolCall `json:"tool_calls,omitempty"`
 }
 
 func toStreamChunk(model string, msg *schema.Message) *chatCompletionChunk {
@@ -662,8 +663,9 @@ func toStreamChunk(model string, msg *schema.Message) *chatCompletionChunk {
 		Choices: []chunkChoice{{
 			Index: 0,
 			Delta: chunkDelta{
-				Role:    string(msg.Role),
-				Content: msg.Content,
+				Role:             string(msg.Role),
+				Content:          msg.Content,
+				ReasoningContent: msg.ReasoningContent,
 			},
 		}},
 	}

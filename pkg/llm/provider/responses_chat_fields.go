@@ -75,6 +75,15 @@ func ChatCompletionsExtraFieldsFromOptions(reasoning ReasoningFieldStyle, opts .
 				fields["reasoning_effort"] = effort
 			}
 		}
+		if len(chatExtra.Thinking) > 0 {
+			fields["thinking"] = cloneMap(chatExtra.Thinking)
+		}
+		if chatExtra.ToolStream != nil {
+			fields["tool_stream"] = *chatExtra.ToolStream
+		}
+		if len(chatExtra.StreamOptions) > 0 {
+			fields["stream_options"] = cloneMap(chatExtra.StreamOptions)
+		}
 		if user := strings.TrimSpace(chatExtra.User); user != "" {
 			fields["user"] = user
 		}

@@ -3,6 +3,8 @@ package zhipu
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
@@ -22,7 +24,16 @@ func init() {
 
 type Provider struct {
 	*openaibase.Base
+	apiProfile   apiProfile
+	capabilities provider.ProviderCapabilities
 }
+
+type apiProfile string
+
+const (
+	apiProfileStandard   apiProfile = "standard"
+	apiProfileCodingPlan apiProfile = "coding_plan"
+)
 
 // New creates a new Zhipu provider using BigModel's OpenAI-compatible API.
 func New(config provider.ProviderConfig) (provider.Provider, error) {
@@ -34,8 +45,20 @@ func New(config provider.ProviderConfig) (provider.Provider, error) {
 	if _, err := provider.CompactModeFromOptions(config.Options); err != nil {
 		return nil, err
 	}
+	profile, err := apiProfileFromOptions(config.Options, config.BaseURL)
+	if err != nil {
+		return nil, err
+	}
+	capabilities, err := capabilitiesFromOptions(config.Options, profile)
+	if err != nil {
+		return nil, err
+	}
 
-	return &Provider{Base: openaibase.NewBase(config)}, nil
+	return &Provider{
+		Base:         openaibase.NewBase(config),
+		apiProfile:   profile,
+		capabilities: capabilities,
+	}, nil
 }
 
 func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
@@ -45,7 +68,7 @@ func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 		zap.Int("message_count", len(req.Messages)),
 	)
 	resp, err := provider.RetryProviderCall(p.ProviderConfig.Network, func() (*provider.ChatResponse, error) {
-		chatModel, messages, opts, err := p.newChatModel(ctx, req)
+		chatModel, messages, opts, err := p.newChatModel(ctx, req, false)
 		if err != nil {
 			return nil, err
 		}
@@ -84,7 +107,7 @@ func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*
 		zap.Int("message_count", len(req.Messages)),
 		zap.String("base_url", p.ProviderConfig.BaseURL),
 	)
-	chatModel, messages, opts, err := p.newChatModel(ctx, req)
+	chatModel, messages, opts, err := p.newChatModel(ctx, req, true)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +128,7 @@ func (p *Provider) StreamResponses(ctx context.Context, req *provider.ResponsesR
 	return provider.StreamResponsesViaChat(ctx, p, req)
 }
 
-func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) (einomodel.ToolCallingChatModel, []*schema.Message, []einomodel.Option, error) {
+func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest, stream bool) (einomodel.ToolCallingChatModel, []*schema.Message, []einomodel.Option, error) {
 	state, err := provider.ResolveChatRequest(ctx, p.ProviderConfig, req)
 	if err != nil {
 		return nil, nil, nil, err
@@ -124,15 +147,27 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 	}
 	opts := append([]einomodel.Option(nil), state.Options...)
 	extraFields := provider.ChatCompletionsExtraFieldsFromOptions(provider.ReasoningEffortField, state.Options...)
+	normalizeZhipuExtraFields(extraFields, p.apiProfile == apiProfileCodingPlan)
 	if p.CCCompat {
 		provider.StripCCUnsupportedChatFields(extraFields)
 	}
-	if thinkingType := p.thinkingType(); thinkingType != "" {
-		extraFields = provider.MergeExtraFields(extraFields, map[string]any{
-			"thinking": map[string]any{
-				"type": thinkingType,
-			},
-		})
+	if _, supplied := extraFields["thinking"]; !supplied {
+		thinkingType := requestThinkingType(state.Options)
+		if thinkingType == "" {
+			thinkingType = p.thinkingType()
+		}
+		if thinkingType != "" {
+			extraFields = provider.MergeExtraFields(extraFields, map[string]any{
+				"thinking": map[string]any{
+					"type": thinkingType,
+				},
+			})
+		}
+	}
+	if stream && state.CommonOptions != nil && len(state.CommonOptions.Tools) > 0 {
+		if _, supplied := extraFields["tool_stream"]; !supplied {
+			extraFields = provider.MergeExtraFields(extraFields, map[string]any{"tool_stream": true})
+		}
 	}
 	if len(extraFields) > 0 {
 		opts = append(opts, einoopenai.WithExtraFields(extraFields))
@@ -142,7 +177,14 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 }
 
 func (p *Provider) Capabilities() provider.ProviderCapabilities {
-	return provider.ProviderCapabilities{
+	if p.capabilities != (provider.ProviderCapabilities{}) {
+		return p.capabilities
+	}
+	return defaultCapabilities(apiProfileStandard)
+}
+
+func defaultCapabilities(profile apiProfile) provider.ProviderCapabilities {
+	capabilities := provider.ProviderCapabilities{
 		Streaming:       true,
 		Tools:           true,
 		Vision:          true,
@@ -150,6 +192,110 @@ func (p *Provider) Capabilities() provider.ProviderCapabilities {
 		ContextWindow:   128000,
 		MaxOutputTokens: 8192,
 	}
+	if profile == apiProfileCodingPlan {
+		// The Coding Plan chat endpoint currently exposes text coding models;
+		// vision is provided through a separate MCP service and embeddings are
+		// not part of the Coding Plan Chat Completions surface.
+		capabilities.Vision = false
+		capabilities.Embeddings = false
+		capabilities.ContextWindow = 1000000
+		capabilities.MaxOutputTokens = 128000
+	}
+	return capabilities
+}
+
+func apiProfileFromOptions(options map[string]any, baseURL string) (apiProfile, error) {
+	raw, ok := options["api_profile"]
+	if !ok {
+		return inferredAPIProfile(baseURL), nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("zhipu: option api_profile must be a string")
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return inferredAPIProfile(baseURL), nil
+	case string(apiProfileStandard):
+		return apiProfileStandard, nil
+	case string(apiProfileCodingPlan):
+		return apiProfileCodingPlan, nil
+	default:
+		return "", fmt.Errorf("zhipu: option api_profile must be one of auto, standard, coding_plan")
+	}
+}
+
+func inferredAPIProfile(baseURL string) apiProfile {
+	if strings.Contains(baseURL, "/api/coding/") {
+		return apiProfileCodingPlan
+	}
+	return apiProfileStandard
+}
+
+func capabilitiesFromOptions(options map[string]any, profile apiProfile) (provider.ProviderCapabilities, error) {
+	capabilities := defaultCapabilities(profile)
+	var err error
+	if capabilities.ContextWindow, err = positiveIntOption(options, "context_window", capabilities.ContextWindow); err != nil {
+		return provider.ProviderCapabilities{}, err
+	}
+	if capabilities.MaxOutputTokens, err = positiveIntOption(options, "max_output_tokens", capabilities.MaxOutputTokens); err != nil {
+		return provider.ProviderCapabilities{}, err
+	}
+	if capabilities.Vision, err = boolOption(options, "vision", capabilities.Vision); err != nil {
+		return provider.ProviderCapabilities{}, err
+	}
+	if capabilities.Embeddings, err = boolOption(options, "embeddings", capabilities.Embeddings); err != nil {
+		return provider.ProviderCapabilities{}, err
+	}
+	return capabilities, nil
+}
+
+func positiveIntOption(options map[string]any, name string, fallback int) (int, error) {
+	raw, ok := options[name]
+	if !ok {
+		return fallback, nil
+	}
+	var value int64
+	switch typed := raw.(type) {
+	case string:
+		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("zhipu: option %s must be a positive integer", name)
+		}
+		value = parsed
+	case int:
+		value = int64(typed)
+	case int64:
+		value = typed
+	case float64:
+		value = int64(typed)
+		if float64(value) != typed {
+			return 0, fmt.Errorf("zhipu: option %s must be a positive integer", name)
+		}
+	default:
+		return 0, fmt.Errorf("zhipu: option %s must be a positive integer", name)
+	}
+	if value <= 0 || int64(int(value)) != value {
+		return 0, fmt.Errorf("zhipu: option %s must be a positive integer", name)
+	}
+	return int(value), nil
+}
+
+func boolOption(options map[string]any, name string, fallback bool) (bool, error) {
+	raw, ok := options[name]
+	if !ok {
+		return fallback, nil
+	}
+	switch typed := raw.(type) {
+	case bool:
+		return typed, nil
+	case string:
+		value, err := strconv.ParseBool(strings.TrimSpace(typed))
+		if err == nil {
+			return value, nil
+		}
+	}
+	return false, fmt.Errorf("zhipu: option %s must be a boolean", name)
 }
 
 func (p *Provider) Config() provider.ProviderConfig {
@@ -166,7 +312,7 @@ func (p *Provider) ensureBase() {
 func (p *Provider) thinkingType() string {
 	v, ok := p.ProviderConfig.Options["thinking_type"]
 	if !ok {
-		return "disabled"
+		return ""
 	}
 	s, ok := v.(string)
 	if !ok {
@@ -180,6 +326,80 @@ func (p *Provider) thinkingType() string {
 		return ""
 	}
 	return s
+}
+
+func requestThinkingType(opts []einomodel.Option) string {
+	extra := provider.ChatExtraFieldsFromOptions(opts...)
+	if extra != nil {
+		if typ, _ := extra.Thinking["type"].(string); strings.TrimSpace(typ) != "" {
+			return normalizeThinkingType(typ)
+		}
+		if typ, _ := extra.Reasoning["type"].(string); strings.TrimSpace(typ) != "" {
+			return normalizeThinkingType(typ)
+		}
+		if effort := reasoningEffort(extra); effort == "none" {
+			return "disabled"
+		}
+		if extra.ReasoningEffort != "" || len(extra.Reasoning) > 0 {
+			return "enabled"
+		}
+	}
+	if ctx := provider.ResponsesRequestContextFromOptions(opts...); ctx != nil && len(ctx.Reasoning) > 0 {
+		return "enabled"
+	}
+	return ""
+}
+
+func normalizeThinkingType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "adaptive":
+		return "enabled"
+	case "none":
+		return "disabled"
+	case "enabled", "disabled":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func reasoningEffort(extra *provider.ChatExtraFields) string {
+	if extra == nil {
+		return ""
+	}
+	if effort := strings.ToLower(strings.TrimSpace(extra.ReasoningEffort)); effort != "" {
+		return effort
+	}
+	effort, _ := extra.Reasoning["effort"].(string)
+	return strings.ToLower(strings.TrimSpace(effort))
+}
+
+func normalizeZhipuExtraFields(fields map[string]any, codingPlan bool) {
+	if thinking, ok := fields["thinking"].(map[string]any); ok {
+		if typ, _ := thinking["type"].(string); typ != "" {
+			if normalized := normalizeThinkingType(typ); normalized != "" {
+				thinking["type"] = normalized
+			}
+		}
+	}
+	if !codingPlan {
+		return
+	}
+	effort, _ := fields["reasoning_effort"].(string)
+	// Coding Plan currently accepts only high and max. Collapse OpenAI/Codex's
+	// finer effort levels to the nearest supported GLM value while preserving
+	// the extra-compute intent of xhigh/max.
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none":
+		delete(fields, "reasoning_effort")
+		if _, supplied := fields["thinking"]; !supplied {
+			fields["thinking"] = map[string]any{"type": "disabled"}
+		}
+	case "minimal", "low", "medium", "high":
+		fields["reasoning_effort"] = "high"
+	case "xhigh", "max":
+		fields["reasoning_effort"] = "max"
+	}
 }
 
 var (

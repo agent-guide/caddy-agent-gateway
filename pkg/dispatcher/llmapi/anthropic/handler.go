@@ -237,6 +237,10 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	)
 
 	chunkCount := 0
+	reasoningBlockStarted := false
+	reasoningBlockStopped := false
+	reasoningBlockIndex := -1
+	var reasoningContent strings.Builder
 	textBlockStarted := false
 	textBlockIndex := -1
 	finalStopReason := "end_turn"
@@ -255,6 +259,20 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	type streamToolBlock struct{ blockIndex int }
 	toolBlocks := map[int]*streamToolBlock{}
 	var toolBlockOrder []int
+	closeReasoningBlock := func() {
+		if !reasoningBlockStarted || reasoningBlockStopped {
+			return
+		}
+		writeSSEEvent(w, "content_block_delta", map[string]any{
+			"type": "content_block_delta", "index": reasoningBlockIndex,
+			"delta": map[string]string{
+				"type":      "signature_delta",
+				"signature": gatewayThinkingSignature(reasoningContent.String()),
+			},
+		})
+		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": reasoningBlockIndex})
+		reasoningBlockStopped = true
+	}
 	for {
 		chunk, err := stream.Recv()
 		if err == io.EOF {
@@ -277,8 +295,29 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 			return
 		}
 		chunkCount++
+		if chunk != nil && chunk.ReasoningContent != "" && !reasoningBlockStopped && !textBlockStarted && !emittedToolUse {
+			// Anthropic thinking blocks must precede text and tool blocks. Chat
+			// providers such as GLM stream reasoning first; discard a provider's
+			// out-of-order late reasoning instead of emitting an invalid block order.
+			if !reasoningBlockStarted {
+				reasoningBlockIndex = nextBlockIndex
+				nextBlockIndex++
+				writeSSEEvent(w, "content_block_start", map[string]any{
+					"type": "content_block_start", "index": reasoningBlockIndex,
+					"content_block": map[string]string{"type": "thinking", "thinking": "", "signature": ""},
+				})
+				reasoningBlockStarted = true
+			}
+			reasoningContent.WriteString(chunk.ReasoningContent)
+			writeSSEEvent(w, "content_block_delta", map[string]any{
+				"type": "content_block_delta", "index": reasoningBlockIndex,
+				"delta": map[string]string{"type": "thinking_delta", "thinking": chunk.ReasoningContent},
+			})
+			flusher.Flush()
+		}
 
 		if text := extractText(chunk); text != "" {
+			closeReasoningBlock()
 			if !textBlockStarted {
 				textBlockIndex = nextBlockIndex
 				writeSSEEvent(w, "content_block_start", map[string]any{
@@ -300,6 +339,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		// fragment and stream argument deltas afterward; emitting a block per
 		// fragment would corrupt the tool call into many empty tool_use blocks.
 		for _, tc := range chunk.ToolCalls {
+			closeReasoningBlock()
 			if name := strings.TrimSpace(tc.Function.Name); name != "" {
 				toolNames[name] = struct{}{}
 			}
@@ -383,6 +423,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	if textBlockStarted {
 		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": textBlockIndex})
 	}
+	closeReasoningBlock()
 	// Close every accumulated streamed tool-call block.
 	for _, key := range toolBlockOrder {
 		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": toolBlocks[key].blockIndex})

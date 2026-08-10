@@ -89,7 +89,7 @@ Use managed credentials when you need:
 
 The OpenAI-compatible chat providers (`openai`, `deepseek`, `openrouter`, `zhipu`) accept `option compact cc`, which drops the OpenAI-style `metadata` and `user` request fields that Claude Code CLI always sends but some upstreams (e.g. GLM) reject. Providers ignore compact modes they do not support.
 
-`deepseek` and `zhipu` also accept `option thinking_type <disabled|enabled|none>`. Both default to `disabled`: their thinking-mode models otherwise require the previous turn's `reasoning_content` to be replayed, which the cc/anthropic protocol does not carry, so an enabled thinking mode breaks Claude Code CLI tool loops. Use `none` to omit the field and take the upstream default.
+`deepseek` and `zhipu` also accept `option thinking_type <disabled|enabled|none>`. DeepSeek defaults to `disabled` because its thinking-mode tool loops require reasoning replay that the cc/anthropic path does not provide for that provider. Zhipu omits `thinking` by default so current GLM models use their upstream default; request-level `thinking` takes precedence, and `reasoning_content` is preserved across OpenAI Chat, Responses compatibility, and cc/Anthropic tool loops. Zhipu streaming tool requests automatically send `tool_stream=true`. Use an explicit provider option only to force one mode for every request. Zhipu's `option api_profile <auto|standard|coding_plan>` controls endpoint-specific defaults; set `coding_plan` behind custom proxies. Provider-level `context_window`, `max_output_tokens`, `vision`, and `embeddings` options can override those defaults, while per-model differences belong in managed-model `capability_overrides`.
 
 ## Related Docs
 

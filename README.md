@@ -199,7 +199,7 @@ The `AGW_ADMIN_ADDR` environment variable sets the admin API address (default: `
 
 Provider `options.compact` selects compatibility request shaping. In Caddyfile provider blocks, configure it as `option compact <cc|codex|none>`. In bundle YAML, configure it as `options.compact`. Providers ignore modes they do not implement.
 
-Built-in `provider_type` values: `openai`, `anthropic`, `claudecode`, `codex`, `gemini`, `ollama`, `openrouter`, `deepseek`, `zhipu`, `qwen`. The `qwen` provider targets DashScope's OpenAI-compatible mode and supports an optional `options.enable_thinking` (bool) to control Qwen thinking mode; per-request reasoning fields override it.
+Built-in `provider_type` values: `openai`, `anthropic`, `claudecode`, `codex`, `gemini`, `ollama`, `openrouter`, `deepseek`, `zhipu`, `qwen`. The `zhipu` provider supports GLM Coding Plan Chat Completions, including request-level thinking, `reasoning_content` replay, and streamed tool arguments; set its `base_url` to `https://open.bigmodel.cn/api/coding/paas/v4`, or set `options.api_profile` to `coding_plan` when using a custom proxy URL. The `qwen` provider targets DashScope's OpenAI-compatible mode and supports an optional `options.enable_thinking` (bool) to control Qwen thinking mode; per-request reasoning fields override it.
 
 ## MCP Quick Start
 

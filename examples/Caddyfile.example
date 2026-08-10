@@ -81,8 +81,8 @@
 		# 	provider_type zhipu
 		# 	api_key {$ZHIPU_API_KEY}
 		# 	base_url https://open.bigmodel.cn/api/coding/paas/v4
+		# 	option api_profile coding_plan
 		# 	default_model glm-5.2
-		# 	option thinking_type disabled
 		# 	# Strip top-level metadata/user fields rejected by this endpoint.
 		# 	option compact cc
 		# }
@@ -98,8 +98,8 @@
 		# 	provider_type zhipu
 		# 	api_key {$ZHIPU_API_KEY}
 		# 	base_url https://open.bigmodel.cn/api/coding/paas/v4
+		# 	option api_profile coding_plan
 		# 	default_model glm-5.2
-		# 	option thinking_type disabled
 		# }
 		# route codex-zhipu-chat {
 		# 	protocol openai

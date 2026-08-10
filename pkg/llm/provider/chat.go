@@ -21,7 +21,10 @@ type ChatOptions struct {
 type ChatExtraFields struct {
 	ResponseFormat    any
 	Reasoning         map[string]any
+	Thinking          map[string]any
 	ReasoningEffort   string
+	ToolStream        *bool
+	StreamOptions     map[string]any
 	User              string
 	Metadata          map[string]any
 	ParallelToolCalls *bool
@@ -196,7 +199,8 @@ func cloneChatExtraFields(src *ChatExtraFields) *ChatExtraFields {
 	if src == nil {
 		return nil
 	}
-	if src.ResponseFormat == nil && len(src.Reasoning) == 0 && src.ReasoningEffort == "" &&
+	if src.ResponseFormat == nil && len(src.Reasoning) == 0 && len(src.Thinking) == 0 && src.ReasoningEffort == "" &&
+		src.ToolStream == nil && len(src.StreamOptions) == 0 &&
 		src.User == "" && len(src.Metadata) == 0 && src.ParallelToolCalls == nil && src.Store == nil {
 		return nil
 	}
@@ -207,6 +211,16 @@ func cloneChatExtraFields(src *ChatExtraFields) *ChatExtraFields {
 	}
 	if len(src.Reasoning) > 0 {
 		out.Reasoning = cloneMap(src.Reasoning)
+	}
+	if len(src.Thinking) > 0 {
+		out.Thinking = cloneMap(src.Thinking)
+	}
+	if src.ToolStream != nil {
+		v := *src.ToolStream
+		out.ToolStream = &v
+	}
+	if len(src.StreamOptions) > 0 {
+		out.StreamOptions = cloneMap(src.StreamOptions)
 	}
 	if len(src.Metadata) > 0 {
 		out.Metadata = cloneMap(src.Metadata)

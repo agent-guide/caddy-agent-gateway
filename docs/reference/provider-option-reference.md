@@ -105,7 +105,17 @@ Extra outbound request shaping:
 
 `zhipu`
 
+- `option api_profile <auto|standard|coding_plan>`
+  - default is `auto`; the official `/api/coding/` URL selects `coding_plan`, otherwise `standard`
+  - set `coding_plan` explicitly when the Coding Plan API is exposed through a proxy or a custom URL
+- `option context_window <positive integer>` and `option max_output_tokens <positive integer>` override the provider-level capability defaults
+- `option vision <true|false>` and `option embeddings <true|false>` override the provider-level feature defaults
+- capability options are coarse provider defaults; use managed-model `capability_overrides` when models on one endpoint have different limits or features
 - `option thinking_type <disabled|enabled|none>`
+- missing or `none` omits the field and uses the upstream GLM default; an inbound request-level `thinking` value overrides the provider option
+- normalizes Anthropic `thinking.type=adaptive` to GLM `enabled`; in the `coding_plan` profile, maps Codex/OpenAI reasoning efforts `minimal|low|medium|high` to GLM `high` and `xhigh|max` to GLM `max`
+- preserves GLM `reasoning_content` in assistant tool-call history and emits it through OpenAI Chat, Responses reasoning-summary compatibility events, and Anthropic/cc thinking blocks
+- streaming requests with tools automatically enable GLM `tool_stream` unless the inbound request explicitly sets it
 - `option compact cc` — see the shared `compact` note above
 
 ## Current Built-In Provider Types
