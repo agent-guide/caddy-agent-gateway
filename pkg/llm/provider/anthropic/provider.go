@@ -7,10 +7,12 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -28,6 +30,18 @@ import (
 
 const anthropicVersion = "2023-06-01"
 const defaultMaxTokens = 4096
+
+// eino-ext/claude exposes reading thinking text but keeps the storage keys and
+// signature accessor private. Keep these component-specific keys inside this
+// adapter; the rest of the gateway uses provider.ReasoningParts. Provider tests
+// pin this dependency contract so an eino upgrade cannot fail silently.
+const (
+	einoClaudeThinkingKey          = "_eino_claude_thinking"
+	einoClaudeThinkingSignatureKey = "_eino_claude_thinking_signature"
+	einoClaudeBreakpointKey        = "_eino_claude_breakpoint"
+	einoClaudeBreakpointTTLKey     = "_eino_claude_breakpoint_ttl"
+	einoClaudeToolSearchEventsKey  = "_eino_claude_tool_search_events"
+)
 
 func init() {
 	provider.RegisterProviderFactory("anthropic", New)
@@ -54,7 +68,8 @@ func New(config provider.ProviderConfig) (provider.Provider, error) {
 
 func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
 	return provider.RetryProviderCall(p.ProviderConfig.Network, func() (*provider.ChatResponse, error) {
-		chatModel, messages, opts, err := p.newChatModel(ctx, req)
+		capture := &messagesResponseCapture{}
+		chatModel, messages, opts, err := p.newChatModel(ctx, req, capture)
 		if err != nil {
 			return nil, err
 		}
@@ -62,12 +77,17 @@ func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 		if err != nil {
 			return nil, wrapProviderError(err, "anthropic: request failed")
 		}
+		if capture.response != nil {
+			attachCapturedReasoning(msg, capture.response)
+		} else {
+			attachEinoClaudeReasoning(msg)
+		}
 		return provider.ChatResponseFromEinoMessage(msg), nil
 	})
 }
 
 func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*schema.StreamReader[*schema.Message], error) {
-	chatModel, messages, opts, err := p.newChatModel(ctx, req)
+	chatModel, messages, opts, err := p.newChatModel(ctx, req, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +95,11 @@ func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*
 	if err != nil {
 		return nil, wrapProviderError(err, "anthropic: stream request failed")
 	}
-	return stream, nil
+	reasoningState := &einoReasoningStreamState{}
+	return schema.StreamReaderWithConvert(stream, func(msg *schema.Message) (*schema.Message, error) {
+		reasoningState.attach(msg)
+		return msg, nil
+	}), nil
 }
 
 // wrapProviderError converts Anthropic SDK API errors into
@@ -114,7 +138,7 @@ func (p *Provider) StreamResponses(ctx context.Context, req *provider.ResponsesR
 // newChatModel builds a per-request eino-ext claude chat model. The model is
 // rebuilt per call because the API key can be overridden per request through
 // credential scheduling.
-func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) (einomodel.ToolCallingChatModel, []*schema.Message, []einomodel.Option, error) {
+func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest, capture *messagesResponseCapture) (einomodel.ToolCallingChatModel, []*schema.Message, []einomodel.Option, error) {
 	state, err := provider.ResolveChatRequest(ctx, p.ProviderConfig, req)
 	if err != nil {
 		return nil, nil, nil, err
@@ -132,12 +156,22 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 	}
 
 	baseURL := p.ProviderConfig.BaseURL
+	httpClient := p.client
+	if capture != nil {
+		cloned := *p.client
+		transport := cloned.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		cloned.Transport = captureRoundTripper{base: transport, capture: capture}
+		httpClient = &cloned
+	}
 	cfg := &einoclaude.Config{
 		BaseURL:                &baseURL,
 		APIKey:                 provider.APIKeyFromContextOrConfig(ctx, p.ProviderConfig.APIKey),
 		Model:                  state.ModelName,
 		MaxTokens:              maxTokens,
-		HTTPClient:             p.client,
+		HTTPClient:             httpClient,
 		AdditionalHeaderFields: p.ProviderConfig.Network.ExtraHeaders,
 	}
 
@@ -176,6 +210,17 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 	}
 
 	extraRequestFields := map[string]any{}
+	modelMessages, exactMessages, err := adaptSignedReasoningMessages(state.Messages)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if exactMessages != nil {
+		// eino-ext/claude's AssistantGenMultiContent branch only accepts
+		// multimodal text/images and cannot represent redacted or multiple
+		// thinking blocks. Patch the validated SDK body only for those shapes;
+		// ordinary single signed thinking stays on eino's native path.
+		extraRequestFields["messages"] = exactMessages
+	}
 	if userID := requestUserID(state); userID != "" {
 		// The claude component has no request metadata support; inject it
 		// through the SDK's JSON request patch (sjson path semantics).
@@ -216,7 +261,257 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("anthropic: build chat model: %w", err)
 	}
-	return chatModel, state.Messages, opts, nil
+	return chatModel, modelMessages, opts, nil
+}
+
+// messagesResponseCapture preserves the raw content block sequence before the
+// eino adapter flattens non-streaming responses into a single thinking value.
+// The regular eino message remains authoritative for text, tools, usage, and
+// provider-specific blocks; only structured reasoning is restored from here.
+type messagesResponseCapture struct {
+	response *anthropicbase.MessagesResponse
+}
+
+type captureRoundTripper struct {
+	base    http.RoundTripper
+	capture *messagesResponseCapture
+}
+
+func (t captureRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil {
+		return resp, err
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if readErr != nil {
+		return resp, nil
+	}
+	var captured anthropicbase.MessagesResponse
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && json.Unmarshal(body, &captured) == nil {
+		t.capture.response = &captured
+	}
+	return resp, nil
+}
+
+func attachCapturedReasoning(msg *schema.Message, captured *anthropicbase.MessagesResponse) {
+	if msg == nil || captured == nil {
+		return
+	}
+	capturedMessage := captured.ToChatResponse().Message
+	if capturedMessage == nil {
+		return
+	}
+	msg.ReasoningContent = capturedMessage.ReasoningContent
+	provider.AttachReasoningParts(msg, provider.ReasoningPartsFromMessage(capturedMessage)...)
+}
+
+func adaptSignedReasoningMessages(messages []*schema.Message) ([]*schema.Message, []anthropicbase.MessageItem, error) {
+	adapted := messages
+	clonedSlice := false
+	requiresExactMessages := false
+
+	for i, msg := range messages {
+		parts := provider.ReasoningPartsFromMessage(msg)
+		if len(parts) == 0 {
+			continue
+		}
+
+		var authentic []schema.MessageOutputPart
+		for _, part := range parts {
+			switch part.Type {
+			case schema.ChatMessagePartTypeReasoning:
+				if part.Reasoning != nil && part.Reasoning.Signature != "" &&
+					!provider.IsGatewayThinkingSignature(part.Reasoning.Signature) {
+					authentic = append(authentic, part)
+					// eino-ext's native message converter requires non-empty
+					// thinking text. Anthropic display=omitted deliberately
+					// returns an empty thinking field with a real signature, so
+					// that shape must use the exact wire converter.
+					if part.Reasoning.Text == "" {
+						requiresExactMessages = true
+					}
+				}
+			case provider.ChatMessagePartTypeEncryptedReasoning:
+				if provider.EncryptedReasoningData(part) != "" {
+					requiresExactMessages = true
+				}
+			}
+		}
+		if len(authentic) > 1 {
+			requiresExactMessages = true
+			continue
+		}
+		if len(authentic) != 1 || authentic[0].Reasoning.Text == "" || msg == nil {
+			continue
+		}
+
+		if !clonedSlice {
+			adapted = append([]*schema.Message(nil), messages...)
+			clonedSlice = true
+		}
+		cloned := *msg
+		cloned.Extra = cloneMessageExtra(msg.Extra)
+		cloned.Extra[einoClaudeThinkingKey] = authentic[0].Reasoning.Text
+		cloned.Extra[einoClaudeThinkingSignatureKey] = authentic[0].Reasoning.Signature
+		adapted[i] = &cloned
+	}
+
+	if !requiresExactMessages {
+		return adapted, nil, nil
+	}
+	if err := validateExactReplayMessages(messages); err != nil {
+		return nil, nil, err
+	}
+	wireRequest := &anthropicbase.MessagesRequest{}
+	return messages, anthropicbase.ConvertMessages(messages, wireRequest, false, einoMessageCacheControl), nil
+}
+
+// validateExactReplayMessages prevents the signed/redacted replay patch from
+// silently replacing richer eino message shapes with the smaller set supported
+// by anthropicbase.ConvertMessages. Losing a document, rich tool result, media
+// part, citation metadata, or server-tool event is worse than rejecting the
+// request before it reaches the upstream.
+func validateExactReplayMessages(messages []*schema.Message) error {
+	for i, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		if len(msg.MultiContent) > 0 {
+			return fmt.Errorf("anthropic: exact thinking replay cannot preserve deprecated multi_content in message %d", i)
+		}
+		if _, ok := msg.Extra[einoClaudeToolSearchEventsKey]; ok {
+			return fmt.Errorf("anthropic: exact thinking replay cannot preserve server-tool events in message %d", i)
+		}
+
+		switch msg.Role {
+		case schema.Assistant:
+			for _, part := range msg.AssistantGenMultiContent {
+				switch part.Type {
+				case schema.ChatMessagePartTypeText:
+					if len(part.Extra) > 0 {
+						return fmt.Errorf("anthropic: exact thinking replay cannot preserve assistant text metadata in message %d", i)
+					}
+				case schema.ChatMessagePartTypeImageURL:
+					if part.Image == nil || len(part.Extra) > 0 || len(part.Image.Extra) > 0 {
+						return fmt.Errorf("anthropic: exact thinking replay cannot preserve assistant image metadata in message %d", i)
+					}
+				case schema.ChatMessagePartTypeReasoning, provider.ChatMessagePartTypeEncryptedReasoning, provider.ChatMessagePartTypeReasoningEnd:
+					// Gateway reasoning is replayed from provider.ReasoningParts;
+					// tolerate duplicated eino parts but do not treat them as content.
+				default:
+					return fmt.Errorf("anthropic: exact thinking replay cannot preserve assistant part type %q in message %d", part.Type, i)
+				}
+			}
+		case schema.Tool:
+			if len(msg.UserInputMultiContent) > 0 {
+				return fmt.Errorf("anthropic: exact thinking replay cannot preserve structured tool result in message %d", i)
+			}
+		default:
+			for _, part := range msg.UserInputMultiContent {
+				switch part.Type {
+				case schema.ChatMessagePartTypeText:
+					if len(part.Extra) > 0 {
+						return fmt.Errorf("anthropic: exact thinking replay cannot preserve user text metadata in message %d", i)
+					}
+				case schema.ChatMessagePartTypeImageURL:
+					if part.Image == nil || len(part.Extra) > 0 || len(part.Image.Extra) > 0 {
+						return fmt.Errorf("anthropic: exact thinking replay cannot preserve user image metadata in message %d", i)
+					}
+				default:
+					return fmt.Errorf("anthropic: exact thinking replay cannot preserve user part type %q in message %d", part.Type, i)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func einoMessageCacheControl(msg *schema.Message) *anthropicbase.CacheControl {
+	if msg == nil || len(msg.Extra) == 0 {
+		return nil
+	}
+	breakpoint, _ := msg.Extra[einoClaudeBreakpointKey].(bool)
+	if !breakpoint {
+		return nil
+	}
+	ttl, _ := msg.Extra[einoClaudeBreakpointTTLKey].(string)
+	return &anthropicbase.CacheControl{Type: "ephemeral", TTL: strings.TrimSpace(ttl)}
+}
+
+func cloneMessageExtra(extra map[string]any) map[string]any {
+	cloned := make(map[string]any, len(extra)+2)
+	for key, value := range extra {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func attachEinoClaudeReasoning(msg *schema.Message) {
+	if msg == nil || len(msg.Extra) == 0 {
+		return
+	}
+	thinking, _ := einoclaude.GetThinking(msg)
+	signature, _ := msg.Extra[einoClaudeThinkingSignatureKey].(string)
+	if thinking == "" && signature == "" {
+		return
+	}
+	provider.AttachReasoningParts(msg, provider.NewReasoningOutputPart(thinking, signature, nil))
+}
+
+// einoReasoningStreamState restores stable block indexes that eino-ext does
+// not expose on its schema.Message chunks. Text and signature deltas for one
+// block must share an index so schema.ConcatMessages can reconstruct the exact
+// signed thinking block for a later tool turn.
+type einoReasoningStreamState struct {
+	nextIndex        int
+	currentIndex     int
+	hasCurrent       bool
+	signatureStarted bool
+}
+
+func (s *einoReasoningStreamState) attach(msg *schema.Message) {
+	if msg == nil {
+		return
+	}
+	thinking, hasThinking := einoclaude.GetThinking(msg)
+	signature, hasSignature := msg.Extra[einoClaudeThinkingSignatureKey].(string)
+	// eino represents a thinking content_block_start by setting both private
+	// fields to empty strings. Their presence is the only block-boundary signal
+	// it retains, and is especially important when display=omitted produces no
+	// thinking deltas before the signature.
+	if hasThinking && hasSignature {
+		s.currentIndex = s.nextIndex
+		s.nextIndex++
+		s.hasCurrent = true
+		s.signatureStarted = false
+		index := s.currentIndex
+		provider.AttachReasoningParts(msg, provider.NewReasoningOutputPart(thinking, signature, &index))
+		return
+	}
+	if thinking == "" && signature == "" {
+		if msg.Content != "" || len(msg.ToolCalls) > 0 {
+			s.hasCurrent = false
+			s.signatureStarted = false
+		}
+		return
+	}
+
+	// A thinking delta after a signature starts the next interleaved block.
+	// Multiple signature fragments remain attached to the current index and are
+	// concatenated by provider.ReasoningParts.
+	if !s.hasCurrent || (thinking != "" && s.signatureStarted) {
+		s.currentIndex = s.nextIndex
+		s.nextIndex++
+		s.hasCurrent = true
+		s.signatureStarted = false
+	}
+	index := s.currentIndex
+	provider.AttachReasoningParts(msg, provider.NewReasoningOutputPart(thinking, signature, &index))
+	if signature != "" {
+		s.signatureStarted = true
+	}
 }
 
 func thinkingConfigParam(tc *anthropicbase.ThinkingConfig) *anthropic.ThinkingConfigParamUnion {
@@ -337,6 +632,9 @@ func requestThinking(state *provider.ChatRequestState) *anthropicbase.ThinkingCo
 		return nil
 	}
 	if extra := provider.ChatExtraFieldsFromOptions(state.Options...); extra != nil {
+		if thinking := thinkingFromReasoning(extra.Thinking); thinking != nil {
+			return thinking
+		}
 		if thinking := thinkingFromReasoning(extra.Reasoning); thinking != nil {
 			return thinking
 		}

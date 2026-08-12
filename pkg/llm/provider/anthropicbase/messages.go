@@ -84,7 +84,7 @@ func BuildMessagesRequest(state *provider.ChatRequestState, opts BuildMessagesOp
 		}
 	}
 
-	req.Messages = ConvertMessages(state.Messages, req, opts.CacheUserText)
+	req.Messages = ConvertMessages(state.Messages, req, opts.CacheUserText, nil)
 	return req
 }
 
@@ -225,7 +225,13 @@ func BuildToolChoice(tc *schema.ToolChoice, allowedNames []string, disableParall
 	return b
 }
 
-func ConvertMessages(msgs []*schema.Message, req *MessagesRequest, cacheUserText bool) []MessageItem {
+// MessageCacheControlResolver returns the explicit cache control to apply to
+// the final wire block produced for a message. It lets provider adapters retain
+// component-specific cache metadata without teaching this wire package about
+// the component's private Extra keys.
+type MessageCacheControlResolver func(*schema.Message) *CacheControl
+
+func ConvertMessages(msgs []*schema.Message, req *MessagesRequest, cacheUserText bool, cacheResolver MessageCacheControlResolver) []MessageItem {
 	var out []MessageItem
 	i := 0
 	for i < len(msgs) {
@@ -239,17 +245,17 @@ func ConvertMessages(msgs []*schema.Message, req *MessagesRequest, cacheUserText
 			req.System = append(req.System, SystemBlock{Type: "text", Text: strings.TrimSpace(msg.Content)})
 			i++
 		case schema.Assistant:
-			out = append(out, convertAssistantMessage(msg))
+			out = append(out, convertAssistantMessage(msg, resolveMessageCacheControl(msg, cacheResolver)))
 			i++
 		case schema.Tool:
 			j := i
 			for j < len(msgs) && msgs[j] != nil && msgs[j].Role == schema.Tool {
 				j++
 			}
-			out = append(out, convertToolResultMessages(msgs[i:j]))
+			out = append(out, convertToolResultMessages(msgs[i:j], cacheResolver))
 			i = j
 		default:
-			item := convertUserMessage(msg, cacheUserText)
+			item := convertUserMessage(msg, cacheUserText, resolveMessageCacheControl(msg, cacheResolver))
 			if len(item.Content) > 0 {
 				out = append(out, item)
 			}
@@ -282,11 +288,54 @@ func mergeAdjacentSameRole(items []MessageItem) []MessageItem {
 	return merged
 }
 
-func convertAssistantMessage(msg *schema.Message) MessageItem {
+func convertAssistantMessage(msg *schema.Message, cacheControl *CacheControl) MessageItem {
 	var blocks []ContentBlock
-	text := strings.TrimSpace(msg.Content)
-	if text != "" {
-		blocks = append(blocks, ContentBlock{Type: "text", Text: text})
+	for _, part := range provider.ReasoningPartsFromMessage(msg) {
+		switch part.Type {
+		case schema.ChatMessagePartTypeReasoning:
+			if part.Reasoning == nil || part.Reasoning.Signature == "" ||
+				provider.IsGatewayThinkingSignature(part.Reasoning.Signature) {
+				continue
+			}
+			blocks = append(blocks, ContentBlock{
+				Type:      "thinking",
+				Thinking:  part.Reasoning.Text,
+				Signature: part.Reasoning.Signature,
+			})
+		case provider.ChatMessagePartTypeEncryptedReasoning:
+			data := provider.EncryptedReasoningData(part)
+			if data == "" {
+				continue
+			}
+			blocks = append(blocks, ContentBlock{
+				Type: "redacted_thinking",
+				Data: data,
+			})
+		}
+	}
+	visibleMultiContent := false
+	if len(msg.AssistantGenMultiContent) > 0 {
+		for _, part := range msg.AssistantGenMultiContent {
+			switch part.Type {
+			case schema.ChatMessagePartTypeText:
+				if strings.TrimSpace(part.Text) != "" {
+					blocks = append(blocks, ContentBlock{Type: "text", Text: part.Text})
+					visibleMultiContent = true
+				}
+			case schema.ChatMessagePartTypeImageURL:
+				if part.Image != nil {
+					blocks = append(blocks, ContentBlock{Type: "image", Source: imageSource(
+						part.Image.URL, part.Image.Base64Data, part.Image.MIMEType,
+					)})
+					visibleMultiContent = true
+				}
+			}
+		}
+	}
+	if !visibleMultiContent {
+		if text := strings.TrimSpace(msg.Content); text != "" {
+			blocks = append(blocks, ContentBlock{Type: "text", Text: text})
+		}
 	}
 	for _, tc := range msg.ToolCalls {
 		input := json.RawMessage(tc.Function.Arguments)
@@ -300,25 +349,28 @@ func convertAssistantMessage(msg *schema.Message) MessageItem {
 			Input: input,
 		})
 	}
+	applyMessageCacheControl(blocks, cacheControl)
 	return MessageItem{Role: "assistant", Content: blocks}
 }
 
-func convertToolResultMessages(msgs []*schema.Message) MessageItem {
+func convertToolResultMessages(msgs []*schema.Message, cacheResolver MessageCacheControlResolver) MessageItem {
 	var blocks []ContentBlock
 	for _, msg := range msgs {
 		if msg == nil {
 			continue
 		}
-		blocks = append(blocks, ContentBlock{
+		block := ContentBlock{
 			Type:      "tool_result",
 			ToolUseID: msg.ToolCallID,
 			Content:   msg.Content,
-		})
+		}
+		block.CacheControl = resolveMessageCacheControl(msg, cacheResolver)
+		blocks = append(blocks, block)
 	}
 	return MessageItem{Role: "user", Content: blocks}
 }
 
-func convertUserMessage(msg *schema.Message, cacheUserText bool) MessageItem {
+func convertUserMessage(msg *schema.Message, cacheUserText bool, explicitCacheControl *CacheControl) MessageItem {
 	var blocks []ContentBlock
 	cacheControl := userTextCacheControl(cacheUserText)
 
@@ -331,19 +383,13 @@ func convertUserMessage(msg *schema.Message, cacheUserText bool) MessageItem {
 				}
 			case schema.ChatMessagePartTypeImageURL:
 				if part.Image != nil {
-					src := &ImageSource{}
-					if part.Image.Base64Data != nil {
-						src.Type = "base64"
-						src.Data = *part.Image.Base64Data
-						src.MediaType = part.Image.MIMEType
-					} else if part.Image.URL != nil {
-						src.Type = "url"
-						src.URL = *part.Image.URL
-					}
-					blocks = append(blocks, ContentBlock{Type: "image", Source: src})
+					blocks = append(blocks, ContentBlock{Type: "image", Source: imageSource(
+						part.Image.URL, part.Image.Base64Data, part.Image.MIMEType,
+					)})
 				}
 			}
 		}
+		applyMessageCacheControl(blocks, explicitCacheControl)
 		return MessageItem{Role: "user", Content: blocks}
 	}
 
@@ -351,7 +397,34 @@ func convertUserMessage(msg *schema.Message, cacheUserText bool) MessageItem {
 	if text != "" {
 		blocks = append(blocks, ContentBlock{Type: "text", Text: text, CacheControl: cacheControl})
 	}
+	applyMessageCacheControl(blocks, explicitCacheControl)
 	return MessageItem{Role: "user", Content: blocks}
+}
+
+func imageSource(url, base64Data *string, mimeType string) *ImageSource {
+	source := &ImageSource{}
+	if base64Data != nil {
+		source.Type = "base64"
+		source.Data = *base64Data
+		source.MediaType = mimeType
+	} else if url != nil {
+		source.Type = "url"
+		source.URL = *url
+	}
+	return source
+}
+
+func resolveMessageCacheControl(msg *schema.Message, resolver MessageCacheControlResolver) *CacheControl {
+	if resolver == nil || msg == nil {
+		return nil
+	}
+	return resolver(msg)
+}
+
+func applyMessageCacheControl(blocks []ContentBlock, cacheControl *CacheControl) {
+	if len(blocks) > 0 && cacheControl != nil {
+		blocks[len(blocks)-1].CacheControl = cacheControl
+	}
 }
 
 func userTextCacheControl(enabled bool) *CacheControl {
@@ -367,9 +440,24 @@ func (r *MessagesResponse) ToChatResponse() *provider.ChatResponse {
 	}
 
 	var textParts []string
+	var reasoningParts []string
+	var structuredReasoning []schema.MessageOutputPart
 	var toolCalls []schema.ToolCall
 	for _, b := range r.Content {
 		switch b.Type {
+		case "thinking":
+			if b.Thinking != "" {
+				reasoningParts = append(reasoningParts, b.Thinking)
+			}
+			if b.Thinking != "" || b.Signature != "" {
+				structuredReasoning = append(structuredReasoning,
+					provider.NewReasoningOutputPart(b.Thinking, b.Signature, nil))
+			}
+		case "redacted_thinking":
+			if b.Data != "" {
+				structuredReasoning = append(structuredReasoning,
+					provider.NewEncryptedReasoningOutputPart(b.Data, nil))
+			}
 		case "text":
 			if b.Text != "" {
 				textParts = append(textParts, b.Text)
@@ -390,15 +478,16 @@ func (r *MessagesResponse) ToChatResponse() *provider.ChatResponse {
 		}
 	}
 
-	return &provider.ChatResponse{
-		Message: &schema.Message{
-			Role:      schema.Assistant,
-			Content:   strings.Join(textParts, "\n"),
-			ToolCalls: toolCalls,
-			ResponseMeta: &schema.ResponseMeta{
-				FinishReason: r.StopReason,
-				Usage:        r.Usage.TokenUsage(),
-			},
+	msg := &schema.Message{
+		Role:             schema.Assistant,
+		Content:          strings.Join(textParts, "\n"),
+		ReasoningContent: strings.Join(reasoningParts, "\n"),
+		ToolCalls:        toolCalls,
+		ResponseMeta: &schema.ResponseMeta{
+			FinishReason: r.StopReason,
+			Usage:        r.Usage.TokenUsage(),
 		},
 	}
+	provider.AttachReasoningParts(msg, structuredReasoning...)
+	return &provider.ChatResponse{Message: msg}
 }

@@ -1,9 +1,12 @@
 package anthropicbase
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
 // TestConvertMessagesMergesParallelAssistantToolCalls reproduces the Codex
@@ -23,7 +26,7 @@ func TestConvertMessagesMergesParallelAssistantToolCalls(t *testing.T) {
 		{Role: schema.Tool, ToolCallID: "t2", Content: "out2"},
 	}
 
-	out := ConvertMessages(msgs, &MessagesRequest{}, false)
+	out := ConvertMessages(msgs, &MessagesRequest{}, false, nil)
 
 	if len(out) != 2 {
 		t.Fatalf("message count = %d, want 2 (merged assistant + tool_result user)", len(out))
@@ -43,6 +46,96 @@ func TestConvertMessagesMergesParallelAssistantToolCalls(t *testing.T) {
 	}
 }
 
+func TestMessagesResponsePreservesReasoningBlocksForReplay(t *testing.T) {
+	resp := (&MessagesResponse{
+		Content: []ResponseBlock{
+			{Type: "thinking", Thinking: "inspect the repository", Signature: "opaque-signature"},
+			{Type: "redacted_thinking", Data: "opaque-redacted-data"},
+			{Type: "tool_use", ID: "tool-1", Name: "Read", Input: json.RawMessage(`{"path":"README.md"}`)},
+		},
+		StopReason: "tool_use",
+	}).ToChatResponse()
+
+	msg := resp.Message
+	if msg == nil || msg.ReasoningContent != "inspect the repository" {
+		t.Fatalf("reasoning content = %#v, want preserved", msg)
+	}
+	parts := provider.ReasoningPartsFromMessage(msg)
+	if len(parts) != 2 {
+		t.Fatalf("structured reasoning = %+v, want thinking and encrypted blocks", parts)
+	}
+	if len(msg.AssistantGenMultiContent) != 0 {
+		t.Fatalf("AssistantGenMultiContent = %+v, want gateway reasoning isolated in Extra", msg.AssistantGenMultiContent)
+	}
+	thinking := parts[0]
+	if thinking.Type != schema.ChatMessagePartTypeReasoning || thinking.Reasoning == nil ||
+		thinking.Reasoning.Signature != "opaque-signature" {
+		t.Fatalf("thinking part = %+v, want original signature", thinking)
+	}
+	redacted := parts[1]
+	if redacted.Type != provider.ChatMessagePartTypeEncryptedReasoning ||
+		provider.EncryptedReasoningData(redacted) != "opaque-redacted-data" {
+		t.Fatalf("encrypted reasoning part = %+v, want original data", redacted)
+	}
+
+	wire := ConvertMessages([]*schema.Message{msg}, &MessagesRequest{}, false, nil)
+	if len(wire) != 1 || len(wire[0].Content) != 3 {
+		t.Fatalf("wire messages = %+v, want one assistant with 3 blocks", wire)
+	}
+	if got := wire[0].Content[0]; got.Type != "thinking" || got.Thinking != "inspect the repository" || got.Signature != "opaque-signature" {
+		t.Fatalf("replayed thinking = %+v", got)
+	}
+	if got := wire[0].Content[1]; got.Type != "redacted_thinking" || got.Data != "opaque-redacted-data" {
+		t.Fatalf("replayed redacted thinking = %+v", got)
+	}
+}
+
+func TestConvertMessagesDropsThinkingWithoutAuthenticSignature(t *testing.T) {
+	msg := provider.AttachReasoningParts(&schema.Message{
+		Role:    schema.Assistant,
+		Content: "result",
+	},
+		provider.NewReasoningOutputPart("synthetic", provider.GatewayThinkingSignature("synthetic"), nil),
+		provider.NewReasoningOutputPart("interrupted", "", nil),
+		provider.NewReasoningOutputPart("authentic", "opaque-signature", nil),
+		provider.NewEncryptedReasoningOutputPart("opaque-redacted-data", nil),
+	)
+
+	wire := ConvertMessages([]*schema.Message{msg}, &MessagesRequest{}, false, nil)
+	if len(wire) != 1 || len(wire[0].Content) != 3 {
+		t.Fatalf("wire messages = %+v, want authentic thinking, redacted thinking, and text", wire)
+	}
+	if got := wire[0].Content[0]; got.Type != "thinking" || got.Thinking != "authentic" || got.Signature != "opaque-signature" {
+		t.Fatalf("thinking block = %+v, want only authentic signed thinking", got)
+	}
+	if got := wire[0].Content[1]; got.Type != "redacted_thinking" || got.Data != "opaque-redacted-data" {
+		t.Fatalf("redacted thinking block = %+v", got)
+	}
+	if got := wire[0].Content[2]; got.Type != "text" || got.Text != "result" {
+		t.Fatalf("text block = %+v", got)
+	}
+}
+
+func TestConvertAssistantFallsBackToContentWhenMultiContentHasNoVisibleBlocks(t *testing.T) {
+	msg := &schema.Message{
+		Role:    schema.Assistant,
+		Content: "visible fallback",
+		AssistantGenMultiContent: []schema.MessageOutputPart{
+			{Type: schema.ChatMessagePartTypeText, Text: "   "},
+			provider.NewReasoningOutputPart("private", "opaque-signature", nil),
+		},
+	}
+	provider.AttachReasoningParts(msg, provider.NewReasoningOutputPart("private", "opaque-signature", nil))
+
+	wire := ConvertMessages([]*schema.Message{msg}, &MessagesRequest{}, false, nil)
+	if len(wire) != 1 || len(wire[0].Content) != 2 {
+		t.Fatalf("wire messages = %+v, want thinking and fallback text", wire)
+	}
+	if got := wire[0].Content[1]; got.Type != "text" || got.Text != "visible fallback" {
+		t.Fatalf("fallback block = %+v, want visible Content", got)
+	}
+}
+
 // TestConvertMessagesMergesConsecutiveUserMessages verifies that leading
 // same-role user turns (Codex sends developer + multiple user items) collapse
 // into a single alternating user turn.
@@ -53,7 +146,7 @@ func TestConvertMessagesMergesConsecutiveUserMessages(t *testing.T) {
 		{Role: schema.Assistant, Content: "reply"},
 	}
 
-	out := ConvertMessages(msgs, &MessagesRequest{}, false)
+	out := ConvertMessages(msgs, &MessagesRequest{}, false, nil)
 
 	if len(out) != 2 {
 		t.Fatalf("message count = %d, want 2", len(out))

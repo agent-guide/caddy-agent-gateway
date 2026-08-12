@@ -33,6 +33,9 @@ type MessageItem struct {
 type ContentBlock struct {
 	Type         string          `json:"type"`
 	Text         string          `json:"text,omitempty"`
+	Thinking     string          `json:"thinking,omitempty"`
+	Signature    string          `json:"signature,omitempty"`
+	Data         string          `json:"data,omitempty"`
 	CacheControl *CacheControl   `json:"cache_control,omitempty"`
 	Source       *ImageSource    `json:"source,omitempty"`
 	ID           string          `json:"id,omitempty"`
@@ -57,6 +60,7 @@ type SystemBlock struct {
 
 type CacheControl struct {
 	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 type ToolDef struct {
@@ -72,6 +76,7 @@ type RequestMetadata struct {
 type ThinkingConfig struct {
 	Type         string `json:"type"`
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
+	Display      string `json:"display,omitempty"`
 }
 
 type ContextManagement struct {
@@ -96,11 +101,14 @@ type OutputFormat struct {
 }
 
 type ResponseBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text,omitempty"`
-	ID    string          `json:"id,omitempty"`
-	Name  string          `json:"name,omitempty"`
-	Input json.RawMessage `json:"input,omitempty"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text,omitempty"`
+	Thinking  string          `json:"thinking,omitempty"`
+	Signature string          `json:"signature,omitempty"`
+	Data      string          `json:"data,omitempty"`
+	ID        string          `json:"id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
 }
 
 type MessagesResponse struct {

@@ -238,8 +238,9 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 
 	chunkCount := 0
 	reasoningBlockStarted := false
-	reasoningBlockStopped := false
 	reasoningBlockIndex := -1
+	reasoningSourceIndex := -1
+	reasoningSignature := ""
 	var reasoningContent strings.Builder
 	textBlockStarted := false
 	textBlockIndex := -1
@@ -260,18 +261,26 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	toolBlocks := map[int]*streamToolBlock{}
 	var toolBlockOrder []int
 	closeReasoningBlock := func() {
-		if !reasoningBlockStarted || reasoningBlockStopped {
+		if !reasoningBlockStarted {
 			return
+		}
+		signature := reasoningSignature
+		if signature == "" {
+			signature = gatewayThinkingSignature(reasoningContent.String())
 		}
 		writeSSEEvent(w, "content_block_delta", map[string]any{
 			"type": "content_block_delta", "index": reasoningBlockIndex,
 			"delta": map[string]string{
 				"type":      "signature_delta",
-				"signature": gatewayThinkingSignature(reasoningContent.String()),
+				"signature": signature,
 			},
 		})
 		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": reasoningBlockIndex})
-		reasoningBlockStopped = true
+		reasoningBlockStarted = false
+		reasoningBlockIndex = -1
+		reasoningSourceIndex = -1
+		reasoningSignature = ""
+		reasoningContent.Reset()
 	}
 	for {
 		chunk, err := stream.Recv()
@@ -295,12 +304,77 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 			return
 		}
 		chunkCount++
-		if chunk != nil && chunk.ReasoningContent != "" && !reasoningBlockStopped && !textBlockStarted && !emittedToolUse {
-			// Anthropic thinking blocks must precede text and tool blocks. Chat
-			// providers such as GLM stream reasoning first; discard a provider's
-			// out-of-order late reasoning instead of emitting an invalid block order.
+		handledStructuredReasoning := false
+		if chunk != nil {
+			for _, part := range provider.ReasoningPartsFromMessage(chunk) {
+				sourceIndex := 0
+				if part.StreamingMeta != nil {
+					sourceIndex = part.StreamingMeta.Index
+				}
+				switch part.Type {
+				case schema.ChatMessagePartTypeReasoning:
+					handledStructuredReasoning = true
+					if textBlockStarted || emittedToolUse || part.Reasoning == nil {
+						continue
+					}
+					if reasoningBlockStarted && reasoningSourceIndex != sourceIndex {
+						closeReasoningBlock()
+					}
+					if !reasoningBlockStarted {
+						reasoningBlockIndex = nextBlockIndex
+						reasoningSourceIndex = sourceIndex
+						nextBlockIndex++
+						writeSSEEvent(w, "content_block_start", map[string]any{
+							"type": "content_block_start", "index": reasoningBlockIndex,
+							"content_block": map[string]string{"type": "thinking", "thinking": "", "signature": ""},
+						})
+						reasoningBlockStarted = true
+					}
+					if part.Reasoning.Text != "" {
+						reasoningContent.WriteString(part.Reasoning.Text)
+						writeSSEEvent(w, "content_block_delta", map[string]any{
+							"type": "content_block_delta", "index": reasoningBlockIndex,
+							"delta": map[string]string{"type": "thinking_delta", "thinking": part.Reasoning.Text},
+						})
+					}
+					if part.Reasoning.Signature != "" {
+						reasoningSignature += part.Reasoning.Signature
+					}
+				case provider.ChatMessagePartTypeEncryptedReasoning:
+					handledStructuredReasoning = true
+					if textBlockStarted || emittedToolUse {
+						continue
+					}
+					data := provider.EncryptedReasoningData(part)
+					if data == "" {
+						continue
+					}
+					closeReasoningBlock()
+					idx := nextBlockIndex
+					nextBlockIndex++
+					writeSSEEvent(w, "content_block_start", map[string]any{
+						"type": "content_block_start", "index": idx,
+						"content_block": map[string]string{
+							"type": "redacted_thinking", "data": data,
+						},
+					})
+					writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
+				case provider.ChatMessagePartTypeReasoningEnd:
+					handledStructuredReasoning = true
+					if reasoningBlockStarted && reasoningSourceIndex == sourceIndex {
+						closeReasoningBlock()
+					}
+				}
+			}
+		}
+
+		if chunk != nil && !handledStructuredReasoning && chunk.ReasoningContent != "" && !textBlockStarted && !emittedToolUse {
+			// Legacy chat providers expose reasoning only as a flat string. Keep
+			// that path valid while structured parts preserve real signatures for
+			// Anthropic-compatible providers.
 			if !reasoningBlockStarted {
 				reasoningBlockIndex = nextBlockIndex
+				reasoningSourceIndex = 0
 				nextBlockIndex++
 				writeSSEEvent(w, "content_block_start", map[string]any{
 					"type": "content_block_start", "index": reasoningBlockIndex,
@@ -313,8 +387,8 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 				"type": "content_block_delta", "index": reasoningBlockIndex,
 				"delta": map[string]string{"type": "thinking_delta", "thinking": chunk.ReasoningContent},
 			})
-			flusher.Flush()
 		}
+		flusher.Flush()
 
 		if text := extractText(chunk); text != "" {
 			closeReasoningBlock()

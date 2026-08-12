@@ -1,9 +1,7 @@
 package anthropic
 
 import (
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	einojsonschema "github.com/eino-contrib/jsonschema"
@@ -70,20 +68,21 @@ func (c *Converter) ToInternal(req *MessagesRequest) *provider.ChatRequest {
 // the provider can re-emit them on the upstream request.
 func chatExtraFields(req *MessagesRequest) *provider.ChatExtraFields {
 	extra := &provider.ChatExtraFields{}
-	if reasoning := reasoningFromThinking(req.Thinking); len(reasoning) > 0 {
-		extra.Reasoning = reasoning
+	if thinking := thinkingFields(req.Thinking); len(thinking) > 0 {
+		extra.Thinking = thinking
 	}
 	if user := userIDFromMetadata(req.Metadata); user != "" {
 		extra.Metadata = map[string]any{"user_id": user}
 	}
-	if format := responseFormatFromOutputConfig(req.OutputConfig); format != nil {
+	if effort, format := fieldsFromOutputConfig(req.OutputConfig); effort != "" || format != nil {
+		extra.ReasoningEffort = effort
 		extra.ResponseFormat = format
 	}
 	if disabled, ok := disableParallelToolUseFromToolChoice(req.ToolChoice); ok {
 		parallel := !disabled
 		extra.ParallelToolCalls = &parallel
 	}
-	if len(extra.Reasoning) == 0 && len(extra.Metadata) == 0 && extra.ResponseFormat == nil && extra.ParallelToolCalls == nil {
+	if len(extra.Thinking) == 0 && extra.ReasoningEffort == "" && len(extra.Metadata) == 0 && extra.ResponseFormat == nil && extra.ParallelToolCalls == nil {
 		return nil
 	}
 	return extra
@@ -102,30 +101,41 @@ func disableParallelToolUseFromToolChoice(raw json.RawMessage) (bool, bool) {
 	return *tc.DisableParallelToolUse, true
 }
 
-// reasoningFromThinking maps an inbound Anthropic thinking object onto the
-// reasoning map the provider understands ({type, budget_tokens}).
-func reasoningFromThinking(raw json.RawMessage) map[string]any {
+// thinkingFields preserves only the supported Anthropic thinking controls.
+// Keeping this separate from OpenAI/OpenRouter reasoning objects prevents
+// protocol-specific fields from leaking across upstream wire formats.
+func thinkingFields(raw json.RawMessage) map[string]any {
 	if len(raw) == 0 {
 		return nil
 	}
 	var thinking struct {
 		Type         string `json:"type"`
-		BudgetTokens int    `json:"budget_tokens"`
+		BudgetTokens any    `json:"budget_tokens"`
+		Display      string `json:"display"`
 	}
 	if err := json.Unmarshal(raw, &thinking); err != nil {
 		return nil
 	}
-	reasoning := map[string]any{}
-	if thinking.Type != "" {
-		reasoning["type"] = thinking.Type
+	fields := map[string]any{}
+	if value := strings.ToLower(strings.TrimSpace(thinking.Type)); value != "" {
+		switch value {
+		case "adaptive", "enabled", "disabled":
+			fields["type"] = value
+		}
 	}
-	if thinking.BudgetTokens > 0 {
-		reasoning["budget_tokens"] = thinking.BudgetTokens
+	if budget, ok := provider.PositiveIntValue(thinking.BudgetTokens); ok {
+		fields["budget_tokens"] = budget
 	}
-	if len(reasoning) == 0 {
+	if value := strings.ToLower(strings.TrimSpace(thinking.Display)); value != "" {
+		switch value {
+		case "summarized", "omitted":
+			fields["display"] = value
+		}
+	}
+	if len(fields) == 0 {
 		return nil
 	}
-	return reasoning
+	return fields
 }
 
 func userIDFromMetadata(raw json.RawMessage) string {
@@ -141,23 +151,27 @@ func userIDFromMetadata(raw json.RawMessage) string {
 	return strings.TrimSpace(metadata.UserID)
 }
 
-// responseFormatFromOutputConfig extracts the inbound structured-output format
-// so the provider can re-emit output_config.format on the upstream request.
-func responseFormatFromOutputConfig(raw json.RawMessage) any {
+// fieldsFromOutputConfig extracts the current Anthropic effort and structured
+// output controls so compatible providers can re-emit them upstream.
+func fieldsFromOutputConfig(raw json.RawMessage) (string, any) {
 	if len(raw) == 0 {
-		return nil
+		return "", nil
 	}
 	var outputConfig struct {
+		Effort string          `json:"effort"`
 		Format json.RawMessage `json:"format"`
 	}
-	if err := json.Unmarshal(raw, &outputConfig); err != nil || len(outputConfig.Format) == 0 {
-		return nil
+	if err := json.Unmarshal(raw, &outputConfig); err != nil {
+		return "", nil
+	}
+	if len(outputConfig.Format) == 0 {
+		return strings.TrimSpace(outputConfig.Effort), nil
 	}
 	var format any
 	if err := json.Unmarshal(outputConfig.Format, &format); err != nil {
-		return nil
+		return strings.TrimSpace(outputConfig.Effort), nil
 	}
-	return format
+	return strings.TrimSpace(outputConfig.Effort), format
 }
 
 func toolDefsToToolInfos(defs []ToolDefinition) []*schema.ToolInfo {
@@ -215,6 +229,7 @@ func convertMessageItem(m MessageItem) []*schema.Message {
 func convertAssistantItem(content MessageContent) []*schema.Message {
 	var textParts []string
 	var reasoningParts []string
+	var structuredReasoning []schema.MessageOutputPart
 	var toolCalls []schema.ToolCall
 	for _, block := range content {
 		switch block.Type {
@@ -225,6 +240,15 @@ func convertAssistantItem(content MessageContent) []*schema.Message {
 		case "thinking":
 			if block.Thinking != "" {
 				reasoningParts = append(reasoningParts, block.Thinking)
+			}
+			if block.Thinking != "" || block.Signature != "" {
+				structuredReasoning = append(structuredReasoning,
+					provider.NewReasoningOutputPart(block.Thinking, block.Signature, nil))
+			}
+		case "redacted_thinking":
+			if block.Data != "" {
+				structuredReasoning = append(structuredReasoning,
+					provider.NewEncryptedReasoningOutputPart(block.Data, nil))
 			}
 		case "tool_use":
 			inputStr := ""
@@ -242,15 +266,17 @@ func convertAssistantItem(content MessageContent) []*schema.Message {
 		}
 	}
 
-	if len(textParts) == 0 && len(reasoningParts) == 0 && len(toolCalls) == 0 {
+	if len(textParts) == 0 && len(structuredReasoning) == 0 && len(toolCalls) == 0 {
 		return nil
 	}
-	return []*schema.Message{{
+	msg := &schema.Message{
 		Role:             schema.Assistant,
 		Content:          strings.Join(textParts, "\n"),
 		ToolCalls:        toolCalls,
 		ReasoningContent: strings.Join(reasoningParts, "\n"),
-	}}
+	}
+	provider.AttachReasoningParts(msg, structuredReasoning...)
+	return []*schema.Message{msg}
 }
 
 func convertUserItem(content MessageContent) []*schema.Message {
@@ -356,7 +382,36 @@ func contentFromMessage(msg *schema.Message) []ContentBlockResponse {
 		return []ContentBlockResponse{}
 	}
 	var blocks []ContentBlockResponse
-	if msg.ReasoningContent != "" {
+	structuredReasoning := false
+	for _, part := range provider.ReasoningPartsFromMessage(msg) {
+		switch part.Type {
+		case schema.ChatMessagePartTypeReasoning:
+			if part.Reasoning == nil || (part.Reasoning.Text == "" && part.Reasoning.Signature == "") {
+				continue
+			}
+			structuredReasoning = true
+			signature := part.Reasoning.Signature
+			if signature == "" {
+				signature = gatewayThinkingSignature(part.Reasoning.Text)
+			}
+			blocks = append(blocks, ContentBlockResponse{
+				Type:      "thinking",
+				Thinking:  part.Reasoning.Text,
+				Signature: signature,
+			})
+		case provider.ChatMessagePartTypeEncryptedReasoning:
+			data := provider.EncryptedReasoningData(part)
+			if data == "" {
+				continue
+			}
+			structuredReasoning = true
+			blocks = append(blocks, ContentBlockResponse{
+				Type: "redacted_thinking",
+				Data: data,
+			})
+		}
+	}
+	if !structuredReasoning && msg.ReasoningContent != "" {
 		blocks = append(blocks, ContentBlockResponse{
 			Type:      "thinking",
 			Thinking:  msg.ReasoningContent,
@@ -385,8 +440,7 @@ func contentFromMessage(msg *schema.Message) []ContentBlockResponse {
 }
 
 func gatewayThinkingSignature(reasoning string) string {
-	sum := sha256.Sum256([]byte(reasoning))
-	return fmt.Sprintf("agw-thinking-%x", sum[:])
+	return provider.GatewayThinkingSignature(reasoning)
 }
 
 func contentText(blocks []ContentBlock) string {
@@ -456,6 +510,8 @@ type ContentBlock struct {
 	// type=thinking
 	Thinking  string `json:"thinking,omitempty"`
 	Signature string `json:"signature,omitempty"`
+	// type=redacted_thinking
+	Data string `json:"data,omitempty"`
 	// type=image
 	Source *ImageSource `json:"source,omitempty"`
 	// type=tool_use (assistant messages)
@@ -504,6 +560,8 @@ type ContentBlockResponse struct {
 	// type=thinking
 	Thinking  string `json:"thinking,omitempty"`
 	Signature string `json:"signature,omitempty"`
+	// type=redacted_thinking
+	Data string `json:"data,omitempty"`
 	// type=tool_use
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`

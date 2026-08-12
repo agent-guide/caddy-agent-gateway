@@ -8,10 +8,13 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
 type StreamState struct {
 	pendingToolCalls map[int]*pendingToolCall
+	reasoningBlocks  map[int]struct{}
 	usage            MessagesUsage
 }
 
@@ -29,7 +32,10 @@ func ReadMessageStream(body io.ReadCloser, sw *schema.StreamWriter[*schema.Messa
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	state := &StreamState{pendingToolCalls: make(map[int]*pendingToolCall)}
+	state := &StreamState{
+		pendingToolCalls: make(map[int]*pendingToolCall),
+		reasoningBlocks:  make(map[int]struct{}),
+	}
 	var eventName string
 	var data strings.Builder
 	for scanner.Scan() {
@@ -59,7 +65,16 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 		return nil
 	}
 	if state == nil {
-		state = &StreamState{pendingToolCalls: make(map[int]*pendingToolCall)}
+		state = &StreamState{
+			pendingToolCalls: make(map[int]*pendingToolCall),
+			reasoningBlocks:  make(map[int]struct{}),
+		}
+	}
+	if state.pendingToolCalls == nil {
+		state.pendingToolCalls = make(map[int]*pendingToolCall)
+	}
+	if state.reasoningBlocks == nil {
+		state.reasoningBlocks = make(map[int]struct{})
 	}
 
 	switch eventName {
@@ -81,12 +96,23 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 				Type string `json:"type"`
 				ID   string `json:"id"`
 				Name string `json:"name"`
+				Data string `json:"data"`
 			} `json:"content_block"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			return fmt.Errorf("%s: decode content_block_start: %w", errorPrefix, err)
 		}
-		if event.ContentBlock.Type == "tool_use" {
+		switch event.ContentBlock.Type {
+		case "thinking":
+			state.reasoningBlocks[event.Index] = struct{}{}
+			part := provider.NewReasoningOutputPart("", "", &event.Index)
+			sw.Send(provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant}, part), nil)
+		case "redacted_thinking":
+			if event.ContentBlock.Data != "" {
+				part := provider.NewEncryptedReasoningOutputPart(event.ContentBlock.Data, &event.Index)
+				sw.Send(provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant}, part), nil)
+			}
+		case "tool_use":
 			state.pendingToolCalls[event.Index] = &pendingToolCall{
 				index: event.Index,
 				id:    event.ContentBlock.ID,
@@ -100,6 +126,8 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 			Delta struct {
 				Type        string `json:"type"`
 				Text        string `json:"text"`
+				Thinking    string `json:"thinking"`
+				Signature   string `json:"signature"`
 				PartialJSON string `json:"partial_json"`
 			} `json:"delta"`
 		}
@@ -107,6 +135,15 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 			return fmt.Errorf("%s: decode stream delta: %w", errorPrefix, err)
 		}
 		switch event.Delta.Type {
+		case "thinking_delta":
+			part := provider.NewReasoningOutputPart(event.Delta.Thinking, "", &event.Index)
+			sw.Send(provider.AttachReasoningParts(&schema.Message{
+				Role:             schema.Assistant,
+				ReasoningContent: event.Delta.Thinking,
+			}, part), nil)
+		case "signature_delta":
+			part := provider.NewReasoningOutputPart("", event.Delta.Signature, &event.Index)
+			sw.Send(provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant}, part), nil)
 		case "text_delta":
 			if event.Delta.Text != "" {
 				sw.Send(&schema.Message{Role: schema.Assistant, Content: event.Delta.Text}, nil)
@@ -141,6 +178,11 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 				}},
 			}, nil)
 			delete(state.pendingToolCalls, event.Index)
+		}
+		if _, ok := state.reasoningBlocks[event.Index]; ok {
+			part := provider.NewReasoningEndOutputPart(event.Index)
+			sw.Send(provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant}, part), nil)
+			delete(state.reasoningBlocks, event.Index)
 		}
 
 	case "message_delta":

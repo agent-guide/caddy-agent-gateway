@@ -126,6 +126,260 @@ func TestChatMapsExpandedFieldsToMessagesRequest(t *testing.T) {
 	}
 }
 
+func TestChatReplaysGatewayReasoningWithoutUsingEinoMultimodalParts(t *testing.T) {
+	var reqBody anthropicbase.MessagesRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"thinking","thinking":"first step","signature":"response-signature-1"},{"type":"redacted_thinking","data":"response-redacted"},{"type":"thinking","thinking":"next step","signature":"response-signature-2"},{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":12,"output_tokens":34}}`))
+	}))
+	defer server.Close()
+
+	prov := newCaptureProvider(t, server.URL)
+	assistant := provider.AttachReasoningParts(&schema.Message{
+		Role: schema.Assistant,
+		AssistantGenMultiContent: []schema.MessageOutputPart{{
+			Type: schema.ChatMessagePartTypeText,
+			Text: "visible assistant text",
+		}},
+		Extra: map[string]any{
+			einoClaudeBreakpointKey:    true,
+			einoClaudeBreakpointTTLKey: "1h",
+		},
+		ToolCalls: []schema.ToolCall{{
+			ID: "tool-1", Type: "function",
+			Function: schema.FunctionCall{Name: "lookup", Arguments: `{"q":"x"}`},
+		}},
+	},
+		provider.NewReasoningOutputPart("inspect", "request-signature", nil),
+		provider.NewEncryptedReasoningOutputPart("opaque-redacted", nil),
+	)
+	resp, err := prov.Chat(context.Background(), &provider.ChatRequest{
+		Model: "claude-sonnet-4-20250514",
+		Messages: []*schema.Message{
+			schema.UserMessage("inspect"),
+			assistant,
+			{Role: schema.Tool, ToolCallID: "tool-1", Content: "result"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if len(reqBody.Messages) != 3 || len(reqBody.Messages[1].Content) != 4 {
+		t.Fatalf("messages = %+v, want signed thinking, redacted thinking, multimodal text, and tool use", reqBody.Messages)
+	}
+	if got := reqBody.Messages[1].Content[0]; got.Type != "thinking" || got.Thinking != "inspect" || got.Signature != "request-signature" {
+		t.Fatalf("replayed thinking = %+v", got)
+	}
+	if got := reqBody.Messages[1].Content[1]; got.Type != "redacted_thinking" || got.Data != "opaque-redacted" {
+		t.Fatalf("replayed redacted thinking = %+v", got)
+	}
+	if got := reqBody.Messages[1].Content[2]; got.Type != "text" || got.Text != "visible assistant text" {
+		t.Fatalf("replayed assistant multimodal text = %+v", got)
+	}
+	if got := reqBody.Messages[1].Content[3]; got.Type != "tool_use" || got.CacheControl == nil || got.CacheControl.Type != "ephemeral" || got.CacheControl.TTL != "1h" {
+		t.Fatalf("replayed tool/cache breakpoint = %+v", got)
+	}
+	parts := provider.ReasoningPartsFromMessage(resp.Message)
+	if len(parts) != 3 {
+		t.Fatalf("response reasoning = %+v, want all three wire blocks", parts)
+	}
+	if parts[0].Reasoning == nil || parts[0].Reasoning.Text != "first step" || parts[0].Reasoning.Signature != "response-signature-1" {
+		t.Fatalf("first response reasoning = %+v", parts[0])
+	}
+	if provider.EncryptedReasoningData(parts[1]) != "response-redacted" {
+		t.Fatalf("redacted response reasoning = %+v", parts[1])
+	}
+	if parts[2].Reasoning == nil || parts[2].Reasoning.Text != "next step" || parts[2].Reasoning.Signature != "response-signature-2" {
+		t.Fatalf("second response reasoning = %+v", parts[2])
+	}
+	if resp.Message.ReasoningContent != "first step\nnext step" {
+		t.Fatalf("ReasoningContent = %q, want both visible thinking blocks", resp.Message.ReasoningContent)
+	}
+}
+
+func TestChatReplaysOmittedThinkingWithAuthenticSignature(t *testing.T) {
+	var reqBody anthropicbase.MessagesRequest
+	server := newCaptureServer(t, &reqBody)
+	defer server.Close()
+
+	prov := newCaptureProvider(t, server.URL)
+	assistant := provider.AttachReasoningParts(&schema.Message{
+		Role: schema.Assistant,
+		ToolCalls: []schema.ToolCall{{
+			ID: "tool-1", Type: "function",
+			Function: schema.FunctionCall{Name: "lookup", Arguments: `{}`},
+		}},
+	}, provider.NewReasoningOutputPart("", "omitted-signature", nil))
+
+	_, err := prov.Chat(context.Background(), &provider.ChatRequest{
+		Model: "claude-opus-5",
+		Messages: []*schema.Message{
+			schema.UserMessage("inspect"),
+			assistant,
+			{Role: schema.Tool, ToolCallID: "tool-1", Content: "result"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if len(reqBody.Messages) != 3 || len(reqBody.Messages[1].Content) != 2 {
+		t.Fatalf("messages = %+v, want omitted thinking and tool use", reqBody.Messages)
+	}
+	if got := reqBody.Messages[1].Content[0]; got.Type != "thinking" || got.Thinking != "" || got.Signature != "omitted-signature" {
+		t.Fatalf("omitted thinking replay = %+v", got)
+	}
+}
+
+func TestChatUsesNativeEinoPathForSingleSignedThinking(t *testing.T) {
+	var reqBody anthropicbase.MessagesRequest
+	server := newCaptureServer(t, &reqBody)
+	defer server.Close()
+
+	prov := newCaptureProvider(t, server.URL)
+	assistant := provider.AttachReasoningParts(&schema.Message{
+		Role: schema.Assistant,
+		AssistantGenMultiContent: []schema.MessageOutputPart{{
+			Type: schema.ChatMessagePartTypeText,
+			Text: "visible assistant text",
+		}},
+		Extra: map[string]any{"_eino_claude_breakpoint": true},
+	}, provider.NewReasoningOutputPart("inspect", "request-signature", nil))
+
+	_, err := prov.Chat(context.Background(), &provider.ChatRequest{
+		Model: "claude-sonnet-4-20250514",
+		Messages: []*schema.Message{
+			schema.UserMessage("inspect"),
+			assistant,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if len(reqBody.Messages) != 2 || len(reqBody.Messages[1].Content) != 2 {
+		t.Fatalf("messages = %+v, want native thinking and multimodal text blocks", reqBody.Messages)
+	}
+	if got := reqBody.Messages[1].Content[0]; got.Type != "thinking" || got.Thinking != "inspect" || got.Signature != "request-signature" {
+		t.Fatalf("native thinking = %+v", got)
+	}
+	if got := reqBody.Messages[1].Content[1]; got.Type != "text" || got.Text != "visible assistant text" || got.CacheControl == nil || got.CacheControl.Type != "ephemeral" {
+		t.Fatalf("native assistant content = %+v, want text and cache breakpoint preserved", got)
+	}
+}
+
+func TestEinoReasoningStreamStatePreservesBlocksAndSignatureFragments(t *testing.T) {
+	state := &einoReasoningStreamState{}
+	chunks := []*schema.Message{
+		{Role: schema.Assistant, Extra: map[string]any{einoClaudeThinkingKey: "", einoClaudeThinkingSignatureKey: ""}},
+		{Role: schema.Assistant, Extra: map[string]any{einoClaudeThinkingKey: "inspect "}},
+		{Role: schema.Assistant, Extra: map[string]any{einoClaudeThinkingKey: "repo"}},
+		{Role: schema.Assistant, Extra: map[string]any{einoClaudeThinkingSignatureKey: "sig-"}},
+		{Role: schema.Assistant, Extra: map[string]any{einoClaudeThinkingSignatureKey: "one"}},
+		{Role: schema.Assistant, Extra: map[string]any{einoClaudeThinkingKey: "", einoClaudeThinkingSignatureKey: ""}},
+		{Role: schema.Assistant, Extra: map[string]any{einoClaudeThinkingSignatureKey: "sig-two"}},
+	}
+	for _, chunk := range chunks {
+		state.attach(chunk)
+	}
+
+	merged, err := schema.ConcatMessages(chunks)
+	if err != nil {
+		t.Fatalf("ConcatMessages() error = %v", err)
+	}
+	parts := provider.ReasoningPartsFromMessage(merged)
+	if len(parts) != 2 {
+		t.Fatalf("reasoning parts = %+v, want two streamed blocks", parts)
+	}
+	if got := parts[0]; got.StreamingMeta == nil || got.StreamingMeta.Index != 0 || got.Reasoning == nil || got.Reasoning.Text != "inspect repo" || got.Reasoning.Signature != "sig-one" {
+		t.Fatalf("first reasoning block = %+v", got)
+	}
+	if got := parts[1]; got.StreamingMeta == nil || got.StreamingMeta.Index != 1 || got.Reasoning == nil || got.Reasoning.Text != "" || got.Reasoning.Signature != "sig-two" {
+		t.Fatalf("second reasoning block = %+v", got)
+	}
+}
+
+func TestStreamChatPinsEinoThinkingBlockBoundaryContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-sonnet-4-20250514\",\"usage\":{\"input_tokens\":4,\"output_tokens\":1}}}\n\n",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"inspect\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig-\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"one\"}}\n\n",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":8}}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+		for _, event := range events {
+			_, _ = w.Write([]byte(event))
+		}
+	}))
+	defer server.Close()
+
+	prov := newCaptureProvider(t, server.URL)
+	stream, err := prov.StreamChat(context.Background(), &provider.ChatRequest{
+		Model:    "claude-sonnet-4-20250514",
+		Messages: []*schema.Message{schema.UserMessage("inspect")},
+	})
+	if err != nil {
+		t.Fatalf("StreamChat() error = %v", err)
+	}
+	defer stream.Close()
+
+	var chunks []*schema.Message
+	boundaryFound := false
+	for {
+		chunk, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		chunks = append(chunks, chunk)
+		for _, part := range provider.ReasoningPartsFromMessage(chunk) {
+			if part.StreamingMeta != nil && part.StreamingMeta.Index == 0 && part.Reasoning != nil && part.Reasoning.Text == "" && part.Reasoning.Signature == "" {
+				boundaryFound = true
+			}
+		}
+	}
+	if !boundaryFound {
+		t.Fatal("real eino stream parser did not expose the empty thinking/signature start markers")
+	}
+	merged, err := schema.ConcatMessages(chunks)
+	if err != nil {
+		t.Fatalf("ConcatMessages() error = %v", err)
+	}
+	parts := provider.ReasoningPartsFromMessage(merged)
+	if len(parts) != 1 {
+		t.Fatalf("reasoning parts = %+v, want one block from real eino stream parser", parts)
+	}
+	if got := parts[0]; got.StreamingMeta == nil || got.StreamingMeta.Index != 0 || got.Reasoning == nil || got.Reasoning.Text != "inspect" || got.Reasoning.Signature != "sig-one" {
+		t.Fatalf("first reasoning block = index=%v reasoning=%+v", got.StreamingMeta, got.Reasoning)
+	}
+}
+
+func TestExactThinkingReplayRejectsUnsupportedAssistantContent(t *testing.T) {
+	msg := provider.AttachReasoningParts(&schema.Message{
+		Role: schema.Assistant,
+		AssistantGenMultiContent: []schema.MessageOutputPart{{
+			Type:  schema.ChatMessagePartTypeAudioURL,
+			Audio: &schema.MessageOutputAudio{},
+		}},
+	}, provider.NewEncryptedReasoningOutputPart("opaque-redacted", nil))
+
+	_, _, err := adaptSignedReasoningMessages([]*schema.Message{msg})
+	if err == nil || !strings.Contains(err.Error(), "cannot preserve assistant part type") {
+		t.Fatalf("adaptSignedReasoningMessages() error = %v, want explicit loss-prevention error", err)
+	}
+}
+
 func TestCreateResponsesMapsResponsesContextToMessagesRequest(t *testing.T) {
 	var reqBody anthropicbase.MessagesRequest
 

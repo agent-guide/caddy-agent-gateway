@@ -606,9 +606,9 @@ func TestToInternalCarriesThinkingMetadataAndOutputConfig(t *testing.T) {
 		Model:        "claude-sonnet-4-5",
 		MaxTokens:    4096,
 		Messages:     []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "hi"}}}},
-		Thinking:     json.RawMessage(`{"type":"enabled","budget_tokens":2048}`),
+		Thinking:     json.RawMessage(`{"type":"enabled","budget_tokens":2048,"display":"summarized"}`),
 		Metadata:     json.RawMessage(`{"user_id":"end-user-1"}`),
-		OutputConfig: json.RawMessage(`{"format":{"type":"json_schema","schema":{"type":"object"}}}`),
+		OutputConfig: json.RawMessage(`{"effort":"max","format":{"type":"json_schema","schema":{"type":"object"}}}`),
 	}
 
 	chatReq := conv.ToInternal(req)
@@ -616,11 +616,14 @@ func TestToInternalCarriesThinkingMetadataAndOutputConfig(t *testing.T) {
 	if extra == nil {
 		t.Fatal("ChatExtraFields = nil, want inbound thinking/metadata/output_config carried through")
 	}
-	if extra.Reasoning["type"] != "enabled" {
-		t.Fatalf("reasoning type = %v, want enabled", extra.Reasoning["type"])
+	if extra.Thinking["type"] != "enabled" {
+		t.Fatalf("thinking type = %v, want enabled", extra.Thinking["type"])
 	}
-	if budget, _ := extra.Reasoning["budget_tokens"].(int); budget != 2048 {
-		t.Fatalf("reasoning budget_tokens = %v, want 2048", extra.Reasoning["budget_tokens"])
+	if budget, _ := extra.Thinking["budget_tokens"].(int); budget != 2048 {
+		t.Fatalf("thinking budget_tokens = %v, want 2048", extra.Thinking["budget_tokens"])
+	}
+	if extra.Thinking["display"] != "summarized" || extra.ReasoningEffort != "max" {
+		t.Fatalf("thinking controls = %+v/%q, want display=summarized effort=max", extra.Thinking, extra.ReasoningEffort)
 	}
 	if extra.Metadata["user_id"] != "end-user-1" {
 		t.Fatalf("metadata user_id = %v, want end-user-1", extra.Metadata["user_id"])
@@ -631,6 +634,25 @@ func TestToInternalCarriesThinkingMetadataAndOutputConfig(t *testing.T) {
 	}
 }
 
+func TestToInternalFiltersUnknownThinkingFieldsAndInvalidBudget(t *testing.T) {
+	chatReq := (&Converter{}).ToInternal(&MessagesRequest{
+		Model:     "claude-sonnet-4-5",
+		MaxTokens: 4096,
+		Messages:  []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "hi"}}}},
+		Thinking:  json.RawMessage(`{"type":"enabled","budget_tokens":-1,"display":"summarized","vendor_secret":"leak"}`),
+	})
+	extra := provider.ChatExtraFieldsFromOptions(chatReq.Options...)
+	if extra == nil || extra.Thinking["type"] != "enabled" || extra.Thinking["display"] != "summarized" {
+		t.Fatalf("thinking = %+v, want supported fields", extra)
+	}
+	if _, ok := extra.Thinking["budget_tokens"]; ok {
+		t.Fatalf("thinking = %+v, want invalid budget removed", extra.Thinking)
+	}
+	if _, ok := extra.Thinking["vendor_secret"]; ok {
+		t.Fatalf("thinking = %+v, want unknown field removed", extra.Thinking)
+	}
+}
+
 func TestAnthropicConverterRoundTripsProviderReasoning(t *testing.T) {
 	conv := &Converter{}
 	chatReq := conv.ToInternal(&MessagesRequest{
@@ -638,7 +660,10 @@ func TestAnthropicConverterRoundTripsProviderReasoning(t *testing.T) {
 		Messages: []MessageItem{{
 			Role: "assistant",
 			Content: MessageContent{
+				{Type: "thinking"},
 				{Type: "thinking", Thinking: "inspect first", Signature: "opaque"},
+				{Type: "redacted_thinking"},
+				{Type: "redacted_thinking", Data: "opaque-redacted"},
 				{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"README.md"}`)},
 			},
 		}},
@@ -646,18 +671,39 @@ func TestAnthropicConverterRoundTripsProviderReasoning(t *testing.T) {
 	if len(chatReq.Messages) != 1 || chatReq.Messages[0].ReasoningContent != "inspect first" || len(chatReq.Messages[0].ToolCalls) != 1 {
 		t.Fatalf("chat messages = %+v", chatReq.Messages)
 	}
+	if parts := provider.ReasoningPartsFromMessage(chatReq.Messages[0]); len(parts) != 2 ||
+		parts[0].Reasoning == nil || parts[0].Reasoning.Signature != "opaque" ||
+		provider.EncryptedReasoningData(parts[1]) != "opaque-redacted" {
+		t.Fatalf("structured reasoning = %+v, want original thinking metadata", parts)
+	}
+	if len(chatReq.Messages[0].AssistantGenMultiContent) != 0 {
+		t.Fatalf("AssistantGenMultiContent = %+v, want gateway reasoning isolated in Extra", chatReq.Messages[0].AssistantGenMultiContent)
+	}
 
-	resp := conv.FromInternal(&provider.ChatResponse{Message: &schema.Message{
+	responseMessage := provider.AttachReasoningParts(&schema.Message{
 		Role: schema.Assistant, Content: "done", ReasoningContent: "inspect first",
-	}}, "glm-5.2")
-	if len(resp.Content) != 2 || resp.Content[0].Type != "thinking" || resp.Content[0].Thinking != "inspect first" || resp.Content[0].Signature == "" {
+	},
+		provider.NewReasoningOutputPart("inspect first", "opaque", nil),
+		provider.NewEncryptedReasoningOutputPart("opaque-redacted", nil),
+	)
+	resp := conv.FromInternal(&provider.ChatResponse{Message: responseMessage}, "glm-5.2")
+	if len(resp.Content) != 3 || resp.Content[0].Type != "thinking" || resp.Content[0].Thinking != "inspect first" || resp.Content[0].Signature != "opaque" {
 		t.Fatalf("response content = %+v", resp.Content)
 	}
-	if !strings.HasPrefix(resp.Content[0].Signature, "agw-thinking-") {
-		t.Fatalf("thinking signature = %q, want provider-neutral gateway prefix", resp.Content[0].Signature)
+	if resp.Content[1].Type != "redacted_thinking" || resp.Content[1].Data != "opaque-redacted" {
+		t.Fatalf("redacted thinking = %+v", resp.Content[1])
 	}
-	if resp.Content[1].Type != "text" || resp.Content[1].Text != "done" {
-		t.Fatalf("response text = %+v", resp.Content[1])
+	if resp.Content[2].Type != "text" || resp.Content[2].Text != "done" {
+		t.Fatalf("response text = %+v", resp.Content[2])
+	}
+}
+
+func TestAnthropicConverterSynthesizesSignatureForFlatReasoning(t *testing.T) {
+	resp := (&Converter{}).FromInternal(&provider.ChatResponse{Message: &schema.Message{
+		Role: schema.Assistant, ReasoningContent: "inspect first",
+	}}, "reasoning-model")
+	if len(resp.Content) != 1 || !strings.HasPrefix(resp.Content[0].Signature, "agw-thinking-") {
+		t.Fatalf("response content = %+v, want provider-neutral fallback signature", resp.Content)
 	}
 }
 
@@ -698,6 +744,67 @@ func TestServeLLMApiStreamsProviderReasoningAsThinkingBlock(t *testing.T) {
 		if !strings.Contains(bodyText, want) {
 			t.Fatalf("stream missing %q: %s", want, bodyText)
 		}
+	}
+}
+
+func TestServeLLMApiStreamsStructuredReasoningWithoutChangingOpaqueState(t *testing.T) {
+	handler := NewHandler(nil)
+	index := 0
+	reasoningChunk := func(msg *schema.Message, parts ...schema.MessageOutputPart) *schema.Message {
+		return provider.AttachReasoningParts(msg, parts...)
+	}
+	prov := &testStreamingProvider{
+		cfg: provider.ProviderConfig{Id: "anthropic-compatible", ProviderType: "claudecode"},
+		chunks: []*schema.Message{
+			reasoningChunk(&schema.Message{Role: schema.Assistant},
+				provider.NewReasoningOutputPart("", "", &index),
+			),
+			reasoningChunk(&schema.Message{Role: schema.Assistant, ReasoningContent: "inspect"},
+				provider.NewReasoningOutputPart("inspect", "", &index),
+			),
+			reasoningChunk(&schema.Message{Role: schema.Assistant},
+				provider.NewReasoningOutputPart("", "opaque-", &index),
+			),
+			reasoningChunk(&schema.Message{Role: schema.Assistant},
+				provider.NewReasoningOutputPart("", "signature", &index),
+			),
+			reasoningChunk(&schema.Message{Role: schema.Assistant},
+				provider.NewReasoningEndOutputPart(index),
+			),
+			reasoningChunk(&schema.Message{Role: schema.Assistant},
+				provider.NewEncryptedReasoningOutputPart("opaque-redacted", nil),
+			),
+			{Role: schema.Assistant, Content: "done", ResponseMeta: &schema.ResponseMeta{FinishReason: "stop"}},
+		},
+	}
+	body, err := json.Marshal(MessagesRequest{
+		Model: "reasoning-model", MaxTokens: 4096, Stream: true,
+		Messages: []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "inspect"}}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi returned error: %v", err)
+	}
+	bodyText := rec.Body.String()
+	for _, want := range []string{
+		`"delta":{"signature":"opaque-signature","type":"signature_delta"}`,
+		`"content_block":{"data":"opaque-redacted","type":"redacted_thinking"}`,
+		`"delta":{"text":"done","type":"text_delta"}`,
+	} {
+		if !strings.Contains(bodyText, want) {
+			t.Fatalf("stream missing %q: %s", want, bodyText)
+		}
+	}
+	if strings.Contains(bodyText, gatewayThinkingSignature("inspect")) {
+		t.Fatalf("stream replaced upstream signature: %s", bodyText)
 	}
 }
 
