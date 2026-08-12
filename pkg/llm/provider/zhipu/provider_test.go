@@ -108,7 +108,11 @@ func TestGeneratePreservesStandardEndpointReasoningEffort(t *testing.T) {
 		Model:    "glm-standard",
 		Messages: []*schema.Message{{Role: schema.User, Content: "inspect"}},
 		Options: []einomodel.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
-			Thinking:        map[string]any{"type": "adaptive"},
+			Thinking: map[string]any{
+				"type":          "adaptive",
+				"budget_tokens": 8192,
+				"display":       "summarized",
+			},
 			ReasoningEffort: "xhigh",
 		})},
 	}
@@ -116,6 +120,9 @@ func TestGeneratePreservesStandardEndpointReasoningEffort(t *testing.T) {
 	thinking := captured["thinking"].(map[string]any)
 	if thinking["type"] != "enabled" {
 		t.Fatalf("thinking = %#v, want adaptive normalized to enabled", thinking)
+	}
+	if len(thinking) != 1 {
+		t.Fatalf("thinking = %#v, want only GLM-supported type field", thinking)
 	}
 	if captured["reasoning_effort"] != "xhigh" {
 		t.Fatalf("reasoning_effort = %#v, want xhigh preserved", captured["reasoning_effort"])

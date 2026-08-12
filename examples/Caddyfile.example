@@ -76,21 +76,24 @@
 		# 	target provider deepseek-simulated-openai
 		# }
 
-		# Claude Code -> Zhipu coding endpoint.
-		# provider zhipu-for-cc {
-		# 	provider_type zhipu
+		# Claude Code -> Zhipu Anthropic Messages endpoint. Capability values are
+		# explicit because claudecode also serves non-GLM compatible endpoints.
+		# provider zhipu-anthropic-for-cc {
+		# 	provider_type claudecode
 		# 	api_key {$ZHIPU_API_KEY}
-		# 	base_url https://open.bigmodel.cn/api/coding/paas/v4
-		# 	option api_profile coding_plan
-		# 	default_model glm-5.2
-		# 	# Strip top-level metadata/user fields rejected by this endpoint.
-		# 	option compact cc
+		# 	base_url https://open.bigmodel.cn/api/anthropic
+		# 	default_model glm-5.2[1m]
+		# 	option api_key_header authorization
+		# 	option context_window 1000000
+		# 	option max_output_tokens 128000
+		# 	option default_max_tokens 65536
+		# 	option vision false
 		# }
-		# route cc-zhipu-chat {
+		# route cc-zhipu-messages {
 		# 	protocol cc
-		# 	path_prefix /cczpchat
+		# 	path_prefix /cczp
 		# 	require_virtual_key false
-		# 	target provider zhipu-for-cc
+		# 	target provider zhipu-anthropic-for-cc
 		# }
 
 		# Codex -> Zhipu coding endpoint.

@@ -99,7 +99,7 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 		return nil, nil, nil, err
 	}
 	opts := append([]einomodel.Option(nil), state.Options...)
-	extraFields := provider.ChatCompletionsExtraFieldsFromOptions(provider.ReasoningEffortField, state.Options...)
+	extraFields := provider.ChatCompletionsExtraFieldsFromOptions(provider.OpenAIChatCompletionsFields, state.Options...)
 	if p.CCCompat {
 		provider.StripCCUnsupportedChatFields(extraFields)
 	}
@@ -135,6 +135,9 @@ func requestEnableThinking(state *provider.ChatRequestState) *bool {
 		return nil
 	}
 	if extra := provider.ChatExtraFieldsFromOptions(state.Options...); extra != nil {
+		if v := enableFromReasoning(extra.Thinking); v != nil {
+			return v
+		}
 		if v := enableFromReasoning(extra.Reasoning); v != nil {
 			return v
 		}

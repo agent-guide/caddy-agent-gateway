@@ -21,7 +21,7 @@ func TestChatCompletionsExtraFieldsFromOptionsEffortStyle(t *testing.T) {
 		}),
 	}
 
-	fields := ChatCompletionsExtraFieldsFromOptions(ReasoningEffortField, opts...)
+	fields := ChatCompletionsExtraFieldsFromOptions(OpenAIChatCompletionsFields, opts...)
 	if fields["user"] != "user-1" {
 		t.Fatalf("user = %#v, want user-1", fields["user"])
 	}
@@ -58,7 +58,7 @@ func TestChatCompletionsExtraFieldsFromOptionsObjectStyle(t *testing.T) {
 		}),
 	}
 
-	fields := ChatCompletionsExtraFieldsFromOptions(ReasoningObjectField, opts...)
+	fields := ChatCompletionsExtraFieldsFromOptions(OpenRouterChatCompletionsFields, opts...)
 	if fields["user"] != "user-1" {
 		t.Fatalf("user = %#v, want user-1", fields["user"])
 	}
@@ -88,7 +88,7 @@ func TestChatCompletionsExtraFieldsFromOptionsReshapesJSONSchema(t *testing.T) {
 		}),
 	}
 
-	fields := ChatCompletionsExtraFieldsFromOptions(ReasoningEffortField, opts...)
+	fields := ChatCompletionsExtraFieldsFromOptions(OpenAIChatCompletionsFields, opts...)
 	format, ok := fields["response_format"].(map[string]any)
 	if !ok {
 		t.Fatalf("response_format = %#v, want map", fields["response_format"])
@@ -122,6 +122,7 @@ func TestChatCompletionsExtraFieldsFromOptionsChatExtraOverlay(t *testing.T) {
 			ResponseFormat:    responseFormat,
 			Reasoning:         map[string]any{"effort": "medium", "exclude": true},
 			ReasoningEffort:   "low",
+			Thinking:          map[string]any{"type": "enabled"},
 			User:              "user-1",
 			Metadata:          map[string]any{"trace_id": "abc123"},
 			ParallelToolCalls: &parallelToolCalls,
@@ -129,7 +130,7 @@ func TestChatCompletionsExtraFieldsFromOptionsChatExtraOverlay(t *testing.T) {
 		}),
 	}
 
-	effort := ChatCompletionsExtraFieldsFromOptions(ReasoningEffortField, opts...)
+	effort := ChatCompletionsExtraFieldsFromOptions(OpenAIChatCompletionsFields, opts...)
 	if !reflect.DeepEqual(effort["response_format"], responseFormat) {
 		t.Fatalf("response_format = %+v, want chat-shaped passthrough", effort["response_format"])
 	}
@@ -149,11 +150,65 @@ func TestChatCompletionsExtraFieldsFromOptionsChatExtraOverlay(t *testing.T) {
 	if effort["store"] != true {
 		t.Fatalf("store = %#v, want true", effort["store"])
 	}
+	if _, ok := effort["thinking"]; ok {
+		t.Fatalf("OpenAI fields leaked Anthropic thinking: %+v", effort)
+	}
 
-	object := ChatCompletionsExtraFieldsFromOptions(ReasoningObjectField, opts...)
+	object := ChatCompletionsExtraFieldsFromOptions(OpenRouterChatCompletionsFields, opts...)
 	reasoning, _ := object["reasoning"].(map[string]any)
 	if reasoning["effort"] != "low" {
 		t.Fatalf("reasoning = %+v, want effort low for object style", object["reasoning"])
+	}
+	if reasoning["exclude"] != true {
+		t.Fatalf("reasoning = %+v, want existing object fields preserved", object["reasoning"])
+	}
+}
+
+func TestChatCompletionsExtraFieldsUsesTargetDialect(t *testing.T) {
+	opts := []einomodel.Option{WithChatExtraFields(&ChatExtraFields{
+		Thinking:        map[string]any{"type": "enabled", "budget_tokens": 4096},
+		ReasoningEffort: "max",
+	})}
+
+	openAI := ChatCompletionsExtraFieldsFromOptions(OpenAIChatCompletionsFields, opts...)
+	if _, ok := openAI["thinking"]; ok {
+		t.Fatalf("OpenAI fields = %+v, want thinking omitted", openAI)
+	}
+	if openAI["reasoning_effort"] != "xhigh" {
+		t.Fatalf("OpenAI reasoning_effort = %#v, want max normalized to xhigh", openAI["reasoning_effort"])
+	}
+
+	openRouter := ChatCompletionsExtraFieldsFromOptions(OpenRouterChatCompletionsFields, opts...)
+	openRouterReasoning, _ := openRouter["reasoning"].(map[string]any)
+	if openRouterReasoning["effort"] != "max" || openRouterReasoning["max_tokens"] != 4096 {
+		t.Fatalf("OpenRouter reasoning = %+v, want passthrough effort and mapped max_tokens", openRouterReasoning)
+	}
+
+	zhipu := ChatCompletionsExtraFieldsFromOptions(ZhipuChatCompletionsFields, opts...)
+	if !reflect.DeepEqual(zhipu["thinking"], map[string]any{"type": "enabled", "budget_tokens": 4096}) {
+		t.Fatalf("Zhipu thinking = %+v, want preserved", zhipu["thinking"])
+	}
+	if zhipu["reasoning_effort"] != "max" {
+		t.Fatalf("Zhipu reasoning_effort = %#v, want max", zhipu["reasoning_effort"])
+	}
+}
+
+func TestChatCompletionsExtraFieldsIgnoresThinkingBudgetForEffortStyle(t *testing.T) {
+	policy := ChatCompletionsFieldPolicy{
+		ReasoningStyle:      ReasoningEffortField,
+		ThinkingBudgetField: "max_tokens",
+	}
+	opts := []einomodel.Option{WithChatExtraFields(&ChatExtraFields{
+		Thinking:        map[string]any{"budget_tokens": 4096},
+		ReasoningEffort: "high",
+	})}
+
+	fields := ChatCompletionsExtraFieldsFromOptions(policy, opts...)
+	if fields["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning_effort = %#v, want high", fields["reasoning_effort"])
+	}
+	if _, ok := fields["reasoning"]; ok {
+		t.Fatalf("effort-style fields must not include reasoning object: %+v", fields)
 	}
 }
 

@@ -628,7 +628,7 @@ func TestPrepareLLMApiRequestPreservesChatCompletionResponseFormatAndReasoning(t
 		t.Fatal("prepared chat request is nil")
 	}
 
-	fields := provider.ChatCompletionsExtraFieldsFromOptions(provider.ReasoningEffortField, prepared.ChatRequest.Options...)
+	fields := provider.ChatCompletionsExtraFieldsFromOptions(provider.ZhipuChatCompletionsFields, prepared.ChatRequest.Options...)
 	if fields["reasoning_effort"] != "high" {
 		t.Fatalf("reasoning_effort = %#v, want high", fields["reasoning_effort"])
 	}

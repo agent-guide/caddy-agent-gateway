@@ -4,7 +4,6 @@ package zhipu
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	einoopenai "github.com/cloudwego/eino-ext/components/model/openai"
@@ -146,7 +145,7 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest, 
 		return nil, nil, nil, err
 	}
 	opts := append([]einomodel.Option(nil), state.Options...)
-	extraFields := provider.ChatCompletionsExtraFieldsFromOptions(provider.ReasoningEffortField, state.Options...)
+	extraFields := provider.ChatCompletionsExtraFieldsFromOptions(provider.ZhipuChatCompletionsFields, state.Options...)
 	normalizeZhipuExtraFields(extraFields, p.apiProfile == apiProfileCodingPlan)
 	if p.CCCompat {
 		provider.StripCCUnsupportedChatFields(extraFields)
@@ -233,69 +232,16 @@ func inferredAPIProfile(baseURL string) apiProfile {
 }
 
 func capabilitiesFromOptions(options map[string]any, profile apiProfile) (provider.ProviderCapabilities, error) {
-	capabilities := defaultCapabilities(profile)
-	var err error
-	if capabilities.ContextWindow, err = positiveIntOption(options, "context_window", capabilities.ContextWindow); err != nil {
-		return provider.ProviderCapabilities{}, err
-	}
-	if capabilities.MaxOutputTokens, err = positiveIntOption(options, "max_output_tokens", capabilities.MaxOutputTokens); err != nil {
-		return provider.ProviderCapabilities{}, err
-	}
-	if capabilities.Vision, err = boolOption(options, "vision", capabilities.Vision); err != nil {
-		return provider.ProviderCapabilities{}, err
-	}
-	if capabilities.Embeddings, err = boolOption(options, "embeddings", capabilities.Embeddings); err != nil {
-		return provider.ProviderCapabilities{}, err
+	capabilities, err := provider.CapabilitiesFromOptions(options, defaultCapabilities(profile),
+		provider.CapabilityContextWindow,
+		provider.CapabilityMaxOutputTokens,
+		provider.CapabilityVision,
+		provider.CapabilityEmbeddings,
+	)
+	if err != nil {
+		return provider.ProviderCapabilities{}, fmt.Errorf("zhipu: %w", err)
 	}
 	return capabilities, nil
-}
-
-func positiveIntOption(options map[string]any, name string, fallback int) (int, error) {
-	raw, ok := options[name]
-	if !ok {
-		return fallback, nil
-	}
-	var value int64
-	switch typed := raw.(type) {
-	case string:
-		parsed, err := strconv.ParseInt(strings.TrimSpace(typed), 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("zhipu: option %s must be a positive integer", name)
-		}
-		value = parsed
-	case int:
-		value = int64(typed)
-	case int64:
-		value = typed
-	case float64:
-		value = int64(typed)
-		if float64(value) != typed {
-			return 0, fmt.Errorf("zhipu: option %s must be a positive integer", name)
-		}
-	default:
-		return 0, fmt.Errorf("zhipu: option %s must be a positive integer", name)
-	}
-	if value <= 0 || int64(int(value)) != value {
-		return 0, fmt.Errorf("zhipu: option %s must be a positive integer", name)
-	}
-	return int(value), nil
-}
-
-func boolOption(options map[string]any, name string, fallback bool) (bool, error) {
-	raw, ok := options[name]
-	if !ok {
-		return fallback, nil
-	}
-	switch typed := raw.(type) {
-	case bool:
-		return typed, nil
-	case string:
-		value, err := strconv.ParseBool(strings.TrimSpace(typed))
-		if err == nil {
-			return value, nil
-		}
-	}
-	return false, fmt.Errorf("zhipu: option %s must be a boolean", name)
 }
 
 func (p *Provider) Config() provider.ProviderConfig {
@@ -376,10 +322,14 @@ func reasoningEffort(extra *provider.ChatExtraFields) string {
 
 func normalizeZhipuExtraFields(fields map[string]any, codingPlan bool) {
 	if thinking, ok := fields["thinking"].(map[string]any); ok {
-		if typ, _ := thinking["type"].(string); typ != "" {
-			if normalized := normalizeThinkingType(typ); normalized != "" {
-				thinking["type"] = normalized
-			}
+		typ, _ := thinking["type"].(string)
+		if normalized := normalizeThinkingType(typ); normalized != "" {
+			// GLM's chat-completions dialect accepts only thinking.type.
+			// Rebuild the object so Anthropic-only controls such as
+			// budget_tokens and display never cross the wire boundary.
+			fields["thinking"] = map[string]any{"type": normalized}
+		} else {
+			delete(fields, "thinking")
 		}
 	}
 	if !codingPlan {

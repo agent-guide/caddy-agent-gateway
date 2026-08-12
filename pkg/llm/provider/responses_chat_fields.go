@@ -20,26 +20,56 @@ const (
 	ReasoningObjectField
 )
 
+// ChatCompletionsFieldPolicy describes the reasoning controls accepted by one
+// chat-completions wire dialect. Anthropic-native `thinking` must be opted into
+// explicitly instead of leaking into every OpenAI-compatible provider.
+type ChatCompletionsFieldPolicy struct {
+	ReasoningStyle ReasoningFieldStyle
+	AllowThinking  bool
+	AllowedEfforts []string
+	EffortAliases  map[string]string
+	// ThinkingBudgetField maps Anthropic thinking.budget_tokens into a field
+	// on a structured reasoning object. It is ignored for effort-style dialects.
+	ThinkingBudgetField string
+}
+
+var (
+	OpenAIChatCompletionsFields = ChatCompletionsFieldPolicy{
+		ReasoningStyle: ReasoningEffortField,
+		AllowedEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh"},
+		EffortAliases:  map[string]string{"max": "xhigh"},
+	}
+	OpenRouterChatCompletionsFields = ChatCompletionsFieldPolicy{
+		ReasoningStyle:      ReasoningObjectField,
+		ThinkingBudgetField: "max_tokens",
+	}
+	ZhipuChatCompletionsFields = ChatCompletionsFieldPolicy{
+		ReasoningStyle: ReasoningEffortField,
+		AllowThinking:  true,
+		AllowedEfforts: []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"},
+	}
+)
+
 // ChatCompletionsExtraFieldsFromOptions maps preserved request context onto
 // chat-completions-style request fields shared by OpenAI-compatible upstreams.
 // It folds in both the Responses API request context (when a Responses request
 // was bridged onto chat) and the inbound chat extra fields, emitting only fields
 // expressible on the chat wire shape. The reasoning style selects how reasoning
 // is encoded for the target dialect.
-func ChatCompletionsExtraFieldsFromOptions(reasoning ReasoningFieldStyle, opts ...einomodel.Option) map[string]any {
+func ChatCompletionsExtraFieldsFromOptions(policy ChatCompletionsFieldPolicy, opts ...einomodel.Option) map[string]any {
 	fields := map[string]any{}
 
 	if ctx := ResponsesRequestContextFromOptions(opts...); ctx != nil {
 		if format := responseFormatFromResponsesText(ctx.Text); format != nil {
 			fields["response_format"] = format
 		}
-		switch reasoning {
+		switch policy.ReasoningStyle {
 		case ReasoningObjectField:
 			if len(ctx.Reasoning) > 0 {
-				fields["reasoning"] = cloneMap(ctx.Reasoning)
+				fields["reasoning"] = normalizedReasoningObject(ctx.Reasoning, policy)
 			}
 		default:
-			if effort := reasoningEffortFromResponsesReasoning(ctx.Reasoning); effort != "" {
+			if effort := normalizeReasoningEffort(reasoningEffortFromResponsesReasoning(ctx.Reasoning), policy); effort != "" {
 				fields["reasoning_effort"] = effort
 			}
 		}
@@ -62,21 +92,38 @@ func ChatCompletionsExtraFieldsFromOptions(reasoning ReasoningFieldStyle, opts .
 			fields["response_format"] = chatExtra.ResponseFormat
 		}
 		if len(chatExtra.Reasoning) > 0 {
-			if reasoning == ReasoningObjectField {
-				fields["reasoning"] = cloneMap(chatExtra.Reasoning)
-			} else if effort := reasoningEffortFromResponsesReasoning(chatExtra.Reasoning); effort != "" {
+			if policy.ReasoningStyle == ReasoningObjectField {
+				fields["reasoning"] = normalizedReasoningObject(chatExtra.Reasoning, policy)
+			} else if effort := normalizeReasoningEffort(reasoningEffortFromResponsesReasoning(chatExtra.Reasoning), policy); effort != "" {
 				fields["reasoning_effort"] = effort
 			}
 		}
-		if effort := strings.TrimSpace(chatExtra.ReasoningEffort); effort != "" {
-			if reasoning == ReasoningObjectField {
-				fields["reasoning"] = map[string]any{"effort": effort}
+		if effort := normalizeReasoningEffort(chatExtra.ReasoningEffort, policy); effort != "" {
+			if policy.ReasoningStyle == ReasoningObjectField {
+				reasoningObject, _ := fields["reasoning"].(map[string]any)
+				if reasoningObject == nil {
+					reasoningObject = map[string]any{}
+				}
+				reasoningObject["effort"] = effort
+				fields["reasoning"] = reasoningObject
 			} else {
 				fields["reasoning_effort"] = effort
 			}
 		}
-		if len(chatExtra.Thinking) > 0 {
+		if policy.AllowThinking && len(chatExtra.Thinking) > 0 {
 			fields["thinking"] = cloneMap(chatExtra.Thinking)
+		}
+		if policy.ReasoningStyle == ReasoningObjectField && policy.ThinkingBudgetField != "" {
+			if budget, ok := PositiveIntValue(chatExtra.Thinking["budget_tokens"]); ok {
+				reasoningObject, _ := fields["reasoning"].(map[string]any)
+				if reasoningObject == nil {
+					reasoningObject = map[string]any{}
+				}
+				if _, exists := reasoningObject[policy.ThinkingBudgetField]; !exists {
+					reasoningObject[policy.ThinkingBudgetField] = budget
+				}
+				fields["reasoning"] = reasoningObject
+			}
 		}
 		if chatExtra.ToolStream != nil {
 			fields["tool_stream"] = *chatExtra.ToolStream
@@ -102,6 +149,37 @@ func ChatCompletionsExtraFieldsFromOptions(reasoning ReasoningFieldStyle, opts .
 		return nil
 	}
 	return fields
+}
+
+func normalizedReasoningObject(reasoning map[string]any, policy ChatCompletionsFieldPolicy) map[string]any {
+	normalized := cloneMap(reasoning)
+	if effort, _ := normalized["effort"].(string); effort != "" {
+		if value := normalizeReasoningEffort(effort, policy); value != "" {
+			normalized["effort"] = value
+		} else {
+			delete(normalized, "effort")
+		}
+	}
+	return normalized
+}
+
+func normalizeReasoningEffort(effort string, policy ChatCompletionsFieldPolicy) string {
+	normalized := strings.ToLower(strings.TrimSpace(effort))
+	if normalized == "" {
+		return ""
+	}
+	if alias := policy.EffortAliases[normalized]; alias != "" {
+		normalized = alias
+	}
+	if policy.AllowedEfforts == nil {
+		return normalized
+	}
+	for _, allowed := range policy.AllowedEfforts {
+		if normalized == allowed {
+			return normalized
+		}
+	}
+	return ""
 }
 
 // StripCCUnsupportedChatFields removes the OpenAI-style `metadata` and `user`

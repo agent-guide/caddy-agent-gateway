@@ -38,6 +38,23 @@ providers:
   #   network:
   #     proxy_url: http://127.0.0.1:7890
 
+  # Alternative: GLM Coding Plan through its Anthropic Messages endpoint.
+  # Route settings: protocol=cc, provider_id=zhipu-claudecode,
+  # credential_type_order=[api_key]. The model-specific capability values are
+  # explicit because provider-level defaults remain suitable for generic
+  # Claude Code-compatible endpoints.
+  # - id: zhipu-claudecode
+  #   provider_type: claudecode
+  #   base_url: https://open.bigmodel.cn/api/anthropic
+  #   api_key: ${ZHIPU_API_KEY}
+  #   default_model: glm-5.2[1m]
+  #   options:
+  #     api_key_header: authorization
+  #     context_window: 1000000
+  #     max_output_tokens: 128000
+  #     default_max_tokens: 65536
+  #     vision: false
+
   # Alternative: Codex CLI credentials obtained through the external agw-auth
   # tool.
   # Route settings: protocol=openai, provider_id=codex-cli,

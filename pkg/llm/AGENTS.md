@@ -19,8 +19,10 @@ They do not register as managed credentials and do not participate in credential
 Built-in provider runtime packages:
 
 - `openai`
-- `anthropic`: delegates chat/streaming to the eino-ext `claude` component (official anthropic-sdk-go); the provider keeps thinking-budget normalization, request metadata, and ListModels. `anthropicbase` remains the hand-rolled Messages wire layer used by `claudecode`.
-- `claudecode`
+- `anthropic`: delegates chat/streaming to the eino-ext `claude` component (official anthropic-sdk-go); the provider keeps thinking-budget normalization, request metadata, signed-thinking replay adaptation, and ListModels. The adapter captures the raw non-streaming response to restore every signed/redacted thinking block that eino flattens or discards. The pinned eino streaming parser still discards upstream `redacted_thinking`, so streaming can replay redacted blocks already present in client history but cannot capture new ones. `anthropicbase` remains the hand-rolled Messages wire layer used by `claudecode` and the exact signed/redacted replay patch used by the eino adapter; `claudecode` captures and replays both block types directly from both wire modes. Upgrading `eino-ext/components/model/claude` requires running all tests under `pkg/llm/provider/anthropic`; those tests pin the component's private Extra keys and streaming block-boundary behavior.
+- `claudecode`: Anthropic Messages wire provider with Claude Code fingerprint,
+  signed/redacted thinking-block replay, and generic capability/default-token
+  overrides for compatible endpoints
 - `codex`
 - `gemini`
 - `ollama`
@@ -51,3 +53,8 @@ Provider registration rules:
 - implement the `provider.Provider` interface
 - register the factory with `provider.RegisterProviderFactory(...)`
 - add a blank import for the runtime provider package in `cmd/agw/main.go`, `cmd/agwd/main.go`, and `cmd/agwctl/cmd_gateway.go`; agwctl needs it because `validate`/`apply` check `provider_type` against the locally linked provider registry
+
+Signed reasoning is opaque upstream state, not a portable gateway token. Routes
+that replay it across tool turns must keep the same upstream provider and model;
+candidate switching requires a route/session-level affinity design before the
+signature can be forwarded safely.

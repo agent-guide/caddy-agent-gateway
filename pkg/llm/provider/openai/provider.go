@@ -112,7 +112,7 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 		return nil, nil, nil, err
 	}
 	opts := append([]einomodel.Option(nil), state.Options...)
-	extraFields := provider.ChatCompletionsExtraFieldsFromOptions(provider.ReasoningEffortField, state.Options...)
+	extraFields := provider.ChatCompletionsExtraFieldsFromOptions(provider.OpenAIChatCompletionsFields, state.Options...)
 	if p.CCCompat {
 		provider.StripCCUnsupportedChatFields(extraFields)
 	}

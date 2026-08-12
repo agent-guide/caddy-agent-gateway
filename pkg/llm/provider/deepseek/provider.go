@@ -88,7 +88,7 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest) 
 	}
 	cfg.APIKey = provider.APIKeyFromContextOrConfig(ctx, p.ProviderConfig.APIKey)
 	applyOptions(cfg, p.ProviderConfig.Options)
-	requestExtra := provider.ChatCompletionsExtraFieldsFromOptions(provider.ReasoningEffortField, state.Options...)
+	requestExtra := provider.ChatCompletionsExtraFieldsFromOptions(provider.OpenAIChatCompletionsFields, state.Options...)
 	if p.CCCompat {
 		provider.StripCCUnsupportedChatFields(requestExtra)
 	}

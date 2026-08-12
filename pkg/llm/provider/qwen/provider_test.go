@@ -68,6 +68,32 @@ func TestRequestReasoningOverridesConfiguredThinking(t *testing.T) {
 	}
 }
 
+func TestAnthropicThinkingOverridesConfiguredThinking(t *testing.T) {
+	tests := []struct {
+		name     string
+		thinking map[string]any
+		want     bool
+	}{
+		{name: "disabled", thinking: map[string]any{"type": "disabled"}, want: false},
+		{name: "budget enables", thinking: map[string]any{"budget_tokens": 2048}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &provider.ChatRequest{
+				Model:    "qwen-plus",
+				Messages: []*schema.Message{schema.UserMessage("2 + 2 等于几？")},
+				Options: []einomodel.Option{
+					provider.WithChatExtraFields(&provider.ChatExtraFields{Thinking: tt.thinking}),
+				},
+			}
+			_, captured := generateAndCaptureRequest(t, map[string]any{"enable_thinking": !tt.want}, req)
+			if got := captured["enable_thinking"]; got != tt.want {
+				t.Fatalf("enable_thinking = %#v, want %t from Anthropic thinking", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReasoningEffortEnablesThinking(t *testing.T) {
 	req, err := provider.ResponsesToChatRequest(&provider.ResponsesRequest{
 		Model:     "qwen-plus",
