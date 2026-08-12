@@ -123,6 +123,141 @@ func TestChatUsesOAuthTokenBearerHeaders(t *testing.T) {
 	}
 }
 
+func TestChatPreservesThinkingBlocksAcrossToolTurn(t *testing.T) {
+	var calls int
+	var requests []messagesRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req messagesRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requests = append(requests, req)
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			_, _ = w.Write([]byte(`{
+				"content":[
+					{"type":"thinking","thinking":"inspect first","signature":"opaque-signature"},
+					{"type":"redacted_thinking","data":"opaque-redacted"},
+					{"type":"tool_use","id":"tool-1","name":"Read","input":{"path":"README.md"}}
+				],
+				"stop_reason":"tool_use",
+				"usage":{"input_tokens":10,"output_tokens":20}
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":30,"output_tokens":4}}`))
+	}))
+	defer server.Close()
+
+	prov, err := New(provider.ProviderConfig{
+		BaseURL: server.URL,
+		APIKey:  "zhipu-key",
+		Network: httpclient.NetworkConfig{RequestTimeoutSeconds: 5},
+		Options: map[string]any{
+			"context_window":     1000000,
+			"max_output_tokens":  128000,
+			"default_max_tokens": 65536,
+			"vision":             false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	first, err := prov.Chat(context.Background(), &provider.ChatRequest{
+		Model:    "glm-5.2[1m]",
+		Messages: []*schema.Message{schema.UserMessage("inspect")},
+		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
+			Reasoning: map[string]any{
+				"type":          "enabled",
+				"budget_tokens": 4096,
+				"display":       "summarized",
+			},
+			ReasoningEffort: "max",
+		})},
+	})
+	if err != nil {
+		t.Fatalf("first Chat() error = %v", err)
+	}
+	if first.Message == nil || first.Message.ReasoningContent != "inspect first" || len(first.Message.ToolCalls) != 1 {
+		t.Fatalf("first response = %+v", first)
+	}
+
+	_, err = prov.Chat(context.Background(), &provider.ChatRequest{
+		Model: "glm-5.2[1m]",
+		Messages: []*schema.Message{
+			schema.UserMessage("inspect"),
+			first.Message,
+			{Role: schema.Tool, ToolCallID: "tool-1", Content: "file contents"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("second Chat() error = %v", err)
+	}
+
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if requests[0].MaxTokens != 65536 || requests[0].Thinking == nil ||
+		requests[0].Thinking.Type != "enabled" || requests[0].Thinking.BudgetTokens != 4096 || requests[0].Thinking.Display != "summarized" {
+		t.Fatalf("first thinking/max_tokens = %+v/%d", requests[0].Thinking, requests[0].MaxTokens)
+	}
+	if requests[0].OutputConfig == nil || requests[0].OutputConfig.Effort != "max" {
+		t.Fatalf("first output_config = %+v, want max effort", requests[0].OutputConfig)
+	}
+	assistant := requests[1].Messages[1]
+	if assistant.Role != "assistant" || len(assistant.Content) != 3 {
+		t.Fatalf("replayed assistant = %+v", assistant)
+	}
+	if got := assistant.Content[0]; got.Type != "thinking" || got.Thinking != "inspect first" || got.Signature != "opaque-signature" {
+		t.Fatalf("replayed thinking = %+v", got)
+	}
+	if got := assistant.Content[1]; got.Type != "redacted_thinking" || got.Data != "opaque-redacted" {
+		t.Fatalf("replayed redacted thinking = %+v", got)
+	}
+
+	capabilities := prov.Capabilities()
+	if capabilities.ContextWindow != 1000000 || capabilities.MaxOutputTokens != 128000 || capabilities.Vision {
+		t.Fatalf("capabilities = %+v, want configured GLM text capabilities", capabilities)
+	}
+}
+
+func TestNewRejectsInvalidCapabilityOptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		value any
+	}{
+		{name: "context_window", value: 0},
+		{name: "max_output_tokens", value: "many"},
+		{name: "default_max_tokens", value: 1.5},
+		{name: "vision", value: "sometimes"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(provider.ProviderConfig{Options: map[string]any{tt.name: tt.value}})
+			if err == nil {
+				t.Fatalf("New() accepted invalid %s=%v", tt.name, tt.value)
+			}
+		})
+	}
+}
+
+func TestDefaultCapabilitiesRemainCompatible(t *testing.T) {
+	prov, err := New(provider.ProviderConfig{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	got := prov.Capabilities()
+	want := defaultCapabilities()
+	if got != want {
+		t.Fatalf("Capabilities() = %+v, want unchanged defaults %+v", got, want)
+	}
+	if concrete := prov.(*Provider); concrete.defaultMaxTokens != defaultClaudeCodeMaxTokens {
+		t.Fatalf("default max_tokens = %d, want %d", concrete.defaultMaxTokens, defaultClaudeCodeMaxTokens)
+	}
+}
+
 func TestChatAppliesConfiguredExtraHeaders(t *testing.T) {
 	var dangerousHeader string
 	var xApp string
@@ -901,6 +1036,8 @@ func TestNormalizeEffort(t *testing.T) {
 		"LOW":     "low",
 		" medium": "medium",
 		"high":    "high",
+		"xhigh":   "xhigh",
+		"MAX":     "max",
 		"minimal": "low",
 		"":        defaultClaudeCodeEffort,
 		"bogus":   defaultClaudeCodeEffort,
@@ -909,6 +1046,24 @@ func TestNormalizeEffort(t *testing.T) {
 		if got := normalizeEffort(in); got != want {
 			t.Errorf("normalizeEffort(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestRequestThinkingValidatesDisplay(t *testing.T) {
+	stateWithDisplay := func(display string) *provider.ChatRequestState {
+		return &provider.ChatRequestState{Options: []model.Option{
+			provider.WithChatExtraFields(&provider.ChatExtraFields{Reasoning: map[string]any{
+				"type":    "adaptive",
+				"display": display,
+			}}),
+		}}
+	}
+
+	if got := requestThinking(stateWithDisplay(" OMITTED ")); got.Display != "omitted" {
+		t.Fatalf("valid display = %q, want omitted", got.Display)
+	}
+	if got := requestThinking(stateWithDisplay("verbose")); got.Display != "" {
+		t.Fatalf("invalid display = %q, want omitted from request", got.Display)
 	}
 }
 

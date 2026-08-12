@@ -68,8 +68,10 @@ func init() {
 
 type Provider struct {
 	provider.ProviderConfig
-	client      *http.Client
-	codexCompat bool
+	client           *http.Client
+	codexCompat      bool
+	capabilities     provider.ProviderCapabilities
+	defaultMaxTokens int
 }
 
 func New(config provider.ProviderConfig) (provider.Provider, error) {
@@ -86,11 +88,21 @@ func New(config provider.ProviderConfig) (provider.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	capabilities, err := capabilitiesFromOptions(config.Options)
+	if err != nil {
+		return nil, err
+	}
+	defaultMaxTokens, err := provider.PositiveIntOption(config.Options, "default_max_tokens", defaultClaudeCodeMaxTokens)
+	if err != nil {
+		return nil, fmt.Errorf("claudecode: %w", err)
+	}
 
 	return &Provider{
-		ProviderConfig: config,
-		client:         httpclient.BuildHTTPClient(config.Network),
-		codexCompat:    compactMode == provider.CompactModeCodex,
+		ProviderConfig:   config,
+		client:           httpclient.BuildHTTPClient(config.Network),
+		codexCompat:      compactMode == provider.CompactModeCodex,
+		capabilities:     capabilities,
+		defaultMaxTokens: defaultMaxTokens,
 	}, nil
 }
 
@@ -239,6 +251,10 @@ func (p *Provider) ListModels(ctx context.Context) ([]provider.ModelInfo, error)
 }
 
 func (p *Provider) Capabilities() provider.ProviderCapabilities {
+	return p.capabilities
+}
+
+func defaultCapabilities() provider.ProviderCapabilities {
 	return provider.ProviderCapabilities{
 		Streaming:       true,
 		Tools:           true,
@@ -259,7 +275,7 @@ func (p *Provider) Config() provider.ProviderConfig {
 // so the rewrite stays idempotent across retries.
 func (p *Provider) newMessagesRequest(ctx context.Context, state *provider.ChatRequestState, stream bool) (*http.Request, map[string]string, error) {
 	session := newRequestSession()
-	msgReq := buildMessagesRequest(state, stream, session)
+	msgReq := buildMessagesRequest(state, stream, session, p.defaultMaxTokens)
 
 	var toolNames map[string]string
 	if p.codexCompat {
@@ -410,13 +426,13 @@ func newRequestSession() requestSession {
 	}
 }
 
-func buildMessagesRequest(state *provider.ChatRequestState, stream bool, session requestSession) *messagesRequest {
+func buildMessagesRequest(state *provider.ChatRequestState, stream bool, session requestSession, defaultMaxTokens int) *messagesRequest {
 	return anthropicbase.BuildMessagesRequest(state, anthropicbase.BuildMessagesOptions{
-		DefaultMaxTokens:  defaultClaudeCodeMaxTokens,
+		DefaultMaxTokens:  defaultMaxTokens,
 		Stream:            stream,
 		System:            buildSystemBlocks(),
 		Metadata:          buildRequestMetadata(session),
-		Thinking:          &thinkingConfig{Type: "adaptive"},
+		Thinking:          requestThinking(state),
 		ContextManagement: &contextManagement{Edits: []contextManagementEdit{{Type: "clear_thinking_20251015", Keep: "all"}}},
 		OutputConfig:      &outputConfig{Effort: requestEffort(state), Format: anthropicbase.OutputFormatFromState(state)},
 		CacheUserText:     true,
@@ -588,23 +604,68 @@ func requestEffort(state *provider.ChatRequestState) string {
 	return defaultClaudeCodeEffort
 }
 
-// normalizeEffort maps an inbound reasoning-effort value onto the set Claude's
-// output_config.effort accepts (low/medium/high). OpenAI's "minimal" has no
-// Claude equivalent and folds to "low"; empty or unrecognized values fall back
-// to the Claude Code default.
+// normalizeEffort maps an inbound reasoning-effort value onto the current
+// Anthropic effort levels. OpenAI's "minimal" has no Anthropic equivalent and
+// folds to "low"; empty or unrecognized values use the Claude Code default.
 func normalizeEffort(effort string) string {
-	switch strings.ToLower(strings.TrimSpace(effort)) {
-	case "low":
-		return "low"
-	case "medium":
-		return "medium"
-	case "high":
-		return "high"
+	normalized := strings.ToLower(strings.TrimSpace(effort))
+	switch normalized {
+	case "low", "medium", "high", "xhigh", "max":
+		return normalized
 	case "minimal":
 		return "low"
 	default:
 		return defaultClaudeCodeEffort
 	}
+}
+
+func requestThinking(state *provider.ChatRequestState) *thinkingConfig {
+	thinking := &thinkingConfig{Type: "adaptive"}
+	if state == nil {
+		return thinking
+	}
+	extra := provider.ChatExtraFieldsFromOptions(state.Options...)
+	if extra == nil {
+		return thinking
+	}
+	fields := extra.Thinking
+	if len(fields) == 0 {
+		fields = extra.Reasoning
+	}
+	if typ, _ := fields["type"].(string); typ != "" {
+		switch normalized := strings.ToLower(strings.TrimSpace(typ)); normalized {
+		case "adaptive", "enabled", "disabled":
+			thinking.Type = normalized
+		}
+	}
+	if budget, ok := provider.PositiveIntValue(fields["budget_tokens"]); ok {
+		thinking.BudgetTokens = budget
+	}
+	if display, _ := fields["display"].(string); display != "" {
+		switch normalized := strings.ToLower(strings.TrimSpace(display)); normalized {
+		case "summarized", "omitted":
+			thinking.Display = normalized
+		}
+	}
+	if thinking.Type != "enabled" {
+		thinking.BudgetTokens = 0
+	}
+	if thinking.Type == "disabled" {
+		thinking.Display = ""
+	}
+	return thinking
+}
+
+func capabilitiesFromOptions(options map[string]any) (provider.ProviderCapabilities, error) {
+	capabilities, err := provider.CapabilitiesFromOptions(options, defaultCapabilities(),
+		provider.CapabilityContextWindow,
+		provider.CapabilityMaxOutputTokens,
+		provider.CapabilityVision,
+	)
+	if err != nil {
+		return provider.ProviderCapabilities{}, fmt.Errorf("claudecode: %w", err)
+	}
+	return capabilities, nil
 }
 
 func effortFromReasoning(reasoning map[string]any) string {

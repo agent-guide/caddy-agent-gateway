@@ -87,6 +87,16 @@ Extra outbound request shaping:
   - rewrites Codex tool names (e.g. `exec_command`) to their Claude Code equivalents (e.g. `Bash`) on the outbound request so an upstream that gates on Claude Code tool names accepts Codex traffic, then restores the original names on the response
   - the rewrite is applied to the freshly built wire request only and never mutates the inbound request, so it is safe across retries
   - default is `none`; tool names are forwarded unchanged unless `compact` is `codex`
+- `option context_window <positive integer>` overrides the provider-level context-window capability summary
+- `option max_output_tokens <positive integer>` overrides the provider-level maximum-output capability summary
+- `option default_max_tokens <positive integer>` controls the request `max_tokens` used when the client does not supply one; the default remains `32000`
+- `option vision <boolean>` overrides the provider-level vision capability summary
+
+Behavior notes:
+
+- capability overrides are endpoint/model metadata only and do not introduce vendor-specific request fields; use managed-model `capability_overrides` when one provider exposes models with different limits
+- regular `thinking` blocks retain their opaque signatures and `redacted_thinking` blocks retain their opaque data across sync, streaming, and tool-result replay
+- current Anthropic effort levels `low`, `medium`, `high`, `xhigh`, and `max` are preserved; OpenAI `minimal` maps to `low`
 
 `codex`
 
