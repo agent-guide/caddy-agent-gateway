@@ -31,6 +31,15 @@ func mergeLLM(dst *LLMExtension, src LLMExtension) {
 	if src.Stream != nil {
 		dst.Stream = src.Stream
 	}
+	if src.Transport != "" {
+		dst.Transport = src.Transport
+	}
+	if src.ResponseOutcome != "" {
+		dst.ResponseOutcome = src.ResponseOutcome
+	}
+	if src.ResponseCommitted != nil {
+		dst.ResponseCommitted = src.ResponseCommitted
+	}
 	if src.InputTokens != nil {
 		dst.InputTokens = src.InputTokens
 	}

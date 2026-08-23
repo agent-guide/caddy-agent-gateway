@@ -1,0 +1,18 @@
+{
+  "id": "msg_fixture_native_1",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-upstream",
+  "content": [
+    {"type": "text", "text": "sanitized-answer", "citations": [{"type": "web_search_result_location", "url": "https://example.invalid/result"}]},
+    {"type": "future_fixture_block", "opaque_fixture_field": {"enabled": true}}
+  ],
+  "stop_reason": "end_turn",
+  "usage": {
+    "input_tokens": 11,
+    "cache_creation_input_tokens": 3,
+    "cache_read_input_tokens": 5,
+    "output_tokens": 7
+  },
+  "future_fixture_top_level": "preserve-me"
+}

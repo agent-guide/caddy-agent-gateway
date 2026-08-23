@@ -132,6 +132,8 @@ Reasoning:
 Target:
 
 - keep the current LLM gateway as HTTP plus SSE only
+- implement the Anthropic/CC fidelity and streaming boundary defined in
+  [Anthropic Messages Protocol Fidelity Architecture](anthropic-protocol-fidelity.md)
 
 Work items:
 

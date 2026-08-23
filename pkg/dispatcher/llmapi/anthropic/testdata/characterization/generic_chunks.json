@@ -1,0 +1,7 @@
+[
+  {"kind":"text","text":"before "},
+  {"kind":"tool","index":0,"id":"toolu_fixture_1","name":"lookup","arguments":"{\"query\":"},
+  {"kind":"text","text":"deferred"},
+  {"kind":"tool","index":0,"arguments":"\"sanitized\"}"},
+  {"kind":"finish","reason":"tool_use","usage":{"input_tokens":9,"output_tokens":4}}
+]

@@ -16,4 +16,5 @@ Current design pages:
 - [observability.md](observability.md)
 - [external-agent-observability-correlation.md](external-agent-observability-correlation.md)
 - [protocol-support-roadmap.md](protocol-support-roadmap.md)
+- [anthropic-protocol-fidelity.md](anthropic-protocol-fidelity.md) — target architecture for shared Anthropic/CC protocol handling, native-state fidelity, stream encoding, and dialect capabilities
 - [eino-reuse.md](eino-reuse.md)

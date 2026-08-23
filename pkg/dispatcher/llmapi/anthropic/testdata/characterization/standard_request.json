@@ -1,0 +1,8 @@
+{
+  "model": "claude-sonnet-fixture",
+  "max_tokens": 64,
+  "stream": true,
+  "system": [{"type": "text", "text": "sanitized-system"}],
+  "messages": [{"role": "user", "content": [{"type": "text", "text": "sanitized-user"}]}],
+  "tools": [{"name": "lookup", "description": "fixture tool", "input_schema": {"type": "object"}}]
+}

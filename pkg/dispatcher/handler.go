@@ -138,8 +138,12 @@ func (h *Handler) Dispatch(w http.ResponseWriter, r *http.Request, next NextHand
 	dims := h.routeInteractionDimensions(cfg, traceCtx, virtualKeyID)
 	span, spanCtx := h.gateway.UsageObserver().Begin(r.Context(), dims)
 	spanCtx = bindAgentRuntimeIdentity(spanCtx, span, cfg.Kind)
+	spanCtx, finishOwner := usage.ContextWithFinishOwnership(spanCtx)
 	r = r.WithContext(spanCtx)
 	defer func() {
+		if finishOwner.Transferred() {
+			return
+		}
 		status := rec.StatusCode()
 		success := status < 400
 		span.Finish(usage.InteractionOutcome{Success: success, StatusCode: status})

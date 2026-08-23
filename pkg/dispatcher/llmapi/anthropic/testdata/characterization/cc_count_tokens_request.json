@@ -1,0 +1,5 @@
+{
+  "model": "claude-sonnet-fixture",
+  "messages": [{"role": "user", "content": [{"type": "text", "text": "one two three"}]}],
+  "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}]
+}

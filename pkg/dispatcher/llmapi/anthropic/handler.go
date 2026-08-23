@@ -2,17 +2,16 @@ package anthropic
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	einojsonschema "github.com/eino-contrib/jsonschema"
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
-	"github.com/agent-guide/agent-gateway/internal/httplog"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
 	dispatcher "github.com/agent-guide/agent-gateway/pkg/dispatcher"
@@ -214,8 +213,17 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request, prov pr
 		zap.Int("message_count", len(chatReq.Messages)),
 		zap.String("provider_type", prov.Config().ProviderType),
 	)
+	usage.TransferFinishOwnership(r.Context())
+	lifecycle := newSpanResponseLifecycle(usage.SpanFromContext(r.Context()), "batch")
 	resp, err := prov.Chat(r.Context(), chatReq)
 	if err != nil {
+		status := statuserr.StatusCode(err, http.StatusBadGateway)
+		if dispatcher.IsClientCanceled(err) {
+			status = dispatcher.StatusClientClosedRequest
+			_ = lifecycle.Cancel(responseFailure{StatusCode: status, Outcome: "client_cancel", ErrorType: "client_cancelled"})
+		} else {
+			_ = lifecycle.Fail(responseFailure{StatusCode: status, Outcome: "upstream_error", ErrorType: "provider_request_failed"})
+		}
 		h.writeProviderError(w, r, chatReq.Model, err)
 		return
 	}
@@ -232,551 +240,104 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request, prov pr
 		zap.String("finish_reason", finishReason),
 	)
 	conv := &Converter{}
-	_ = httpjson.Write(w, http.StatusOK, conv.FromInternal(resp, req.Model))
+	if resp != nil && resp.Message != nil {
+		tokens := provider.UsageFromMessage(resp.Message)
+		lifecycle.ObserveUsage(usageObservation{InputTokens: tokens.InputTokens, OutputTokens: tokens.OutputTokens, CachedTokens: tokens.CachedTokens, ReasoningTokens: tokens.ReasoningTokens, Final: true})
+	}
+	if err := httpjson.Write(w, http.StatusOK, conv.FromInternal(resp, req.Model)); err != nil {
+		_ = lifecycle.Fail(responseFailure{StatusCode: http.StatusOK, Outcome: "sink_error", ErrorType: "response_write_failed"})
+		return
+	}
+	lifecycle.Committed()
+	_ = lifecycle.Finish(responseFinish{StatusCode: http.StatusOK, Outcome: "completed"})
 }
 
 func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provider.Provider, chatReq *provider.ChatRequest, model string) {
 	ctx := r.Context()
-	h.logger.Debug(h.Name()+": starting stream",
+	h.logger.Debug(h.Name()+": opening stream",
 		zap.String("model", chatReq.Model),
 		zap.Int("message_count", len(chatReq.Messages)),
 		zap.String("provider_type", prov.Config().ProviderType),
 	)
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
-	flusher := dispatcher.NewResponseFlusher(w)
-	msgID := fmt.Sprintf("msg_%d", time.Now().UnixNano())
-
-	writeSSEEvent(w, "message_start", map[string]any{
-		"type": "message_start",
-		"message": map[string]any{
-			"id": msgID, "type": "message", "role": "assistant",
-			"model": model, "content": []any{},
-			"stop_reason": nil,
-			"usage":       map[string]int{"input_tokens": 0, "output_tokens": 0},
-		},
-	})
-	flusher.Flush()
-
+	usage.TransferFinishOwnership(ctx)
+	lifecycle := newSpanResponseLifecycle(usage.SpanFromContext(ctx), "stream")
 	stream, err := prov.StreamChat(ctx, chatReq)
 	if err != nil {
-		httplog.Error(h.logger, "http request failed", r, http.StatusOK, fmt.Errorf("open stream: %w", err),
-			zap.String("protocol", h.Name()),
-			zap.String("model", chatReq.Model),
-		)
-		writeSSEEvent(w, "error", anthropicErrorResponse{
-			Type: "error",
-			Error: anthropicErrorBody{
-				Type:    "api_error",
-				Message: err.Error(),
-			},
-		})
-		flusher.Flush()
+		status, _ := dispatcher.WriteProviderErrorLog(h.logger, w, r, h.Name(), chatReq.Model, "open stream", err)
+		_ = lifecycle.Fail(responseFailure{StatusCode: status, Outcome: "upstream_open_error", ErrorType: "provider_stream_failed"})
+		h.writeError(w, r, status, err)
 		return
 	}
 	defer stream.Close()
-	h.logger.Debug(h.Name()+": provider stream opened",
-		zap.String("model", chatReq.Model),
-		zap.String("provider_type", prov.Config().ProviderType),
-	)
 
-	chunkCount := 0
-	reasoningBlockStarted := false
-	reasoningBlockIndex := -1
-	reasoningSourceIndex := -1
-	reasoningSignature := ""
-	var reasoningContent strings.Builder
-	textBlockStarted := false
-	textBlockIndex := -1
-	finalStopReason := "end_turn"
-	finalInputTokens := 0
-	finalOutputTokens := 0
-	finalCachedTokens := 0
-	finalReasoningTokens := 0
-	usageFinalized := false
-	nextBlockIndex := 0
-	nativeBlockIndices := map[int]int{}
-	emittedToolUse := false
-	toolNames := map[string]struct{}{}
-	// Streamed tool calls arrive as fragments: the first fragment for a tool-call
-	// index carries id+name, later fragments carry argument deltas. Accumulate
-	// them into one Anthropic tool_use content block per index instead of emitting
-	// a separate block per fragment.
-	type streamToolBlock struct {
-		blockIndex       int
-		started          bool
-		closed           bool
-		id               string
-		name             string
-		arguments        strings.Builder
-		pendingArguments strings.Builder
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	sink := &httpAnthropicStreamSink{w: w, flusher: dispatcher.NewResponseFlusher(w), lifecycle: lifecycle}
+	encoder := newAnthropicStreamEncoder(ctx, streamEncoderOptions{Model: model, MessageID: newAnthropicMessageID()}, sink, lifecycle)
+	if err := encoder.Open(); err != nil {
+		h.writeError(w, r, http.StatusBadGateway, err)
+		return
 	}
-	toolBlocks := map[int]*streamToolBlock{}
-	var toolBlockOrder []int
-	var deferredText strings.Builder
-	toolCallIDs := map[string]struct{}{}
-	syntheticToolCallID := 0
-	allocateBlockIndex := func() int {
-		index := nextBlockIndex
-		nextBlockIndex++
-		return index
-	}
-	closeReasoningBlock := func() {
-		if !reasoningBlockStarted {
-			return
-		}
-		signature := reasoningSignature
-		if signature == "" {
-			signature = gatewayThinkingSignature(reasoningContent.String())
-		}
-		writeSSEEvent(w, "content_block_delta", map[string]any{
-			"type": "content_block_delta", "index": reasoningBlockIndex,
-			"delta": map[string]string{
-				"type":      "signature_delta",
-				"signature": signature,
-			},
-		})
-		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": reasoningBlockIndex})
-		reasoningBlockStarted = false
-		reasoningBlockIndex = -1
-		reasoningSourceIndex = -1
-		reasoningSignature = ""
-		reasoningContent.Reset()
-	}
-	closeTextBlock := func() {
-		if !textBlockStarted {
-			return
-		}
-		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": textBlockIndex})
-		textBlockStarted = false
-		textBlockIndex = -1
-	}
-	nextSyntheticToolCallID := func() string {
-		for {
-			id := fmt.Sprintf("call_agw_%d", syntheticToolCallID)
-			syntheticToolCallID++
-			if _, exists := toolCallIDs[id]; exists {
-				continue
-			}
-			toolCallIDs[id] = struct{}{}
-			return id
-		}
-	}
-	closeToolBlocks := func() {
-		for _, key := range toolBlockOrder {
-			block := toolBlocks[key]
-			if block == nil || block.closed {
-				continue
-			}
-			if !block.started && block.name != "" {
-				if block.id == "" {
-					block.id = nextSyntheticToolCallID()
-				}
-				block.blockIndex = allocateBlockIndex()
-				writeSSEEvent(w, "content_block_start", map[string]any{
-					"type": "content_block_start", "index": block.blockIndex,
-					"content_block": map[string]any{
-						"type": "tool_use", "id": block.id, "name": block.name, "input": map[string]any{},
-					},
-				})
-				block.started = true
-				finalStopReason = "tool_use"
-				emittedToolUse = true
-			}
-			if block.started {
-				if block.pendingArguments.Len() > 0 {
-					writeSSEEvent(w, "content_block_delta", map[string]any{
-						"type": "content_block_delta", "index": block.blockIndex,
-						"delta": map[string]any{"type": "input_json_delta", "partial_json": block.pendingArguments.String()},
-					})
-					block.pendingArguments.Reset()
-				}
-				writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": block.blockIndex})
-			} else {
-				h.logger.Debug(h.Name()+": dropping incomplete streamed tool call",
-					zap.Int("tool_call_index", key),
-					zap.Bool("has_id", block.id != ""),
-					zap.Bool("has_name", block.name != ""),
-				)
-			}
-			block.closed = true
-		}
-	}
-	toolBlocksHaveCompleteInput := func() bool {
-		found := false
-		for _, block := range toolBlocks {
-			if block == nil || block.closed {
-				continue
-			}
-			found = true
-			if block.name == "" || !json.Valid([]byte(block.arguments.String())) {
-				return false
-			}
-		}
-		return found
-	}
-	hasOpenToolBlock := func() bool {
-		for _, block := range toolBlocks {
-			if block != nil && !block.closed {
-				return true
-			}
-		}
-		return false
-	}
-	writeText := func(text string) {
-		if text == "" {
-			return
-		}
-		if !textBlockStarted {
-			textBlockIndex = allocateBlockIndex()
-			writeSSEEvent(w, "content_block_start", map[string]any{
-				"type": "content_block_start", "index": textBlockIndex,
-				"content_block": map[string]string{"type": "text", "text": ""},
-			})
-			textBlockStarted = true
-		}
-		writeSSEEvent(w, "content_block_delta", map[string]any{
-			"type": "content_block_delta", "index": textBlockIndex,
-			"delta": map[string]string{"type": "text_delta", "text": text},
-		})
-		flusher.Flush()
-	}
+
 	for {
-		chunk, err := stream.Recv()
-		if err == io.EOF {
+		chunk, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			if err := encoder.Finish(); err != nil {
+				h.logger.Error(h.Name()+": finish stream", zap.Error(err))
+			}
 			break
 		}
-		if err != nil {
-			httplog.Error(h.logger, "http request failed", r, http.StatusOK, fmt.Errorf("receive stream chunk: %w", err),
-				zap.String("protocol", h.Name()),
-				zap.String("model", chatReq.Model),
-				zap.Int("chunks_received", chunkCount),
-			)
-			writeSSEEvent(w, "error", anthropicErrorResponse{
-				Type: "error",
-				Error: anthropicErrorBody{
-					Type:    "api_error",
-					Message: err.Error(),
-				},
-			})
-			flusher.Flush()
-			return
-		}
-		chunkCount++
-		if nativeEvents := provider.AnthropicStreamEventsFromMessage(chunk); len(nativeEvents) > 0 {
-			for _, nativeEvent := range nativeEvents {
-				data := nativeEvent.Data
-				sourceIndex, hasIndex := anthropicSSEEventIndex(data)
-				switch nativeEvent.Event {
-				case "content_block_start":
-					closeReasoningBlock()
-					closeTextBlock()
-					closeToolBlocks()
-					targetIndex := allocateBlockIndex()
-					if hasIndex {
-						nativeBlockIndices[sourceIndex] = targetIndex
-					}
-					data = rewriteAnthropicSSEEventIndex(data, targetIndex)
-				case "content_block_delta":
-					targetIndex, ok := nativeBlockIndices[sourceIndex]
-					switch {
-					case hasIndex && ok:
-						data = rewriteAnthropicSSEEventIndex(data, targetIndex)
-					case hasIndex && textBlockStarted:
-						// citations_delta belongs to the currently open text block,
-						// whose downstream index may have been remapped.
-						data = rewriteAnthropicSSEEventIndex(data, textBlockIndex)
-					default:
-						// The upstream index has no downstream block. Forwarding it
-						// would point the client at a block that was never started.
-						h.logger.Debug(h.Name()+": dropping unmappable native stream event",
-							zap.String("event", nativeEvent.Event),
-							zap.Int("upstream_index", sourceIndex),
-						)
-						continue
-					}
-				case "content_block_stop":
-					targetIndex, ok := nativeBlockIndices[sourceIndex]
-					if !hasIndex || !ok {
-						h.logger.Debug(h.Name()+": dropping unmappable native stream event",
-							zap.String("event", nativeEvent.Event),
-							zap.Int("upstream_index", sourceIndex),
-						)
-						continue
-					}
-					data = rewriteAnthropicSSEEventIndex(data, targetIndex)
-					delete(nativeBlockIndices, sourceIndex)
-				}
-				writeRawSSEEvent(w, nativeEvent.Event, data)
+		if recvErr != nil {
+			if dispatcher.IsClientCanceled(recvErr) {
+				_ = encoder.Cancel(recvErr)
+			} else {
+				_ = encoder.Fail(recvErr)
 			}
-			flusher.Flush()
+			break
+		}
+		nativeEvents := provider.AnthropicStreamEventsFromMessage(chunk)
+		if len(nativeEvents) > 0 {
+			for i := range nativeEvents {
+				event := nativeEvents[i]
+				if err := encoder.Accept(providerStreamEvent{Native: &event}); err != nil {
+					_ = encoder.Fail(err)
+					return
+				}
+			}
 			continue
 		}
-		handledStructuredReasoning := false
-		if chunk != nil {
-			for _, part := range provider.ReasoningPartsFromMessage(chunk) {
-				sourceIndex := 0
-				if part.StreamingMeta != nil {
-					sourceIndex = part.StreamingMeta.Index
-				}
-				switch part.Type {
-				case schema.ChatMessagePartTypeReasoning:
-					handledStructuredReasoning = true
-					if textBlockStarted || emittedToolUse || part.Reasoning == nil {
-						continue
-					}
-					if reasoningBlockStarted && reasoningSourceIndex != sourceIndex {
-						closeReasoningBlock()
-					}
-					if !reasoningBlockStarted {
-						reasoningBlockIndex = allocateBlockIndex()
-						reasoningSourceIndex = sourceIndex
-						writeSSEEvent(w, "content_block_start", map[string]any{
-							"type": "content_block_start", "index": reasoningBlockIndex,
-							"content_block": map[string]string{"type": "thinking", "thinking": "", "signature": ""},
-						})
-						reasoningBlockStarted = true
-					}
-					if part.Reasoning.Text != "" {
-						reasoningContent.WriteString(part.Reasoning.Text)
-						writeSSEEvent(w, "content_block_delta", map[string]any{
-							"type": "content_block_delta", "index": reasoningBlockIndex,
-							"delta": map[string]string{"type": "thinking_delta", "thinking": part.Reasoning.Text},
-						})
-					}
-					if part.Reasoning.Signature != "" {
-						reasoningSignature += part.Reasoning.Signature
-					}
-				case provider.ChatMessagePartTypeEncryptedReasoning:
-					handledStructuredReasoning = true
-					if textBlockStarted || emittedToolUse {
-						continue
-					}
-					data := provider.EncryptedReasoningData(part)
-					if data == "" {
-						continue
-					}
-					closeReasoningBlock()
-					idx := allocateBlockIndex()
-					writeSSEEvent(w, "content_block_start", map[string]any{
-						"type": "content_block_start", "index": idx,
-						"content_block": map[string]string{
-							"type": "redacted_thinking", "data": data,
-						},
-					})
-					writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
-				case provider.ChatMessagePartTypeReasoningEnd:
-					handledStructuredReasoning = true
-					if reasoningBlockStarted && reasoningSourceIndex == sourceIndex {
-						closeReasoningBlock()
-					}
-				}
-			}
-		}
-
-		if chunk != nil && !handledStructuredReasoning && chunk.ReasoningContent != "" && !textBlockStarted && !emittedToolUse {
-			// Legacy chat providers expose reasoning only as a flat string. Keep
-			// that path valid while structured parts preserve real signatures for
-			// Anthropic-compatible providers.
-			if !reasoningBlockStarted {
-				reasoningBlockIndex = allocateBlockIndex()
-				reasoningSourceIndex = 0
-				writeSSEEvent(w, "content_block_start", map[string]any{
-					"type": "content_block_start", "index": reasoningBlockIndex,
-					"content_block": map[string]string{"type": "thinking", "thinking": "", "signature": ""},
-				})
-				reasoningBlockStarted = true
-			}
-			reasoningContent.WriteString(chunk.ReasoningContent)
-			writeSSEEvent(w, "content_block_delta", map[string]any{
-				"type": "content_block_delta", "index": reasoningBlockIndex,
-				"delta": map[string]string{"type": "thinking_delta", "thinking": chunk.ReasoningContent},
-			})
-		}
-		flusher.Flush()
-
-		if text := extractText(chunk); text != "" {
-			closeReasoningBlock()
-			if toolBlocksHaveCompleteInput() {
-				// A following text chunk is the only generic signal that an
-				// OpenAI-compatible tool-call argument stream is complete. Once
-				// every open call contains a complete JSON value, close the tool
-				// blocks so subsequent text remains genuinely streaming.
-				closeToolBlocks()
-			}
-			if hasOpenToolBlock() {
-				// Some OpenAI-compatible providers interleave text between JSON
-				// fragments of one indexed tool call. Anthropic content blocks are
-				// sequential, so retain the text until the tool block can be closed
-				// instead of splitting one call into duplicate tool_use blocks.
-				deferredText.WriteString(text)
-			} else {
-				if deferredText.Len() > 0 {
-					text = deferredText.String() + text
-					deferredText.Reset()
-				}
-				writeText(text)
-			}
-		}
-
-		// Accumulate streamed tool-call fragments into one content block per
-		// tool-call index. OpenAI-compatible providers send id+name in the first
-		// fragment and stream argument deltas afterward; emitting a block per
-		// fragment would corrupt the tool call into many empty tool_use blocks.
-		for _, tc := range chunk.ToolCalls {
-			closeReasoningBlock()
-			closeTextBlock()
-			if name := strings.TrimSpace(tc.Function.Name); name != "" {
-				toolNames[name] = struct{}{}
-			}
-			if tc.Index == nil {
-				// Provider delivered the whole tool call in a single fragment.
-				if strings.TrimSpace(tc.Function.Name) == "" {
-					h.logger.Debug(h.Name() + ": dropping streamed tool call without a name")
-					continue
-				}
-				if tc.ID == "" {
-					tc.ID = nextSyntheticToolCallID()
-				} else {
-					toolCallIDs[tc.ID] = struct{}{}
-				}
-				idx := allocateBlockIndex()
-				writeSSEEvent(w, "content_block_start", map[string]any{
-					"type": "content_block_start", "index": idx,
-					"content_block": map[string]any{
-						"type": "tool_use", "id": tc.ID, "name": tc.Function.Name, "input": map[string]any{},
-					},
-				})
-				if tc.Function.Arguments != "" {
-					writeSSEEvent(w, "content_block_delta", map[string]any{
-						"type": "content_block_delta", "index": idx,
-						"delta": map[string]any{"type": "input_json_delta", "partial_json": tc.Function.Arguments},
-					})
-				}
-				writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": idx})
-				finalStopReason = "tool_use"
-				emittedToolUse = true
-				flusher.Flush()
-				continue
-			}
-			block, exists := toolBlocks[*tc.Index]
-			if !exists {
-				block = &streamToolBlock{}
-				toolBlocks[*tc.Index] = block
-				toolBlockOrder = append(toolBlockOrder, *tc.Index)
-			}
-			if block.closed {
-				h.logger.Debug(h.Name()+": dropping tool fragment for a closed block",
-					zap.Int("tool_call_index", *tc.Index),
-				)
-				continue
-			}
-			if block.id == "" {
-				block.id = tc.ID
-				if block.id != "" {
-					toolCallIDs[block.id] = struct{}{}
-				}
-			}
-			if block.name == "" {
-				block.name = tc.Function.Name
-			}
-			if tc.Function.Arguments != "" {
-				block.arguments.WriteString(tc.Function.Arguments)
-				block.pendingArguments.WriteString(tc.Function.Arguments)
-			}
-			// Anthropic requires id and name in content_block_start. Some
-			// OpenAI-compatible streams omit either value from their first
-			// indexed fragment, so buffer arguments until both arrive.
-			if !block.started && block.id != "" && block.name != "" {
-				block.blockIndex = allocateBlockIndex()
-				writeSSEEvent(w, "content_block_start", map[string]any{
-					"type": "content_block_start", "index": block.blockIndex,
-					"content_block": map[string]any{
-						"type": "tool_use", "id": block.id, "name": block.name, "input": map[string]any{},
-					},
-				})
-				block.started = true
-				finalStopReason = "tool_use"
-				emittedToolUse = true
-			}
-			if block.started && block.pendingArguments.Len() > 0 {
-				writeSSEEvent(w, "content_block_delta", map[string]any{
-					"type": "content_block_delta", "index": block.blockIndex,
-					"delta": map[string]any{"type": "input_json_delta", "partial_json": block.pendingArguments.String()},
-				})
-				block.pendingArguments.Reset()
-			}
-			flusher.Flush()
-		}
-		if deferredText.Len() > 0 && toolBlocksHaveCompleteInput() {
-			// Text may have arrived between the final two argument fragments and
-			// there may be no later text chunk to trigger the boundary.
-			closeToolBlocks()
-			text := deferredText.String()
-			deferredText.Reset()
-			writeText(text)
-		}
-
-		if chunk != nil && chunk.ResponseMeta != nil {
-			if chunk.ResponseMeta.FinishReason != "" {
-				reason := mapAnthropicStopReason(chunk.ResponseMeta.FinishReason)
-				if reason == "tool_use" && !emittedToolUse {
-					reason = "end_turn"
-				}
-				if reason != "" {
-					finalStopReason = reason
-				}
-			}
-			if chunk.ResponseMeta.Usage != nil && chunk.ResponseMeta.Usage.CompletionTokens > 0 {
-				finalOutputTokens = chunk.ResponseMeta.Usage.CompletionTokens
-				usageFinalized = true
-			}
-			if chunk.ResponseMeta.Usage != nil && chunk.ResponseMeta.Usage.PromptTokens > 0 {
-				finalInputTokens = chunk.ResponseMeta.Usage.PromptTokens
-				usageFinalized = true
-			}
-			if chunk.ResponseMeta.Usage != nil && chunk.ResponseMeta.Usage.PromptTokenDetails.CachedTokens > 0 {
-				finalCachedTokens = chunk.ResponseMeta.Usage.PromptTokenDetails.CachedTokens
-			}
-			if chunk.ResponseMeta.Usage != nil && chunk.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens > 0 {
-				finalReasoningTokens = chunk.ResponseMeta.Usage.CompletionTokensDetails.ReasoningTokens
-			}
+		if err := encoder.Accept(providerStreamEvent{Generic: chunk}); err != nil {
+			_ = encoder.Fail(err)
+			return
 		}
 	}
-
-	h.logger.Debug(h.Name()+": stream completed",
-		zap.String("model", model),
-		zap.Int("chunks", chunkCount),
-	)
-	closeTextBlock()
-	closeReasoningBlock()
-	closeToolBlocks()
-	if deferredText.Len() > 0 {
-		writeText(deferredText.String())
-		closeTextBlock()
-	}
-	writeSSEEvent(w, "message_delta", map[string]any{
-		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": finalStopReason, "stop_sequence": nil},
-		"usage": map[string]int{"output_tokens": finalOutputTokens},
-	})
-	writeSSEEvent(w, "message_stop", map[string]any{"type": "message_stop"})
-	flusher.Flush()
-	recordAnthropicToolNameSet(r, toolNames)
-	usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
-		InputTokens:     usage.Int(finalInputTokens),
-		OutputTokens:    usage.Int(finalOutputTokens),
-		TotalTokens:     usage.Int(finalInputTokens + finalOutputTokens),
-		CachedTokens:    usage.Int(finalCachedTokens),
-		ReasoningTokens: usage.Int(finalReasoningTokens),
-		UsageFinalized:  usage.Bool(usageFinalized),
-	})
+	recordAnthropicToolNameSet(r, encoder.toolNames)
 }
 
+type httpAnthropicStreamSink struct {
+	w         http.ResponseWriter
+	flusher   dispatcher.ResponseFlusher
+	lifecycle responseLifecycle
+	committed bool
+}
+
+func (s *httpAnthropicStreamSink) Emit(_ context.Context, event anthropicStreamEvent) error {
+	if !s.committed {
+		if event.Event != "message_start" {
+			return fmt.Errorf("first committing event is %q, want message_start", event.Event)
+		}
+		s.w.WriteHeader(http.StatusOK)
+		s.committed = true
+		s.lifecycle.Committed()
+	}
+	if err := writeRawSSEEventChecked(s.w, event.Event, event.Data); err != nil {
+		return err
+	}
+	s.flusher.Flush()
+	return nil
+}
 func anthropicToolNames(tools []ToolDefinition) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {
@@ -959,6 +520,14 @@ func writeRawSSEEvent(w http.ResponseWriter, event string, data json.RawMessage)
 		return
 	}
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+}
+
+func writeRawSSEEventChecked(w http.ResponseWriter, event string, data json.RawMessage) error {
+	if strings.TrimSpace(event) == "" || len(data) == 0 {
+		return fmt.Errorf("empty SSE event")
+	}
+	_, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+	return err
 }
 
 func anthropicSSEEventIndex(data json.RawMessage) (int, bool) {

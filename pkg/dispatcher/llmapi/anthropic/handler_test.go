@@ -270,11 +270,11 @@ func TestServeLLMApiMarksAnthropicStreamFailures(t *testing.T) {
 	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
 		t.Fatalf("ServeLLMApi returned error: %v", err)
 	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unexpected status code: got %d want %d", rec.Code, http.StatusOK)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("unexpected status code: got %d want %d", rec.Code, http.StatusTooManyRequests)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "event: error") || !strings.Contains(body, "rate limit") {
-		t.Fatalf("stream body = %s, want Anthropic error event", body)
+	if body := rec.Body.String(); strings.Contains(body, "event: message_start") || !strings.Contains(body, "rate limit") {
+		t.Fatalf("stream body = %s, want uncommitted Anthropic HTTP error", body)
 	}
 
 	_, err = scheduler.Pick(context.Background(), sched.Filter{
@@ -1247,6 +1247,7 @@ func assertContentBlockDiscipline(t *testing.T, body string) {
 	t.Helper()
 	open := map[int]bool{}
 	seen := map[int]bool{}
+	activeIndex := -1
 	for _, event := range parseSSEBlockEvents(t, body) {
 		name, index := event[0].(string), event[1].(int)
 		switch name {
@@ -1254,8 +1255,12 @@ func assertContentBlockDiscipline(t *testing.T, body string) {
 			if seen[index] {
 				t.Fatalf("block %d started twice:\n%s", index, body)
 			}
+			if activeIndex >= 0 {
+				t.Fatalf("block %d started while block %d is still open:\n%s", index, activeIndex, body)
+			}
 			seen[index] = true
 			open[index] = true
+			activeIndex = index
 		case "content_block_delta":
 			if !open[index] {
 				t.Fatalf("delta for block %d that is not open:\n%s", index, body)
@@ -1265,6 +1270,7 @@ func assertContentBlockDiscipline(t *testing.T, body string) {
 				t.Fatalf("stop for block %d that is not open:\n%s", index, body)
 			}
 			open[index] = false
+			activeIndex = -1
 		}
 	}
 	for index, isOpen := range open {
@@ -1395,7 +1401,7 @@ func TestServeLLMApiStreamSynthesizesMissingToolCallID(t *testing.T) {
 	bodyText := rec.Body.String()
 
 	assertContentBlockDiscipline(t, bodyText)
-	if !strings.Contains(bodyText, `"id":"call_agw_0"`) {
+	if !strings.Contains(bodyText, `"id":"toolu_`) {
 		t.Fatalf("synthetic tool id missing: %s", bodyText)
 	}
 	if !strings.Contains(bodyText, `"stop_reason":"tool_use"`) {
@@ -1472,7 +1478,7 @@ func TestPrepareLLMApiRequestRequiresNativeProviderForSignedReasoning(t *testing
 	}
 }
 
-func TestServeLLMApiDropsUnmappableNativeStreamEvents(t *testing.T) {
+func TestServeLLMApiFailsClosedForUnmappableNativeStreamEvents(t *testing.T) {
 	handler := NewHandler(nil)
 	// A native delta/stop whose upstream block was never started downstream has
 	// no index to point at; forwarding it would break the client's block map.
@@ -1512,10 +1518,10 @@ func TestServeLLMApiDropsUnmappableNativeStreamEvents(t *testing.T) {
 	bodyText := string(payload)
 
 	assertContentBlockDiscipline(t, bodyText)
-	if strings.Contains(bodyText, "citations_delta") {
-		t.Fatalf("unmappable citation delta forwarded: %s", bodyText)
+	if !strings.Contains(bodyText, "event: error") || !strings.Contains(bodyText, "unopened block index 7") {
+		t.Fatalf("unmappable citation did not produce typed stream error: %s", bodyText)
 	}
-	if !strings.Contains(bodyText, `"text":"answer"`) {
-		t.Fatalf("generic text lost: %s", bodyText)
+	if strings.Contains(bodyText, `"text":"answer"`) {
+		t.Fatalf("stream continued after invalid native lifecycle: %s", bodyText)
 	}
 }

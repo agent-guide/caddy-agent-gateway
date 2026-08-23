@@ -287,6 +287,11 @@ func llmEvent(base InteractionEvent, ext LLMExtension) LLMUsageEvent {
 	if ext.Stream != nil {
 		ev.Stream = *ext.Stream
 	}
+	ev.Transport = ext.Transport
+	ev.ResponseOutcome = ext.ResponseOutcome
+	if ext.ResponseCommitted != nil {
+		ev.ResponseCommitted = *ext.ResponseCommitted
+	}
 	if ext.InputTokens != nil {
 		ev.InputTokens = *ext.InputTokens
 	}
