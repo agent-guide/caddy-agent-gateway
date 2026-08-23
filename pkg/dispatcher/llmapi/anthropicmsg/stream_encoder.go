@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
@@ -26,6 +27,22 @@ type anthropicStreamEvent struct {
 type providerStreamEvent struct {
 	Generic *schema.Message
 	Native  *anthropicbase.AnthropicStreamEvent
+}
+
+type streamFailureError struct {
+	cause     error
+	errorType string
+}
+
+func (e *streamFailureError) Error() string { return e.cause.Error() }
+func (e *streamFailureError) Unwrap() error { return e.cause }
+
+func invalidStreamState(cause error) error {
+	return &streamFailureError{cause: cause, errorType: "invalid_state"}
+}
+
+func streamSinkFailure(cause error) error {
+	return &streamFailureError{cause: cause, errorType: "sink_error"}
 }
 
 type streamEventSink interface {
@@ -60,6 +77,7 @@ type streamToolBlock struct {
 // anthropicStreamEncoder is the sole owner of downstream message, block and
 // terminal state. HTTP and provider adapters only feed typed events into it.
 type anthropicStreamEncoder struct {
+	mu        sync.Mutex
 	ctx       context.Context
 	sink      streamEventSink
 	lifecycle responseLifecycle
@@ -111,6 +129,8 @@ func newAnthropicStreamEncoder(ctx context.Context, options streamEncoderOptions
 }
 
 func (e *anthropicStreamEncoder) Open() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.opened || e.ended {
 		return fmt.Errorf("open encoder: %w", errResponseLifecycleFinalized)
 	}
@@ -126,24 +146,38 @@ func (e *anthropicStreamEncoder) Open() error {
 }
 
 func (e *anthropicStreamEncoder) Accept(event providerStreamEvent) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if !e.opened || e.ended {
-		return fmt.Errorf("accept stream event in invalid encoder state")
+		return invalidStreamState(fmt.Errorf("accept stream event in invalid encoder state"))
 	}
 	if (event.Generic == nil) == (event.Native == nil) {
-		return fmt.Errorf("provider stream event must contain exactly one payload")
+		return invalidStreamState(fmt.Errorf("provider stream event must contain exactly one payload"))
 	}
+	var err error
 	if event.Native != nil {
-		return e.acceptNative(*event.Native)
+		err = e.acceptNative(*event.Native)
+	} else if e.options.Mode != streamModeNativeRelay {
+		err = e.acceptGeneric(event.Generic)
 	}
-	if e.options.Mode == streamModeNativeRelay {
-		return nil
+	if err == nil || e.ended {
+		return err
 	}
-	return e.acceptGeneric(event.Generic)
+	var classified *streamFailureError
+	if errors.As(err, &classified) {
+		return err
+	}
+	return invalidStreamState(err)
 }
 
 func (e *anthropicStreamEncoder) Finish() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.ended {
 		return errResponseLifecycleFinalized
+	}
+	if !e.opened || !e.started {
+		return e.fail(fmt.Errorf("provider stream ended before message_start"), "invalid_state")
 	}
 	if e.options.Mode == streamModeNativeRelay {
 		if !e.started || !e.relayComplete || e.activeKind != "" {
@@ -185,10 +219,18 @@ func (e *anthropicStreamEncoder) Finish() error {
 }
 
 func (e *anthropicStreamEncoder) Fail(err error) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var classified *streamFailureError
+	if errors.As(err, &classified) {
+		return e.fail(classified.cause, classified.errorType)
+	}
 	return e.fail(err, "provider_stream_failed")
 }
 
 func (e *anthropicStreamEncoder) Cancel(err error) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if e.ended {
 		return errResponseLifecycleFinalized
 	}
@@ -253,12 +295,15 @@ func (e *anthropicStreamEncoder) acceptNative(event anthropicbase.AnthropicStrea
 		if !e.started {
 			return nil
 		}
-		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
 	case "error":
 		return e.fail(fmt.Errorf("upstream anthropic error event"), "provider_stream_failed")
 	case "message_start":
 		// Message-level native production becomes authoritative in phase 3. The
 		// phase-1 adapter recognizes the type but normalized mode owns identity.
+		if e.started {
+			return fmt.Errorf("native message_start repeated")
+		}
 		return e.ensureMessageStarted()
 	case "message_delta":
 		return e.acceptNativeMessageDelta(event.Data)
@@ -286,7 +331,7 @@ func (e *anthropicStreamEncoder) acceptNative(event anthropicbase.AnthropicStrea
 		target := e.allocateBlockIndex()
 		e.nativeBlockIndices[sourceIndex] = target
 		e.activeKind, e.activeIndex = "native_block", target
-		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: rewriteAnthropicSSEEventIndex(event.Data, target)})
+		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: rewriteAnthropicSSEEventIndex(event.Data, target)})
 	case "content_block_delta":
 		target, ok := e.nativeBlockIndices[sourceIndex]
 		if !ok && e.activeKind == "text" {
@@ -295,13 +340,13 @@ func (e *anthropicStreamEncoder) acceptNative(event anthropicbase.AnthropicStrea
 		if !hasIndex || !ok || target != e.activeIndex {
 			return fmt.Errorf("native delta references unopened block index %d", sourceIndex)
 		}
-		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: rewriteAnthropicSSEEventIndex(event.Data, target)})
+		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: rewriteAnthropicSSEEventIndex(event.Data, target)})
 	case "content_block_stop":
 		target, ok := e.nativeBlockIndices[sourceIndex]
 		if !hasIndex || !ok || target != e.activeIndex {
 			return fmt.Errorf("native stop references unopened block index %d", sourceIndex)
 		}
-		if err := e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: rewriteAnthropicSSEEventIndex(event.Data, target)}); err != nil {
+		if err := e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: rewriteAnthropicSSEEventIndex(event.Data, target)}); err != nil {
 			return err
 		}
 		delete(e.nativeBlockIndices, sourceIndex)
@@ -311,7 +356,7 @@ func (e *anthropicStreamEncoder) acceptNative(event anthropicbase.AnthropicStrea
 		if !e.started {
 			return fmt.Errorf("native event %q before message_start", event.Event)
 		}
-		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
 	}
 }
 
@@ -324,7 +369,7 @@ func (e *anthropicStreamEncoder) acceptRelayNative(event anthropicbase.Anthropic
 		if !e.started {
 			return nil
 		}
-		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
 	case "error":
 		return e.fail(fmt.Errorf("upstream anthropic error event"), "provider_stream_failed")
 	case "message_start":
@@ -338,7 +383,7 @@ func (e *anthropicStreamEncoder) acceptRelayNative(event anthropicbase.Anthropic
 		if err := e.observeNativeMessageStart(data); err != nil {
 			return err
 		}
-		if err := e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: data}); err != nil {
+		if err := e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: data}); err != nil {
 			return err
 		}
 		e.started = true
@@ -365,13 +410,13 @@ func (e *anthropicStreamEncoder) acceptRelayNative(event anthropicbase.Anthropic
 			return fmt.Errorf("native relay tool_use block is missing id or name")
 		}
 		e.activeKind, e.activeIndex = "native_block", index
-		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
 	case "content_block_delta", "content_block_stop":
 		index, ok := anthropicSSEEventIndex(event.Data)
 		if !ok || e.activeKind == "" || index != e.activeIndex {
 			return fmt.Errorf("native relay %s references inactive block %d", event.Event, index)
 		}
-		if err := e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)}); err != nil {
+		if err := e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)}); err != nil {
 			return err
 		}
 		if event.Event == "content_block_stop" {
@@ -385,12 +430,12 @@ func (e *anthropicStreamEncoder) acceptRelayNative(event anthropicbase.Anthropic
 		if err := e.acceptNativeMessageDelta(event.Data); err != nil {
 			return err
 		}
-		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
 	case "message_stop":
 		if !e.started || e.activeKind != "" {
 			return fmt.Errorf("native relay message_stop before blocks close")
 		}
-		if err := e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)}); err != nil {
+		if err := e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)}); err != nil {
 			return err
 		}
 		e.relayComplete = true
@@ -399,7 +444,7 @@ func (e *anthropicStreamEncoder) acceptRelayNative(event anthropicbase.Anthropic
 		if !e.started {
 			return fmt.Errorf("native relay event %q before message_start", event.Event)
 		}
-		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
 	}
 }
 
@@ -495,8 +540,9 @@ func (e *anthropicStreamEncoder) acceptGeneric(chunk *schema.Message) error {
 				}
 			}
 			if e.hasOpenToolBlock() {
-				if e.deferredText.Len()+len(text) > maxDeferredTextBytes {
-					return fmt.Errorf("deferred_text buffer exceeds %d bytes", maxDeferredTextBytes)
+				byteCount := e.deferredText.Len() + len(text)
+				if byteCount > maxDeferredTextBytes {
+					return fmt.Errorf("deferred_text buffer would grow to %d bytes, limit %d", byteCount, maxDeferredTextBytes)
 				}
 				e.deferredText.WriteString(text)
 			} else if err := e.writeText(text); err != nil {
@@ -645,8 +691,9 @@ func (e *anthropicStreamEncoder) acceptToolCall(call schema.ToolCall) error {
 		block.name = name
 	}
 	if call.Function.Arguments != "" {
-		if block.arguments.Len()+len(call.Function.Arguments) > maxToolArgumentBytes {
-			return fmt.Errorf("tool_arguments buffer exceeds %d bytes", maxToolArgumentBytes)
+		byteCount := block.arguments.Len() + len(call.Function.Arguments)
+		if byteCount > maxToolArgumentBytes {
+			return fmt.Errorf("tool_arguments buffer would grow to %d bytes, limit %d", byteCount, maxToolArgumentBytes)
 		}
 		block.arguments.WriteString(call.Function.Arguments)
 		block.pendingArguments = append(block.pendingArguments, call.Function.Arguments)
@@ -848,7 +895,14 @@ func (e *anthropicStreamEncoder) emit(event string, payload any) error {
 	if err != nil {
 		return err
 	}
-	return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event, Data: data})
+	return e.emitEvent(anthropicStreamEvent{Event: event, Data: data})
+}
+
+func (e *anthropicStreamEncoder) emitEvent(event anthropicStreamEvent) error {
+	if err := e.sink.Emit(e.ctx, event); err != nil {
+		return streamSinkFailure(err)
+	}
+	return nil
 }
 
 func (e *anthropicStreamEncoder) emitError(cause error) error {

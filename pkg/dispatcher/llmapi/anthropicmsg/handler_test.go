@@ -427,6 +427,70 @@ func TestServeLLMApiMarksAnthropicStreamFailures(t *testing.T) {
 	}
 }
 
+func TestServeLLMApiReturnsHTTPErrorForPreCommitReceiveFailure(t *testing.T) {
+	handler := NewHandler(StandardProfile())
+	prov := &testStreamingProvider{
+		cfg:     provider.ProviderConfig{Id: "fixture", ProviderType: "fixture"},
+		recvErr: errors.New("upstream disconnected before message start"),
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"client-model","max_tokens":16,"stream":true,
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("content-type = %q, want application/json", got)
+	}
+	if !strings.Contains(rec.Body.String(), "upstream disconnected before message start") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestServeLLMApiReturnsHTTPErrorForInvalidFirstRelayEvent(t *testing.T) {
+	sr, sw := schema.Pipe[*schema.Message](1)
+	sw.Send(anthropicbase.AttachAnthropicRelayStreamEvent(nil, "content_block_start", json.RawMessage(`{
+		"type":"content_block_start","index":0,
+		"content_block":{"type":"text","text":""}
+	}`)), nil)
+	sw.Close()
+	prov := &testRoutedExecutor{stream: &provider.StreamExecution{
+		Stream: sr,
+		Resolved: provider.ResolvedExecution{Candidate: provider.ServedCandidate{
+			Dialect:  provider.ProtocolDialectAnthropic,
+			Features: map[provider.ProtocolFeature]struct{}{provider.FeatureAnthropicStreamRelay: {}},
+		}},
+	}}
+	handler := NewHandler(StandardProfile())
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"client-model","max_tokens":16,"stream":true,
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusBadGateway || rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("status=%d content-type=%q body=%s", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "overlaps active block") {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
 func TestPrepareLLMApiRequestAcceptsSystemBlockArray(t *testing.T) {
 	handler := NewHandler(StandardProfile())
 

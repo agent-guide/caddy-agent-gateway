@@ -316,12 +316,10 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		}
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 	sink := &httpAnthropicStreamSink{w: w, flusher: dispatcher.NewResponseFlusher(w), lifecycle: lifecycle}
 	encoder := newAnthropicStreamEncoder(ctx, streamEncoderOptions{Model: model, MessageID: newAnthropicMessageID(), Mode: mode, RelayIneligibleReason: relayIneligibleReason}, sink, lifecycle)
 	if err := encoder.Open(); err != nil {
+		_ = lifecycle.Fail(responseFailure{StatusCode: http.StatusBadGateway, Outcome: "invalid_state", ErrorType: "invalid_state"})
 		h.writeError(w, r, http.StatusBadGateway, err)
 		return
 	}
@@ -331,6 +329,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		if recvErr == io.EOF {
 			if err := encoder.Finish(); err != nil {
 				h.logger.Error(h.Name()+": finish stream", zap.Error(err))
+				h.writePreCommitStreamError(w, r, sink, err)
 			}
 			break
 		}
@@ -339,6 +338,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 				_ = encoder.Cancel(recvErr)
 			} else {
 				_ = encoder.Fail(recvErr)
+				h.writePreCommitStreamError(w, r, sink, recvErr)
 			}
 			break
 		}
@@ -353,6 +353,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 				event := nativeEvents[i]
 				if err := encoder.Accept(providerStreamEvent{Native: &event}); err != nil {
 					_ = encoder.Fail(err)
+					h.writePreCommitStreamError(w, r, sink, err)
 					return
 				}
 			}
@@ -360,6 +361,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		}
 		if err := encoder.Accept(providerStreamEvent{Generic: chunk}); err != nil {
 			_ = encoder.Fail(err)
+			h.writePreCommitStreamError(w, r, sink, err)
 			return
 		}
 	}
@@ -378,6 +380,9 @@ func (s *httpAnthropicStreamSink) Emit(_ context.Context, event anthropicStreamE
 		if event.Event != "message_start" {
 			return fmt.Errorf("first committing event is %q, want message_start", event.Event)
 		}
+		s.w.Header().Set("Content-Type", "text/event-stream")
+		s.w.Header().Set("Cache-Control", "no-cache")
+		s.w.Header().Set("Connection", "keep-alive")
 		s.w.WriteHeader(http.StatusOK)
 		s.committed = true
 		s.lifecycle.Committed()
@@ -387,6 +392,14 @@ func (s *httpAnthropicStreamSink) Emit(_ context.Context, event anthropicStreamE
 	}
 	s.flusher.Flush()
 	return nil
+}
+
+func (h *Handler) writePreCommitStreamError(w http.ResponseWriter, r *http.Request, sink *httpAnthropicStreamSink, err error) {
+	if sink == nil || sink.committed || dispatcher.IsClientCanceled(err) {
+		return
+	}
+	status := statuserr.StatusCode(err, http.StatusBadGateway)
+	h.writeError(w, r, status, err)
 }
 func anthropicToolNames(tools []ToolDefinition) []string {
 	names := make([]string, 0, len(tools))
