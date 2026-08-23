@@ -124,11 +124,14 @@ func (codec fixtureDialectCodec) FoldStreamEvents(envelopes []provider.NativeEnv
 	return folded, nil
 }
 
-func (fixtureDialectCodec) MergeFragments(kind provider.NativeStateKind, envelopes []provider.NativeEnvelope) ([]provider.NativeEnvelope, error) {
+func (fixtureDialectCodec) ValidateFragments(kind provider.NativeStateKind, envelopes []provider.NativeEnvelope) error {
 	if kind != provider.NativeKindStreamEvent {
-		return nil, fmt.Errorf("fixture codec: duplicate %s envelope", kind)
+		return fmt.Errorf("fixture codec: duplicate %s envelope", kind)
 	}
-	return append([]provider.NativeEnvelope(nil), envelopes...), nil
+	if len(envelopes) < 2 {
+		return fmt.Errorf("fixture codec: fragment sequence has %d envelope", len(envelopes))
+	}
+	return nil
 }
 
 func (fixtureDialectCodec) ValidateOrder(envelopes []provider.NativeEnvelope) error {

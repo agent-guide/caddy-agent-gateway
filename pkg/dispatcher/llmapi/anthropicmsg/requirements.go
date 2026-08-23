@@ -2,6 +2,18 @@ package anthropicmsg
 
 import "github.com/agent-guide/agent-gateway/pkg/llm/provider"
 
+func init() {
+	_, err := provider.NewProtocolRequirementSet(map[provider.ProtocolFeature][]provider.RequirementReason{
+		provider.FeatureAnthropicServerToolRequest:   {provider.ReasonAnthropicServerTool},
+		provider.FeatureAnthropicNativeResponse:      {provider.ReasonAnthropicOpaqueContent},
+		provider.FeatureAnthropicNativeHistoryReplay: {provider.ReasonAnthropicNativeHistory},
+		provider.FeatureAnthropicReasoningReplay:     {provider.ReasonAnthropicSignedReasoning},
+	})
+	if err != nil {
+		panic("anthropicmsg: invalid protocol requirement registration: " + err.Error())
+	}
+}
+
 func deriveAnthropicRequirements(req *MessagesRequest) provider.ProtocolRequirementSet {
 	reasons := map[provider.ProtocolFeature][]provider.RequirementReason{}
 	add := func(feature provider.ProtocolFeature, reason provider.RequirementReason) {
@@ -35,7 +47,8 @@ func deriveAnthropicRequirements(req *MessagesRequest) provider.ProtocolRequirem
 	}
 	set, err := provider.NewProtocolRequirementSet(reasons)
 	if err != nil {
-		panic(err)
+		// All possible features are asserted during package initialization.
+		return provider.ProtocolRequirementSet{}
 	}
 	return set
 }

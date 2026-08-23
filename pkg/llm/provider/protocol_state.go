@@ -149,15 +149,11 @@ func MergeMessageProtocolStates(states ...*ProtocolState) (*ProtocolState, error
 				if err != nil {
 					return nil, err
 				}
-				combined, err := codec.MergeFragments(envelope.Kind, []NativeEnvelope{previous, envelope})
-				if err != nil {
+				if err := codec.ValidateFragments(envelope.Kind, []NativeEnvelope{previous, envelope}); err != nil {
 					return nil, fmt.Errorf("duplicate protocol envelope %s: %w", key, err)
 				}
-				if len(combined) != 2 {
-					return nil, fmt.Errorf("duplicate protocol envelope %s: codec returned %d fragments", key, len(combined))
-				}
-				// A fragment merge validates that this duplicate key is an
-				// ordered sequence, not a conflict. Retain its original global
+				// Fragment validation proves this duplicate key is an ordered
+				// sequence, not a conflict. Retain its original global
 				// position; grouping duplicates here would reorder interleaved
 				// events such as pings and block deltas.
 				merged.Envelopes = append(merged.Envelopes, cloneNativeEnvelope(envelope))
@@ -252,7 +248,7 @@ type DialectCodec interface {
 	Overlay(NativeOverlayInput) (json.RawMessage, error)
 	FoldResponse([]NativeEnvelope) ([]NativeEnvelope, error)
 	FoldStreamEvents([]NativeEnvelope) ([]NativeEnvelope, error)
-	MergeFragments(NativeStateKind, []NativeEnvelope) ([]NativeEnvelope, error)
+	ValidateFragments(NativeStateKind, []NativeEnvelope) error
 	ValidateOrder([]NativeEnvelope) error
 }
 

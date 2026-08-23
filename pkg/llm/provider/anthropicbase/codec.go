@@ -212,13 +212,14 @@ func appendStringField(block map[string]any, field string, value any) {
 	block[field] = current + fragment
 }
 
-func (anthropicCodec) MergeFragments(kind provider.NativeStateKind, envelopes []provider.NativeEnvelope) ([]provider.NativeEnvelope, error) {
+func (anthropicCodec) ValidateFragments(kind provider.NativeStateKind, envelopes []provider.NativeEnvelope) error {
 	if kind != provider.NativeKindStreamEvent && kind != provider.NativeKindStreamProjection {
-		return nil, fmt.Errorf("anthropic codec: duplicate %s envelope", kind)
+		return fmt.Errorf("anthropic codec: duplicate %s envelope", kind)
 	}
-	merged := make([]provider.NativeEnvelope, len(envelopes))
-	copy(merged, envelopes)
-	return merged, nil
+	if len(envelopes) < 2 {
+		return fmt.Errorf("anthropic codec: fragment sequence has %d envelope", len(envelopes))
+	}
+	return nil
 }
 
 func (anthropicCodec) ValidateOrder(envelopes []provider.NativeEnvelope) error {

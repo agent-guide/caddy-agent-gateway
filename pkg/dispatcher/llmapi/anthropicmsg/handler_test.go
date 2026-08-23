@@ -1808,8 +1808,11 @@ func TestServeLLMApiFailsClosedForUnmappableNativeStreamEvents(t *testing.T) {
 	bodyText := string(payload)
 
 	assertContentBlockDiscipline(t, bodyText)
-	if !strings.Contains(bodyText, "event: error") || !strings.Contains(bodyText, "unopened block index 7") {
+	if !strings.Contains(bodyText, "event: error") || !strings.Contains(bodyText, "stream failed") {
 		t.Fatalf("unmappable citation did not produce typed stream error: %s", bodyText)
+	}
+	if strings.Contains(bodyText, "unopened block index 7") {
+		t.Fatalf("stream error leaked internal lifecycle details: %s", bodyText)
 	}
 	if strings.Contains(bodyText, `"text":"answer"`) {
 		t.Fatalf("stream continued after invalid native lifecycle: %s", bodyText)

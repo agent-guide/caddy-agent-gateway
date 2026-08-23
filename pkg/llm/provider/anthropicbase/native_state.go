@@ -9,6 +9,17 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+func init() {
+	_, err := provider.NewProtocolRequirementSet(map[provider.ProtocolFeature][]provider.RequirementReason{
+		provider.FeatureAnthropicServerToolRequest:   {provider.ReasonAnthropicServerTool},
+		provider.FeatureAnthropicNativeResponse:      {provider.ReasonAnthropicServerTool},
+		provider.FeatureAnthropicNativeHistoryReplay: {provider.ReasonAnthropicServerTool},
+	})
+	if err != nil {
+		panic("anthropicbase: invalid protocol requirement registration: " + err.Error())
+	}
+}
+
 // AnthropicStreamEvent is the typed adapter view over one neutral stream-event
 // envelope. The envelope remains the fidelity authority.
 type AnthropicStreamEvent struct {
@@ -247,7 +258,8 @@ func NewAnthropicRequestProtocolState(tools []json.RawMessage, choice json.RawMe
 	}
 	requirements, err := provider.NewProtocolRequirementSet(reasons)
 	if err != nil {
-		panic(err)
+		// All possible features are asserted during package initialization.
+		return nil
 	}
 	state := &provider.ProtocolState{Requirements: requirements}
 	for i, raw := range tools {

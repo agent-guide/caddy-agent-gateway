@@ -553,14 +553,6 @@ func errTypeForStatus(status int) string {
 	}
 }
 
-// extractText returns the text content from a streaming message chunk.
-func extractText(msg *schema.Message) string {
-	if msg == nil {
-		return ""
-	}
-	return msg.Content
-}
-
 // mapAnthropicStopReason converts provider finish reasons to Anthropic stop reasons.
 func mapAnthropicStopReason(reason string) string {
 	switch reason {
@@ -575,21 +567,6 @@ func mapAnthropicStopReason(reason string) string {
 	default:
 		return ""
 	}
-}
-
-func writeSSEEvent(w http.ResponseWriter, event string, data any) {
-	payload, err := json.Marshal(data)
-	if err != nil {
-		return
-	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
-}
-
-func writeRawSSEEvent(w http.ResponseWriter, event string, data json.RawMessage) {
-	if strings.TrimSpace(event) == "" || len(data) == 0 {
-		return
-	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 }
 
 func writeRawSSEEventChecked(w http.ResponseWriter, event string, data json.RawMessage) error {

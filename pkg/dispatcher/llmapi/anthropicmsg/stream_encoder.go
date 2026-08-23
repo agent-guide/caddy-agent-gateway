@@ -943,10 +943,6 @@ func (e *anthropicStreamEncoder) emitEvent(event anthropicStreamEvent) error {
 	return nil
 }
 
-func (e *anthropicStreamEncoder) emitError(cause error) error {
-	message := "stream failed"
-	if cause != nil {
-		message = cause.Error()
-	}
-	return e.emit("error", anthropicErrorResponse{Type: "error", Error: anthropicErrorBody{Type: "api_error", Message: message}})
+func (e *anthropicStreamEncoder) emitError(_ error) error {
+	return e.emit("error", anthropicErrorResponse{Type: "error", Error: anthropicErrorBody{Type: "api_error", Message: "stream failed"}})
 }
