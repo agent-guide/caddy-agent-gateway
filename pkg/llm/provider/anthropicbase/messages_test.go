@@ -41,12 +41,9 @@ func TestBuildMessagesRequestReplaysNativeAnthropicTools(t *testing.T) {
 	tool := json.RawMessage(`{"type":"web_search_20260209","name":"web_search","max_uses":3}`)
 	choice := json.RawMessage(`{"type":"auto","disable_parallel_tool_use":true}`)
 	chatReq := &provider.ChatRequest{
-		Model:    "model",
-		Messages: []*schema.Message{schema.UserMessage("hello")},
-		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
-			AnthropicTools:      []json.RawMessage{tool},
-			AnthropicToolChoice: choice,
-		})},
+		Model:         "model",
+		Messages:      []*schema.Message{schema.UserMessage("hello")},
+		ProtocolState: NewAnthropicRequestProtocolState([]json.RawMessage{tool}, choice),
 	}
 	state, err := provider.ResolveChatRequest(context.Background(), provider.ProviderConfig{}, chatReq)
 	if err != nil {
@@ -164,7 +161,7 @@ func TestMessagesResponsePreservesNativeServerToolBlocksForReplay(t *testing.T) 
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	msg := response.ToChatResponse().Message
-	blocks := provider.AnthropicContentBlocksFromMessage(msg)
+	blocks := AnthropicContentBlocksFromMessage(msg)
 	if len(blocks) != 3 {
 		t.Fatalf("native blocks = %d, want 3", len(blocks))
 	}
@@ -294,13 +291,13 @@ func TestModeledResponseOnlyPinsAuthenticReasoningToNativeProvider(t *testing.T)
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	msg := response.ToChatResponse().Message
-	if blocks := provider.AnthropicContentBlocksFromMessage(msg); len(blocks) != 0 {
+	if blocks := AnthropicContentBlocksFromMessage(msg); len(blocks) != 0 {
 		t.Fatalf("native blocks = %d, want none for portable content", len(blocks))
 	}
-	if provider.HasAnthropicNativeContent([]*schema.Message{msg}) {
+	if HasAnthropicNativeContent([]*schema.Message{msg}) {
 		t.Fatal("modeled response unexpectedly retained raw native blocks")
 	}
-	if !provider.HasAnthropicNativeReasoning([]*schema.Message{msg}) {
+	if !HasAnthropicNativeReasoning([]*schema.Message{msg}) {
 		t.Fatal("authentic reasoning did not require Anthropic-native routing")
 	}
 	if msg.Content != "hello" || len(msg.ToolCalls) != 1 {
@@ -321,7 +318,7 @@ func TestResponseBlockUsesPerTypeModeledFields(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	msg := response.ToChatResponse().Message
-	blocks := provider.AnthropicContentBlocksFromMessage(msg)
+	blocks := AnthropicContentBlocksFromMessage(msg)
 	if len(blocks) != 1 || !bytes.Contains(blocks[0], []byte(`"data":"opaque-future-field"`)) {
 		t.Fatalf("cross-type field was not retained for native replay: %s", blocks)
 	}
@@ -340,7 +337,7 @@ func TestCitationTextResponsePinsConversationToNativeProvider(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	msg := response.ToChatResponse().Message
-	if !provider.HasAnthropicNativeContent([]*schema.Message{msg}) {
+	if !HasAnthropicNativeContent([]*schema.Message{msg}) {
 		t.Fatal("citation response must require Anthropic-native routing")
 	}
 }
@@ -356,7 +353,7 @@ func TestNullCitationFieldDoesNotPinConversation(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	msg := response.ToChatResponse().Message
-	if provider.HasAnthropicNativeContent([]*schema.Message{msg}) {
+	if HasAnthropicNativeContent([]*schema.Message{msg}) {
 		t.Fatal("null citations unexpectedly required Anthropic-native routing")
 	}
 	if msg.Content != "hi" {
@@ -368,7 +365,7 @@ func TestNativeContentReplayKeepsUndecodableBlockVerbatim(t *testing.T) {
 	// "id" is modeled as a string; a future block shape that uses another type
 	// must still be replayed instead of silently disappearing from the turn.
 	opaque := json.RawMessage(`{"type":"future_block","id":42,"payload":{"keep":"me"}}`)
-	msg := provider.AttachAnthropicContentBlocks(&schema.Message{Role: schema.Assistant}, []json.RawMessage{opaque})
+	msg := AttachAnthropicContentBlocks(&schema.Message{Role: schema.Assistant}, []json.RawMessage{opaque})
 	items := ConvertMessages([]*schema.Message{msg}, &MessagesRequest{}, false, nil)
 	if len(items) != 1 || len(items[0].Content) != 1 {
 		t.Fatalf("replayed messages = %+v, want one opaque block", items)
@@ -417,11 +414,9 @@ func TestToolDefMarshalAppliesMutationsAndClears(t *testing.T) {
 func TestBuildMessagesRequestKeepsUndecodableNativeToolVerbatim(t *testing.T) {
 	tool := json.RawMessage(`{"type":"web_search_20260209","name":"web_search","max_uses":"three"}`)
 	chatReq := &provider.ChatRequest{
-		Model:    "model",
-		Messages: []*schema.Message{schema.UserMessage("hello")},
-		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
-			AnthropicTools: []json.RawMessage{json.RawMessage(`{"name":123}`), tool},
-		})},
+		Model:         "model",
+		Messages:      []*schema.Message{schema.UserMessage("hello")},
+		ProtocolState: NewAnthropicRequestProtocolState([]json.RawMessage{json.RawMessage(`{"name":123}`), tool}, nil),
 	}
 	state, err := provider.ResolveChatRequest(context.Background(), provider.ProviderConfig{}, chatReq)
 	if err != nil {

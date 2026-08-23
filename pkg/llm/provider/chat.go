@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -11,9 +10,10 @@ import (
 // ChatOptions carries additional chat request options that extend the standard
 // eino model options. Use WithTopK / GetChatOptions to set and read these.
 type ChatOptions struct {
-	TopK      int
-	Responses *ResponsesRequestContext
-	ChatExtra *ChatExtraFields
+	TopK          int
+	Responses     *ResponsesRequestContext
+	ChatExtra     *ChatExtraFields
+	ProtocolState *ProtocolState
 }
 
 // ChatExtraFields carries protocol request fields that have no eino
@@ -29,11 +29,6 @@ type ChatExtraFields struct {
 	Metadata          map[string]any
 	ParallelToolCalls *bool
 	Store             *bool
-	// AnthropicTools preserves the complete Anthropic tool union. In particular,
-	// server-side tools such as web_search have a versioned type and no
-	// input_schema, so they cannot be represented by schema.ToolInfo.
-	AnthropicTools      []json.RawMessage
-	AnthropicToolChoice json.RawMessage
 }
 
 // WithChatExtraFields stores extra chat-completions request fields inside
@@ -60,6 +55,14 @@ func ChatExtraFieldsFromOptions(opts ...einomodel.Option) *ChatExtraFields {
 func WithTopK(topK int) einomodel.Option {
 	return einomodel.WrapImplSpecificOptFn(func(o *ChatOptions) {
 		o.TopK = topK
+	})
+}
+
+// WithProtocolState carries request-scoped protocol state across the eino
+// ToolCallingChatModel option boundary.
+func WithProtocolState(state *ProtocolState) einomodel.Option {
+	return einomodel.WrapImplSpecificOptFn(func(o *ChatOptions) {
+		o.ProtocolState = CloneProtocolState(state)
 	})
 }
 
@@ -102,9 +105,10 @@ func ResponsesRequestContextFromOptions(opts ...einomodel.Option) *ResponsesRequ
 
 // ChatRequest is the unified internal chat request format passed to providers.
 type ChatRequest struct {
-	Model    string
-	Messages []*schema.Message
-	Options  []einomodel.Option
+	Model         string
+	Messages      []*schema.Message
+	Options       []einomodel.Option
+	ProtocolState *ProtocolState
 }
 
 // ChatResponse is the unified internal chat response format returned by providers.
@@ -117,6 +121,7 @@ type ChatRequestState struct {
 	Messages      []*schema.Message
 	Options       []einomodel.Option
 	CommonOptions *einomodel.Options
+	ProtocolState *ProtocolState
 }
 
 func ResolveChatRequest(_ context.Context, config ProviderConfig, req *ChatRequest) (*ChatRequestState, error) {
@@ -127,11 +132,18 @@ func ResolveChatRequest(_ context.Context, config ProviderConfig, req *ChatReque
 
 	opts := append([]einomodel.Option(nil), req.Options...)
 
+	protocolState := CloneProtocolState(req.ProtocolState)
+	if protocolState == nil {
+		if chatOpts := GetChatOptions(opts...); chatOpts != nil {
+			protocolState = CloneProtocolState(chatOpts.ProtocolState)
+		}
+	}
 	return &ChatRequestState{
 		ModelName:     modelName,
 		Messages:      req.Messages,
 		Options:       opts,
 		CommonOptions: einomodel.GetCommonOptions(nil, opts...),
+		ProtocolState: protocolState,
 	}, nil
 }
 
@@ -206,8 +218,7 @@ func cloneChatExtraFields(src *ChatExtraFields) *ChatExtraFields {
 	}
 	if src.ResponseFormat == nil && len(src.Reasoning) == 0 && len(src.Thinking) == 0 && src.ReasoningEffort == "" &&
 		src.ToolStream == nil && len(src.StreamOptions) == 0 &&
-		src.User == "" && len(src.Metadata) == 0 && src.ParallelToolCalls == nil && src.Store == nil &&
-		len(src.AnthropicTools) == 0 && len(src.AnthropicToolChoice) == 0 {
+		src.User == "" && len(src.Metadata) == 0 && src.ParallelToolCalls == nil && src.Store == nil {
 		return nil
 	}
 	out := &ChatExtraFields{
@@ -238,15 +249,6 @@ func cloneChatExtraFields(src *ChatExtraFields) *ChatExtraFields {
 	if src.Store != nil {
 		v := *src.Store
 		out.Store = &v
-	}
-	if len(src.AnthropicTools) > 0 {
-		out.AnthropicTools = make([]json.RawMessage, len(src.AnthropicTools))
-		for i, raw := range src.AnthropicTools {
-			out.AnthropicTools[i] = append(json.RawMessage(nil), raw...)
-		}
-	}
-	if len(src.AnthropicToolChoice) > 0 {
-		out.AnthropicToolChoice = append(json.RawMessage(nil), src.AnthropicToolChoice...)
 	}
 	return out
 }

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
 
 var errResponseLifecycleFinalized = errors.New("anthropic response lifecycle already finalized")
@@ -29,9 +30,18 @@ type responseFailure struct {
 	ErrorType  string
 }
 
+type responseObservation struct {
+	Mode                  string
+	RelayIneligibleReason string
+	MessageIDSource       string
+	UsageSource           string
+}
+
 type responseLifecycle interface {
 	Committed()
 	ObserveUsage(usageObservation)
+	ObserveExecution(provider.ResolvedExecution)
+	ObserveResponse(responseObservation)
 	Finish(responseFinish) error
 	Fail(responseFailure) error
 	Cancel(responseFailure) error
@@ -44,6 +54,8 @@ type spanResponseLifecycle struct {
 	committed bool
 	finished  bool
 	usage     *usageObservation
+	execution *provider.ResolvedExecution
+	response  responseObservation
 }
 
 func newSpanResponseLifecycle(span usage.InteractionSpan, transport string) *spanResponseLifecycle {
@@ -60,6 +72,19 @@ func (l *spanResponseLifecycle) ObserveUsage(observed usageObservation) {
 	l.mu.Lock()
 	copy := observed
 	l.usage = &copy
+	l.mu.Unlock()
+}
+
+func (l *spanResponseLifecycle) ObserveExecution(resolved provider.ResolvedExecution) {
+	l.mu.Lock()
+	copy := resolved
+	l.execution = &copy
+	l.mu.Unlock()
+}
+
+func (l *spanResponseLifecycle) ObserveResponse(observed responseObservation) {
+	l.mu.Lock()
+	l.response = observed
 	l.mu.Unlock()
 }
 
@@ -95,13 +120,27 @@ func (l *spanResponseLifecycle) finalize(success bool, status int, errorType, re
 	}
 	l.finished = true
 	observed := l.usage
+	execution := l.execution
+	response := l.response
 	committed := l.committed
 	l.mu.Unlock()
 
 	extension := usage.LLMExtension{
-		Transport:         l.transport,
-		ResponseOutcome:   responseOutcome,
-		ResponseCommitted: usage.Bool(committed),
+		Transport:             l.transport,
+		ResponseOutcome:       responseOutcome,
+		ResponseCommitted:     usage.Bool(committed),
+		ResponseMode:          response.Mode,
+		RelayIneligibleReason: response.RelayIneligibleReason,
+		MessageIDSource:       response.MessageIDSource,
+		UsageSource:           response.UsageSource,
+	}
+	if execution != nil {
+		extension.ProviderID = execution.Candidate.ProviderID
+		extension.ProviderType = execution.Candidate.ProviderType
+		extension.LogicalModel = execution.Candidate.LogicalModel
+		extension.UpstreamModel = execution.Candidate.UpstreamModel
+		extension.CredentialID = execution.Attribution.CredentialID
+		extension.CredentialSource = execution.Attribution.CredentialSource
 	}
 	if observed != nil {
 		total := observed.InputTokens + observed.OutputTokens

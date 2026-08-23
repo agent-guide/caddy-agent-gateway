@@ -68,3 +68,31 @@ func TestProviderRegistryEnableDisableProviderType(t *testing.T) {
 		t.Fatalf("NewProvider after enable: %v", err)
 	}
 }
+
+func TestProviderCapabilityFeatureSetIsValidatedAndCloned(t *testing.T) {
+	const providerType = "test-protocol-feature-provider"
+	features := map[ProtocolFeature]struct{}{FeatureAnthropicBodyRelay: {}}
+	RegisterProviderTypeCapabilities(providerType, ProviderTypeCapabilities{
+		ProtocolFeatures: features,
+	})
+	delete(features, FeatureAnthropicBodyRelay)
+	got := CapabilitiesForProviderType(providerType)
+	if !got.SupportsProtocolFeature(FeatureAnthropicBodyRelay) {
+		t.Fatal("registration retained caller-owned feature map")
+	}
+	delete(got.ProtocolFeatures, FeatureAnthropicBodyRelay)
+	if !CapabilitiesForProviderType(providerType).SupportsProtocolFeature(FeatureAnthropicBodyRelay) {
+		t.Fatal("capability lookup exposed registry-owned feature map")
+	}
+}
+
+func TestProviderCapabilityRejectsUnknownFeature(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("unknown protocol feature registration did not panic")
+		}
+	}()
+	RegisterProviderTypeCapabilities("test-unknown-protocol-feature", ProviderTypeCapabilities{
+		ProtocolFeatures: map[ProtocolFeature]struct{}{ProtocolFeature("unknown.feature"): {}},
+	})
+}

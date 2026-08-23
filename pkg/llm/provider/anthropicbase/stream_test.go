@@ -20,7 +20,7 @@ func TestReadMessageStreamPreservesNativeServerToolAndCitationEvents(t *testing.
 	}, "")
 	sr, sw := schema.Pipe[*schema.Message](8)
 	go ReadMessageStream(io.NopCloser(strings.NewReader(body)), sw, "test")
-	var events []provider.AnthropicStreamEvent
+	var events []AnthropicStreamEvent
 	for {
 		msg, err := sr.Recv()
 		if err == io.EOF {
@@ -29,7 +29,7 @@ func TestReadMessageStreamPreservesNativeServerToolAndCitationEvents(t *testing.
 		if err != nil {
 			t.Fatalf("Recv() error = %v", err)
 		}
-		events = append(events, provider.AnthropicStreamEventsFromMessage(msg)...)
+		events = append(events, AnthropicStreamEventsFromMessage(msg)...)
 	}
 	if len(events) != 4 {
 		t.Fatalf("events = %+v, want four native events", events)
@@ -66,6 +66,9 @@ func TestReadMessageStreamPreservesThinkingSignatureAndRedactedData(t *testing.T
 		}
 		if err != nil {
 			t.Fatalf("Recv() error = %v", err)
+		}
+		if len(AnthropicRelayStreamEventsFromMessage(chunk)) > 0 {
+			continue
 		}
 		chunks = append(chunks, chunk)
 	}

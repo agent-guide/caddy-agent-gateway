@@ -63,42 +63,50 @@ Provider registration rules:
 
 ## Native protocol state
 
-Anthropic server tools, citations, and other content blocks that the generic
-eino message model cannot express are carried verbatim: `ChatExtraFields.
-AnthropicTools`/`AnthropicToolChoice` on the request, `provider.Attach
-AnthropicContentBlocks` / `AttachAnthropicStreamEvent` on messages, and the
-`RequiredNativeDialects` / `NativeDialects` capability sets for route filtering.
-Authentic signed/encrypted reasoning uses the narrower
-`RequiredReasoningDialects` / `ReasoningDialects` sets because the eino-backed
-`anthropic` provider can replay it without supporting every native server-tool
-content shape. Static provider-type capability registration is the single
-source of truth; do not add matching runtime marker interfaces.
+Protocol-native values that the generic eino message model cannot express use
+the scoped, dialect-neutral `provider.ProtocolState`. Request tools and tool
+choice live on `ChatRequest.ProtocolState`; history blocks, ephemeral response
+bodies, and stream events use the one neutral message Extra carrier. The
+registered dialect codec owns raw capture, presence-aware baseline digests,
+differential overlay, stream folding, and duplicate-fragment validation.
+`einomodel` carries request state through one impl-specific option and folds
+response/stream transport state into persistent history before returning it.
+
+The Messages AST derives one immutable `ProtocolRequirementSet`, including
+bounded reasons, before generic conversion. Route selection performs only set
+inclusion against the provider type's registered atomic feature set. Server-tool
+request, native response, native history replay, and reasoning replay are
+separate requirement-class features; body and stream relay are mode-selection
+features and cannot enter request filtering. Static provider-type registration
+is the single source of truth; do not add matching dialect sets or runtime
+marker interfaces.
 
 Rules for this state:
 
-- populate `AnthropicTools` only when at least one declaration is a server tool
-  or carries non-null fields that the generic tool model cannot express; when
-  raw replay is required, retain the entire ordered tool array and tool choice
+- populate request-scoped native envelopes only when at least one declaration
+  is a server tool or carries non-null fields that the generic tool model cannot
+  express; when raw replay is required, retain the entire ordered tool array and
+  tool choice
 - attach native content only when the generic model would lose information
   (unknown block type or unmodeled fields). Attaching it for ordinary text or
   `tool_use` answers pins every later turn of that conversation to a
   native-capable provider and disables incompatible candidate fallback; the
-  routed provider logs the active dialect requirements at Debug level
+  routed provider logs the active protocol feature requirements at Debug level
 - authentic Anthropic thinking signatures and encrypted/redacted reasoning
-  require an Anthropic reasoning-dialect-capable provider even when `ReasoningParts`
+  require the Anthropic reasoning-replay feature even when `ReasoningParts`
   can represent them structurally; representation does not make opaque upstream
   state portable across providers or models
 - never drop a block or tool declaration that fails to decode; replay the raw
   bytes (`anthropicbase.OpaqueContentBlock`, `anthropicbase.OpaqueToolDef`)
-- the eino-backed `anthropic` provider captures non-stream responses only to
-  restore signed/redacted reasoning; it must not expose citations or other raw
-  native blocks that its request and streaming paths cannot preserve
+- the eino-backed `anthropic` provider captures successful non-stream response
+  bodies for validated body relay and restores signed/redacted reasoning, but
+  does not declare native stream relay or native-history replay
 
-The routing capability model is dialect-neutral: add future codex / OpenAI
-Responses fidelity requirements to the existing dialect sets rather than adding
-parallel `RequireOpenAINative` fields. The message extras are still a
-single-dialect solution; the second dialect that needs raw block replay should
-generalize them into one envelope carrying `{dialect, blocks}`.
+The routing capability model is dialect-neutral: add future Codex/OpenAI
+Responses fidelity requirements as registered atomic features rather than
+parallel `RequireOpenAINative` fields. Dialect-specific JSON inspection stays
+inside its registered codec; neutral routing and eino packages only carry
+envelopes and feature IDs.
 
 Signed reasoning is opaque upstream state, not a portable gateway token. Routes
 that replay it across tool turns must keep the same upstream provider and model;

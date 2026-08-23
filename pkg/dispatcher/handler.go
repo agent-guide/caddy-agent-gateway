@@ -15,6 +15,7 @@ import (
 	agentroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
 	virtualkeypkg "github.com/agent-guide/agent-gateway/pkg/gateway/virtualkey"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	mcpruntime "github.com/agent-guide/agent-gateway/pkg/mcp/runtime"
 	"go.uber.org/zap"
 )
@@ -291,7 +292,12 @@ func (h *Handler) dispatchLLM(w http.ResponseWriter, r *http.Request, next NextH
 		zap.String("requested_model", prepared.Model()),
 		zap.Bool("stream", prepared.Stream()),
 		zap.Bool("require_streaming", requestRequirements.RequireStreaming),
+		zap.String("execution", string(prepared.Disposition)),
+		zap.Strings("required_protocol_features", protocolFeatureNames(requestRequirements.ProtocolRequirements)),
 	)
+	if prepared.Disposition == ExecutionLocal {
+		return apiHandler.ServeLLMApi(w, rewritten, nil, prepared)
+	}
 
 	routedProvider, err := h.gateway.NewRoutedProvider(route, requestRequirements)
 	if err != nil {
@@ -304,6 +310,15 @@ func (h *Handler) dispatchLLM(w http.ResponseWriter, r *http.Request, next NextH
 	)
 
 	return apiHandler.ServeLLMApi(w, rewritten, routedProvider, prepared)
+}
+
+func protocolFeatureNames(requirements provider.ProtocolRequirementSet) []string {
+	features := requirements.Features()
+	names := make([]string, len(features))
+	for i, feature := range features {
+		names[i] = string(feature)
+	}
+	return names
 }
 
 // RewriteLLMRoutePath returns a cloned request with the matched LLM route prefix stripped.

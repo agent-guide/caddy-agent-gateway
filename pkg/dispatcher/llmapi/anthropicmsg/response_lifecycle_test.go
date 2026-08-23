@@ -31,6 +31,7 @@ func TestResponseLifecycleFinalizesExactlyOnce(t *testing.T) {
 	span := &recordingInteractionSpan{}
 	lifecycle := newSpanResponseLifecycle(span, "stream")
 	lifecycle.ObserveUsage(usageObservation{InputTokens: 3, OutputTokens: 2, Final: true})
+	lifecycle.ObserveResponse(responseObservation{Mode: "native_relay", MessageIDSource: "upstream", UsageSource: "native_stream"})
 	if err := lifecycle.Finish(responseFinish{StatusCode: 200, Outcome: "completed"}); err != nil {
 		t.Fatal(err)
 	}
@@ -39,5 +40,9 @@ func TestResponseLifecycleFinalizesExactlyOnce(t *testing.T) {
 	}
 	if len(span.finishes) != 1 || len(span.exts) != 1 {
 		t.Fatalf("finishes=%d extensions=%d, want one each", len(span.finishes), len(span.exts))
+	}
+	extension, ok := span.exts[0].(usage.LLMExtension)
+	if !ok || extension.ResponseMode != "native_relay" || extension.MessageIDSource != "upstream" || extension.UsageSource != "native_stream" {
+		t.Fatalf("extension = %#v", span.exts[0])
 	}
 }

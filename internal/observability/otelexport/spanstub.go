@@ -55,6 +55,14 @@ func llmSpanStub(ev usage.LLMUsageEvent) (tracetest.SpanStub, error) {
 	attrs = appendString(attrs, "gen_ai.request.model", requestModel)
 	attrs = appendString(attrs, "gen_ai.response.model", ev.UpstreamModel)
 	attrs = append(attrs, attribute.Bool("agw.llm.stream", ev.Stream))
+	attrs = appendString(attrs, "agw.llm.transport", ev.Transport)
+	attrs = appendString(attrs, "agw.llm.response_outcome", ev.ResponseOutcome)
+	attrs = append(attrs, attribute.Bool("agw.llm.response_committed", ev.ResponseCommitted))
+	attrs = appendString(attrs, "agw.llm.response_mode", ev.ResponseMode)
+	attrs = appendString(attrs, "agw.llm.relay_ineligible_reason", ev.RelayIneligibleReason)
+	attrs = appendString(attrs, "agw.llm.message_id_source", ev.MessageIDSource)
+	attrs = appendString(attrs, "agw.llm.usage_source", ev.UsageSource)
+	attrs = appendString(attrs, "agw.llm.execution", ev.Execution)
 	if ev.UsageFinalized {
 		attrs = append(attrs,
 			attribute.Int("gen_ai.usage.input_tokens", ev.InputTokens),

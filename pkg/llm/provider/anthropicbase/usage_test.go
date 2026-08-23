@@ -1,6 +1,7 @@
 package anthropicbase
 
 import (
+	"io"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
@@ -41,11 +42,20 @@ func TestEmitStreamEventCarriesCacheUsageToFinalChunk(t *testing.T) {
 	}
 	sw.Close()
 
-	msg, err := sr.Recv()
-	if err != nil {
-		t.Fatalf("Recv() error = %v", err)
+	var msg *schema.Message
+	for {
+		chunk, err := sr.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		if len(AnthropicRelayStreamEventsFromMessage(chunk)) == 0 {
+			msg = chunk
+		}
 	}
-	if msg.ResponseMeta == nil || msg.ResponseMeta.Usage == nil {
+	if msg == nil || msg.ResponseMeta == nil || msg.ResponseMeta.Usage == nil {
 		t.Fatalf("final chunk has no usage: %+v", msg)
 	}
 	u := msg.ResponseMeta.Usage

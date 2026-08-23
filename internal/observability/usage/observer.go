@@ -292,6 +292,11 @@ func llmEvent(base InteractionEvent, ext LLMExtension) LLMUsageEvent {
 	if ext.ResponseCommitted != nil {
 		ev.ResponseCommitted = *ext.ResponseCommitted
 	}
+	ev.ResponseMode = ext.ResponseMode
+	ev.RelayIneligibleReason = ext.RelayIneligibleReason
+	ev.MessageIDSource = ext.MessageIDSource
+	ev.UsageSource = ext.UsageSource
+	ev.Execution = ext.Execution
 	if ext.InputTokens != nil {
 		ev.InputTokens = *ext.InputTokens
 	}

@@ -17,7 +17,8 @@ var llmUsageInsertColumns = []string{
 	"event_id", "trace_id", "span_id", "parent_span_id", "agent_depth", "started_at", "finished_at",
 	"route_id", "route_kind", "route_protocol", "virtual_key_id", "success", "status_code", "error_type", "latency_ms",
 	"llm_api", "api_operation", "provider_id", "provider_type", "logical_model", "upstream_model",
-	"credential_source", "credential_id", "stream", "transport", "response_outcome", "response_committed", "input_tokens", "output_tokens", "total_tokens",
+	"credential_source", "credential_id", "stream", "transport", "response_outcome", "response_committed",
+	"response_mode", "relay_ineligible_reason", "message_id_source", "usage_source", "execution", "input_tokens", "output_tokens", "total_tokens",
 	"cached_tokens", "reasoning_tokens",
 	"usage_finalized", "request_tool_count", "request_tool_names", "tool_call_count", "tool_names", "agent_id", "run_id", "runtime_type",
 }
@@ -52,7 +53,8 @@ func InsertLLMUsageEvent(db *gorm.DB, ev usage.LLMUsageEvent) error {
 		ev.EventID, ev.TraceID, ev.SpanID, ev.ParentSpanID, ev.AgentDepth, unixMillis(ev.StartedAt), unixMillis(ev.FinishedAt),
 		ev.RouteID, ev.RouteKind, ev.RouteProtocol, ev.VirtualKeyID, boolInt(ev.Success), ev.StatusCode, ev.ErrorType, ev.LatencyMS,
 		ev.LLMAPI, ev.APIOperation, ev.ProviderID, ev.ProviderType, ev.LogicalModel, ev.UpstreamModel,
-		ev.CredentialSource, ev.CredentialID, boolInt(ev.Stream), ev.Transport, ev.ResponseOutcome, boolInt(ev.ResponseCommitted), ev.InputTokens, ev.OutputTokens, ev.TotalTokens,
+		ev.CredentialSource, ev.CredentialID, boolInt(ev.Stream), ev.Transport, ev.ResponseOutcome, boolInt(ev.ResponseCommitted),
+		ev.ResponseMode, ev.RelayIneligibleReason, ev.MessageIDSource, ev.UsageSource, ev.Execution, ev.InputTokens, ev.OutputTokens, ev.TotalTokens,
 		ev.CachedTokens, ev.ReasoningTokens,
 		boolInt(ev.UsageFinalized), ev.RequestToolCount, string(names), ev.ToolCallCount, string(toolNames), nullString(ev.AgentID), nullString(ev.RunID), nullString(ev.RuntimeType),
 	).Error

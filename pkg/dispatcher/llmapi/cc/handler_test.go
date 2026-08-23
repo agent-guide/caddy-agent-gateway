@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	"github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/anthropicmsg"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/cloudwego/eino/schema"
@@ -104,8 +105,14 @@ func TestServeLLMApiCountTokensReturnsEstimate(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens?beta=true", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-
-	if err := handler.ServeLLMApi(rec, req, &testStreamingProvider{}, nil); err != nil {
+	prepared, requirements, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Disposition != dispatcher.ExecutionLocal || !requirements.ProtocolRequirements.Empty() {
+		t.Fatalf("local preparation = %+v, requirements = %+v", prepared, requirements)
+	}
+	if err := handler.ServeLLMApi(rec, req, nil, prepared); err != nil {
 		t.Fatalf("ServeLLMApi returned error: %v", err)
 	}
 

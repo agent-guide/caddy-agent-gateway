@@ -2,17 +2,48 @@ package einomodel
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 )
 
 type fakeProvider struct {
 	lastReq *provider.ChatRequest
 	message *schema.Message
+}
+
+func TestGenerateCarriesRequestStateAndFoldsResponseState(t *testing.T) {
+	message := anthropicbase.AttachAnthropicResponseBody(schema.AssistantMessage("answer", nil), json.RawMessage(`{
+		"id":"msg_1","type":"message","role":"assistant","model":"upstream",
+		"content":[{"type":"text","text":"answer","future":"preserve"}]
+	}`))
+	fake := &fakeProvider{message: message}
+	m, err := New(fake, "smart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestState := anthropicbase.NewAnthropicRequestProtocolState(
+		[]json.RawMessage{json.RawMessage(`{"type":"web_search_20250305","name":"web_search"}`)}, nil,
+	)
+	out, err := m.Generate(t.Context(), []*schema.Message{schema.UserMessage("hello")}, provider.WithProtocolState(requestState))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tools, _ := anthropicbase.AnthropicRequestTools(fake.lastReq.ProtocolState); len(tools) != 1 {
+		t.Fatalf("request tools = %d, want 1", len(tools))
+	}
+	if body := anthropicbase.AnthropicResponseBodyFromMessage(out); len(body) != 0 {
+		t.Fatalf("ephemeral body retained: %s", body)
+	}
+	blocks := anthropicbase.AnthropicContentBlocksFromMessage(out)
+	if len(blocks) != 1 || !json.Valid(blocks[0]) {
+		t.Fatalf("history blocks = %q", blocks)
+	}
 }
 
 func (f *fakeProvider) Chat(_ context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {

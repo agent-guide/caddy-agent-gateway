@@ -21,6 +21,18 @@ the per-request provider resolution hot path.
 manager's request-time external refresh hook before attaching a
 `oauth_token` to the provider context. Provider-specific login and token
 refresh behavior are external to this repository and owned by `agw-auth`.
+Its enriched `ExecuteChat` / `ExecuteStreamChat` methods return the one
+`ResolvedExecution` that served the request, including the candidate's
+provider, client/upstream model, protocol dialect/features, and credential
+attribution. The ordinary provider methods are compatibility adapters. Never
+mutate the caller's `ChatRequest.Model`; rewrite only an attempt-local clone.
+Protocol response coordinators use the enriched path so mode selection reads
+the served candidate and one lifecycle owner writes attribution plus usage.
+The protocol handler attaches its immutable `ProtocolRequirementSet` to both
+the route request and `ChatRequest.ProtocolState`; `RoutedProvider` asserts they
+agree but never inspects message extras to derive stronger requirements.
+Candidate filtering returns typed `RequirementGap` values and is generic set
+inclusion over registered feature IDs.
 
 Runtime route matching uses the in-memory manager snapshot. Bootstrap and
 route manager create/update/delete/refresh keep that snapshot populated; do not

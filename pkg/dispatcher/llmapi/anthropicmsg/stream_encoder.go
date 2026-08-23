@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 )
@@ -24,7 +25,7 @@ type anthropicStreamEvent struct {
 
 type providerStreamEvent struct {
 	Generic *schema.Message
-	Native  *provider.AnthropicStreamEvent
+	Native  *anthropicbase.AnthropicStreamEvent
 }
 
 type streamEventSink interface {
@@ -32,9 +33,18 @@ type streamEventSink interface {
 }
 
 type streamEncoderOptions struct {
-	Model     string
-	MessageID string
+	Model                 string
+	MessageID             string
+	Mode                  streamMode
+	RelayIneligibleReason string
 }
+
+type streamMode string
+
+const (
+	streamModeNormalized  streamMode = "normalized"
+	streamModeNativeRelay streamMode = "native_relay"
+)
 
 type streamToolBlock struct {
 	blockIndex       int
@@ -55,9 +65,10 @@ type anthropicStreamEncoder struct {
 	lifecycle responseLifecycle
 	options   streamEncoderOptions
 
-	opened  bool
-	started bool
-	ended   bool
+	opened        bool
+	started       bool
+	ended         bool
+	relayComplete bool
 
 	nextBlockIndex int
 	activeKind     string
@@ -104,6 +115,13 @@ func (e *anthropicStreamEncoder) Open() error {
 		return fmt.Errorf("open encoder: %w", errResponseLifecycleFinalized)
 	}
 	e.opened = true
+	messageIDSource := "gateway"
+	usageSource := "provider_projection"
+	if e.options.Mode == streamModeNativeRelay {
+		messageIDSource = "upstream"
+		usageSource = "native_stream"
+	}
+	e.lifecycle.ObserveResponse(responseObservation{Mode: string(e.options.Mode), RelayIneligibleReason: e.options.RelayIneligibleReason, MessageIDSource: messageIDSource, UsageSource: usageSource})
 	return nil
 }
 
@@ -117,12 +135,23 @@ func (e *anthropicStreamEncoder) Accept(event providerStreamEvent) error {
 	if event.Native != nil {
 		return e.acceptNative(*event.Native)
 	}
+	if e.options.Mode == streamModeNativeRelay {
+		return nil
+	}
 	return e.acceptGeneric(event.Generic)
 }
 
 func (e *anthropicStreamEncoder) Finish() error {
 	if e.ended {
 		return errResponseLifecycleFinalized
+	}
+	if e.options.Mode == streamModeNativeRelay {
+		if !e.started || !e.relayComplete || e.activeKind != "" {
+			return e.fail(fmt.Errorf("native relay ended before a complete message lifecycle"), "invalid_state")
+		}
+		e.ended = true
+		e.observeUsage()
+		return e.lifecycle.Finish(responseFinish{StatusCode: 200, Outcome: "completed"})
 	}
 	if err := e.ensureMessageStarted(); err != nil {
 		return e.fail(err, "sink_error")
@@ -215,7 +244,10 @@ func (e *anthropicStreamEncoder) ensureMessageStarted() error {
 	return nil
 }
 
-func (e *anthropicStreamEncoder) acceptNative(event provider.AnthropicStreamEvent) error {
+func (e *anthropicStreamEncoder) acceptNative(event anthropicbase.AnthropicStreamEvent) error {
+	if e.options.Mode == streamModeNativeRelay {
+		return e.acceptRelayNative(event)
+	}
 	switch event.Event {
 	case "ping":
 		if !e.started {
@@ -283,6 +315,131 @@ func (e *anthropicStreamEncoder) acceptNative(event provider.AnthropicStreamEven
 	}
 }
 
+func (e *anthropicStreamEncoder) acceptRelayNative(event anthropicbase.AnthropicStreamEvent) error {
+	if e.relayComplete {
+		return fmt.Errorf("native event %q arrived after message_stop", event.Event)
+	}
+	switch event.Event {
+	case "ping":
+		if !e.started {
+			return nil
+		}
+		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+	case "error":
+		return e.fail(fmt.Errorf("upstream anthropic error event"), "provider_stream_failed")
+	case "message_start":
+		if e.started {
+			return fmt.Errorf("native message_start repeated")
+		}
+		data, err := rewriteNativeMessageStart(event.Data, e.options.Model)
+		if err != nil {
+			return err
+		}
+		if err := e.observeNativeMessageStart(data); err != nil {
+			return err
+		}
+		if err := e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: data}); err != nil {
+			return err
+		}
+		e.started = true
+		return nil
+	case "content_block_start":
+		if !e.started || e.activeKind != "" {
+			return fmt.Errorf("native relay block start overlaps active block")
+		}
+		index, ok := anthropicSSEEventIndex(event.Data)
+		if !ok {
+			return fmt.Errorf("native relay block start has no index")
+		}
+		var payload struct {
+			ContentBlock struct {
+				Type string `json:"type"`
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"content_block"`
+		}
+		if err := json.Unmarshal(event.Data, &payload); err != nil {
+			return err
+		}
+		if payload.ContentBlock.Type == "tool_use" && (payload.ContentBlock.ID == "" || payload.ContentBlock.Name == "") {
+			return fmt.Errorf("native relay tool_use block is missing id or name")
+		}
+		e.activeKind, e.activeIndex = "native_block", index
+		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+	case "content_block_delta", "content_block_stop":
+		index, ok := anthropicSSEEventIndex(event.Data)
+		if !ok || e.activeKind == "" || index != e.activeIndex {
+			return fmt.Errorf("native relay %s references inactive block %d", event.Event, index)
+		}
+		if err := e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)}); err != nil {
+			return err
+		}
+		if event.Event == "content_block_stop" {
+			e.activeKind, e.activeIndex = "", -1
+		}
+		return nil
+	case "message_delta":
+		if !e.started || e.activeKind != "" {
+			return fmt.Errorf("native relay message_delta before blocks close")
+		}
+		if err := e.acceptNativeMessageDelta(event.Data); err != nil {
+			return err
+		}
+		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+	case "message_stop":
+		if !e.started || e.activeKind != "" {
+			return fmt.Errorf("native relay message_stop before blocks close")
+		}
+		if err := e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)}); err != nil {
+			return err
+		}
+		e.relayComplete = true
+		return nil
+	default:
+		if !e.started {
+			return fmt.Errorf("native relay event %q before message_start", event.Event)
+		}
+		return e.sink.Emit(e.ctx, anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
+	}
+}
+
+func rewriteNativeMessageStart(data json.RawMessage, model string) (json.RawMessage, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("decode native message_start: %w", err)
+	}
+	message, ok := payload["message"].(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("native message_start has no message")
+	}
+	id, _ := message["id"].(string)
+	if id == "" {
+		return nil, fmt.Errorf("native message_start has empty id")
+	}
+	message["model"] = model
+	return json.Marshal(payload)
+}
+
+func (e *anthropicStreamEncoder) observeNativeMessageStart(data json.RawMessage) error {
+	var payload struct {
+		Message struct {
+			Usage struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+				CacheRead    int `json:"cache_read_input_tokens"`
+			} `json:"usage"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return err
+	}
+	e.inputTokens = payload.Message.Usage.InputTokens
+	e.outputTokens = payload.Message.Usage.OutputTokens
+	e.cachedTokens = payload.Message.Usage.CacheRead
+	e.usageObserved = true
+	return nil
+}
+
 func (e *anthropicStreamEncoder) acceptNativeMessageDelta(data json.RawMessage) error {
 	var payload struct {
 		Delta struct {
@@ -322,27 +479,35 @@ func (e *anthropicStreamEncoder) acceptGeneric(chunk *schema.Message) error {
 	if err := e.acceptReasoning(chunk); err != nil {
 		return err
 	}
-	if text := extractText(chunk); text != "" {
-		if err := e.closeReasoning(); err != nil {
-			return err
-		}
-		if e.toolBlocksHaveCompleteInput() {
-			if err := e.closeToolBlocks(false); err != nil {
+	for _, item := range responseItemsFromMessage(chunk) {
+		switch item.Block.Type {
+		case "text":
+			text := item.Block.Text
+			if text == "" {
+				continue
+			}
+			if err := e.closeReasoning(); err != nil {
 				return err
 			}
-		}
-		if e.hasOpenToolBlock() {
-			if e.deferredText.Len()+len(text) > maxDeferredTextBytes {
-				return fmt.Errorf("deferred_text buffer exceeds %d bytes", maxDeferredTextBytes)
+			if e.toolBlocksHaveCompleteInput() {
+				if err := e.closeToolBlocks(false); err != nil {
+					return err
+				}
 			}
-			e.deferredText.WriteString(text)
-		} else if err := e.writeText(text); err != nil {
-			return err
-		}
-	}
-	for _, call := range chunk.ToolCalls {
-		if err := e.acceptToolCall(call); err != nil {
-			return err
+			if e.hasOpenToolBlock() {
+				if e.deferredText.Len()+len(text) > maxDeferredTextBytes {
+					return fmt.Errorf("deferred_text buffer exceeds %d bytes", maxDeferredTextBytes)
+				}
+				e.deferredText.WriteString(text)
+			} else if err := e.writeText(text); err != nil {
+				return err
+			}
+		case "tool_use":
+			if item.SourceToolCall != nil {
+				if err := e.acceptToolCall(*item.SourceToolCall); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	if e.deferredText.Len() > 0 && e.toolBlocksHaveCompleteInput() {

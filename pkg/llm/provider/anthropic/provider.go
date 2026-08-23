@@ -46,7 +46,10 @@ const (
 func init() {
 	provider.RegisterProviderFactory("anthropic", New)
 	provider.RegisterProviderTypeCapabilities("anthropic", provider.ProviderTypeCapabilities{
-		ReasoningDialects: provider.NewProtocolDialectSet(provider.ProtocolDialectAnthropic),
+		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{
+			provider.FeatureAnthropicReasoningReplay: {},
+			provider.FeatureAnthropicBodyRelay:       {},
+		},
 	})
 }
 
@@ -85,6 +88,7 @@ func (p *Provider) Chat(ctx context.Context, req *provider.ChatRequest) (*provid
 		} else {
 			attachEinoClaudeReasoning(msg)
 		}
+		anthropicbase.AttachAnthropicResponseBody(msg, capture.body)
 		return provider.ChatResponseFromEinoMessage(msg), nil
 	})
 }
@@ -214,9 +218,9 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest, 
 
 	extraRequestFields := map[string]any{}
 	nativeAnthropicTools := false
-	if extra := provider.ChatExtraFieldsFromOptions(state.Options...); extra != nil && len(extra.AnthropicTools) > 0 {
-		toolValues := make([]any, 0, len(extra.AnthropicTools))
-		for i, raw := range extra.AnthropicTools {
+	if nativeTools, nativeChoice := anthropicbase.AnthropicRequestTools(state.ProtocolState); len(nativeTools) > 0 {
+		toolValues := make([]any, 0, len(nativeTools))
+		for i, raw := range nativeTools {
 			var value any
 			if err := json.Unmarshal(raw, &value); err != nil {
 				return nil, nil, nil, fmt.Errorf("anthropic: parse native tool %d: %w", i, err)
@@ -225,9 +229,9 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest, 
 		}
 		extraRequestFields["tools"] = toolValues
 		nativeAnthropicTools = true
-		if len(extra.AnthropicToolChoice) > 0 {
+		if len(nativeChoice) > 0 {
 			var toolChoiceValue any
-			if err := json.Unmarshal(extra.AnthropicToolChoice, &toolChoiceValue); err != nil {
+			if err := json.Unmarshal(nativeChoice, &toolChoiceValue); err != nil {
 				return nil, nil, nil, fmt.Errorf("anthropic: parse native tool_choice: %w", err)
 			}
 			extraRequestFields["tool_choice"] = toolChoiceValue
@@ -293,6 +297,7 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest, 
 // provider-specific blocks; only structured reasoning is restored from here.
 type messagesResponseCapture struct {
 	response *anthropicbase.MessagesResponse
+	body     json.RawMessage
 }
 
 type captureRoundTripper struct {
@@ -314,6 +319,7 @@ func (t captureRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	var captured anthropicbase.MessagesResponse
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && json.Unmarshal(body, &captured) == nil {
 		t.capture.response = &captured
+		t.capture.body = append(json.RawMessage(nil), body...)
 	}
 	return resp, nil
 }

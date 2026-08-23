@@ -17,6 +17,7 @@ import (
 	dispatcher "github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	llmroutepkg "github.com/agent-guide/agent-gateway/pkg/gateway/llmroute"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 	"github.com/cloudwego/eino/schema"
 	"go.uber.org/zap"
 )
@@ -89,6 +90,14 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 	if err := validateToolDefinitions(req.Tools); err != nil {
 		return nil, llmroutepkg.RequestRequirements{}, fmt.Errorf("invalid request: %w", err)
 	}
+	if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+		usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
+			LLMAPI: h.Name(), APIOperation: "count_tokens", Stream: usage.Bool(false), Execution: string(dispatcher.ExecutionLocal),
+		})
+		return &dispatcher.PreparedLLMApiRequest{
+			Disposition: dispatcher.ExecutionLocal, Type: provider.LLMApiRequestTypeChat, RawRequest: &req,
+		}, llmroutepkg.RequestRequirements{}, nil
+	}
 
 	h.logger.Debug(h.Name()+": request prepared",
 		zap.String("model", req.Model),
@@ -100,21 +109,17 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 	conv := &Converter{}
 	chatRequest := conv.ToInternal(&req)
 	prepared := &dispatcher.PreparedLLMApiRequest{
+		Disposition:     dispatcher.ExecutionProvider,
 		Type:            provider.LLMApiRequestTypeChat,
 		ChatRequest:     chatRequest,
 		StreamRequested: req.Stream,
 		RawRequest:      &req,
 	}
 	requestRequirements := llmroutepkg.RequestRequirements{
-		Model:            req.Model,
-		RequireStreaming: req.Stream,
-		RequireTools:     hasAnthropicClientTools(req.Tools),
+		Model: req.Model, RequireStreaming: req.Stream, RequireTools: hasAnthropicClientTools(req.Tools),
 	}
-	if hasAnthropicServerTools(req.Tools) || provider.HasAnthropicNativeContent(chatRequest.Messages) {
-		requestRequirements = requestRequirements.WithNativeDialect(provider.ProtocolDialectAnthropic)
-	}
-	if provider.HasAnthropicNativeReasoning(chatRequest.Messages) {
-		requestRequirements = requestRequirements.WithReasoningDialect(provider.ProtocolDialectAnthropic)
+	if chatRequest.ProtocolState != nil {
+		requestRequirements.ProtocolRequirements = provider.CloneProtocolRequirementSet(chatRequest.ProtocolState.Requirements)
 	}
 	usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
 		LLMAPI:           h.Name(),
@@ -122,17 +127,9 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 		Stream:           usage.Bool(req.Stream),
 		RequestToolCount: usage.Int(len(req.Tools)),
 		RequestToolNames: anthropicToolNames(req.Tools),
+		Execution:        string(dispatcher.ExecutionProvider),
 	})
 	return prepared, requestRequirements, nil
-}
-
-func hasAnthropicServerTools(tools []ToolDefinition) bool {
-	for _, tool := range tools {
-		if tool.isServerTool() {
-			return true
-		}
-	}
-	return false
 }
 
 func hasAnthropicClientTools(tools []ToolDefinition) bool {
@@ -168,7 +165,11 @@ func (h *Handler) ServeLLMApi(w http.ResponseWriter, r *http.Request, prov provi
 		return nil
 	}
 
-	if strings.HasSuffix(r.URL.Path, "/count_tokens") {
+	if prepared == nil || !prepared.IsValid() {
+		h.writeError(w, r, http.StatusBadRequest, fmt.Errorf("valid prepared request is required"))
+		return nil
+	}
+	if prepared.Disposition == dispatcher.ExecutionLocal {
 		h.handleCountTokens(w, r, prepared)
 		return nil
 	}
@@ -182,19 +183,9 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request, prov pr
 	if prepared != nil {
 		req, ok = prepared.RawRequest.(*MessagesRequest)
 	}
-	if !ok || req == nil || prepared == nil || prepared.Type != provider.LLMApiRequestTypeChat || prepared.ChatRequest == nil {
-		var err error
-		prepared, _, err = h.PrepareLLMApiRequest(r)
-		if err != nil {
-			h.writeError(w, r, statuserr.StatusCode(err, http.StatusBadRequest), fmt.Errorf("prepare request: %w", err))
-			return
-		}
-		var castOK bool
-		req, castOK = prepared.RawRequest.(*MessagesRequest)
-		if !castOK || req == nil || prepared.Type != provider.LLMApiRequestTypeChat || prepared.ChatRequest == nil {
-			h.writeError(w, r, http.StatusBadRequest, fmt.Errorf("invalid request"))
-			return
-		}
+	if !ok || req == nil || prepared.Type != provider.LLMApiRequestTypeChat || prepared.ChatRequest == nil {
+		h.writeError(w, r, http.StatusBadRequest, fmt.Errorf("invalid prepared request"))
+		return
 	}
 
 	chatReq := prepared.ChatRequest
@@ -215,7 +206,20 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request, prov pr
 	)
 	usage.TransferFinishOwnership(r.Context())
 	lifecycle := newSpanResponseLifecycle(usage.SpanFromContext(r.Context()), "batch")
-	resp, err := prov.Chat(r.Context(), chatReq)
+	var resp *provider.ChatResponse
+	var resolved *provider.ResolvedExecution
+	var err error
+	if executor, ok := prov.(provider.RoutedChatExecutor); ok {
+		var execution *provider.ChatExecution
+		execution, err = executor.ExecuteChat(r.Context(), chatReq)
+		if execution != nil {
+			resp = execution.Response
+			resolved = &execution.Resolved
+			lifecycle.ObserveExecution(execution.Resolved)
+		}
+	} else {
+		resp, err = prov.Chat(r.Context(), chatReq)
+	}
 	if err != nil {
 		status := statuserr.StatusCode(err, http.StatusBadGateway)
 		if dispatcher.IsClientCanceled(err) {
@@ -239,17 +243,24 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request, prov pr
 		zap.Int("content_length", contentLen),
 		zap.String("finish_reason", finishReason),
 	)
-	conv := &Converter{}
-	if resp != nil && resp.Message != nil {
-		tokens := provider.UsageFromMessage(resp.Message)
-		lifecycle.ObserveUsage(usageObservation{InputTokens: tokens.InputTokens, OutputTokens: tokens.OutputTokens, CachedTokens: tokens.CachedTokens, ReasoningTokens: tokens.ReasoningTokens, Final: true})
+	open := responseOpen{Mode: responseModeNormalized, RewriteSet: rewriteSet{ClientModel: req.Model}, RelayIneligibleReason: "execution_metadata_unavailable"}
+	if resolved != nil {
+		open.Candidate = resolved.Candidate
+		switch {
+		case resolved.Candidate.Dialect != provider.ProtocolDialectAnthropic:
+			open.RelayIneligibleReason = "served_dialect_mismatch"
+		case !resolved.Candidate.Supports(provider.FeatureAnthropicBodyRelay):
+			open.RelayIneligibleReason = "provider_feature_missing"
+		case resp == nil || resp.Message == nil || len(anthropicbase.AnthropicResponseBodyFromMessage(resp.Message)) == 0:
+			open.RelayIneligibleReason = "native_body_missing"
+		default:
+			open.Mode = responseModeNativeRelay
+			open.RelayIneligibleReason = ""
+		}
 	}
-	if err := httpjson.Write(w, http.StatusOK, conv.FromInternal(resp, req.Model)); err != nil {
-		_ = lifecycle.Fail(responseFailure{StatusCode: http.StatusOK, Outcome: "sink_error", ErrorType: "response_write_failed"})
-		return
+	if err := newAnthropicResponseEncoder(lifecycle).Emit(r.Context(), open, resp, httpResponseBodySink{w: w}); err != nil {
+		h.logger.Error(h.Name()+": encode response", zap.Error(err))
 	}
-	lifecycle.Committed()
-	_ = lifecycle.Finish(responseFinish{StatusCode: http.StatusOK, Outcome: "completed"})
 }
 
 func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provider.Provider, chatReq *provider.ChatRequest, model string) {
@@ -262,20 +273,54 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 
 	usage.TransferFinishOwnership(ctx)
 	lifecycle := newSpanResponseLifecycle(usage.SpanFromContext(ctx), "stream")
-	stream, err := prov.StreamChat(ctx, chatReq)
+	var stream *schema.StreamReader[*schema.Message]
+	var resolved provider.ResolvedExecution
+	var hasResolved bool
+	var err error
+	if executor, ok := prov.(provider.RoutedChatExecutor); ok {
+		var execution *provider.StreamExecution
+		execution, err = executor.ExecuteStreamChat(ctx, chatReq)
+		if execution != nil {
+			stream = execution.Stream
+			resolved = execution.Resolved
+			hasResolved = true
+			lifecycle.ObserveExecution(execution.Resolved)
+		}
+	} else {
+		stream, err = prov.StreamChat(ctx, chatReq)
+	}
 	if err != nil {
 		status, _ := dispatcher.WriteProviderErrorLog(h.logger, w, r, h.Name(), chatReq.Model, "open stream", err)
 		_ = lifecycle.Fail(responseFailure{StatusCode: status, Outcome: "upstream_open_error", ErrorType: "provider_stream_failed"})
 		h.writeError(w, r, status, err)
 		return
 	}
+	if stream == nil {
+		err = fmt.Errorf("provider returned an empty stream")
+		_ = lifecycle.Fail(responseFailure{StatusCode: http.StatusBadGateway, Outcome: "upstream_open_error", ErrorType: "provider_stream_failed"})
+		h.writeError(w, r, http.StatusBadGateway, err)
+		return
+	}
 	defer stream.Close()
+	mode := streamModeNormalized
+	relayIneligibleReason := "execution_metadata_unavailable"
+	if hasResolved {
+		switch {
+		case resolved.Candidate.Dialect != provider.ProtocolDialectAnthropic:
+			relayIneligibleReason = "served_dialect_mismatch"
+		case !resolved.Candidate.Supports(provider.FeatureAnthropicStreamRelay):
+			relayIneligibleReason = "provider_feature_missing"
+		default:
+			mode = streamModeNativeRelay
+			relayIneligibleReason = ""
+		}
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	sink := &httpAnthropicStreamSink{w: w, flusher: dispatcher.NewResponseFlusher(w), lifecycle: lifecycle}
-	encoder := newAnthropicStreamEncoder(ctx, streamEncoderOptions{Model: model, MessageID: newAnthropicMessageID()}, sink, lifecycle)
+	encoder := newAnthropicStreamEncoder(ctx, streamEncoderOptions{Model: model, MessageID: newAnthropicMessageID(), Mode: mode, RelayIneligibleReason: relayIneligibleReason}, sink, lifecycle)
 	if err := encoder.Open(); err != nil {
 		h.writeError(w, r, http.StatusBadGateway, err)
 		return
@@ -297,7 +342,12 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 			}
 			break
 		}
-		nativeEvents := provider.AnthropicStreamEventsFromMessage(chunk)
+		var nativeEvents []anthropicbase.AnthropicStreamEvent
+		if mode == streamModeNativeRelay {
+			nativeEvents = anthropicbase.AnthropicRelayStreamEventsFromMessage(chunk)
+		} else {
+			nativeEvents = anthropicbase.AnthropicStreamEventsFromMessage(chunk)
+		}
 		if len(nativeEvents) > 0 {
 			for i := range nativeEvents {
 				event := nativeEvents[i]
@@ -377,7 +427,11 @@ func recordAnthropicToolNameSet(r *http.Request, set map[string]struct{}) {
 }
 
 func (h *Handler) handleCountTokens(w http.ResponseWriter, r *http.Request, prepared *dispatcher.PreparedLLMApiRequest) {
+	usage.TransferFinishOwnership(r.Context())
+	lifecycle := newSpanResponseLifecycle(usage.SpanFromContext(r.Context()), "batch")
+	lifecycle.ObserveResponse(responseObservation{Mode: "local", MessageIDSource: "none"})
 	if !h.estimateCountTokens {
+		_ = lifecycle.Fail(responseFailure{StatusCode: http.StatusNotImplemented, Outcome: "unsupported_local", ErrorType: "not_implemented"})
 		h.writeError(w, r, http.StatusNotImplemented, fmt.Errorf("count_tokens is not supported"))
 		return
 	}
@@ -386,16 +440,19 @@ func (h *Handler) handleCountTokens(w http.ResponseWriter, r *http.Request, prep
 		req, _ = prepared.RawRequest.(*MessagesRequest)
 	}
 	if req == nil {
-		parsed, _, err := h.PrepareLLMApiRequest(r)
-		if err != nil {
-			h.writeError(w, r, statuserr.StatusCode(err, http.StatusBadRequest), fmt.Errorf("prepare request: %w", err))
-			return
-		}
-		req, _ = parsed.RawRequest.(*MessagesRequest)
+		_ = lifecycle.Fail(responseFailure{StatusCode: http.StatusBadRequest, Outcome: "invalid_state", ErrorType: "invalid_prepared_request"})
+		h.writeError(w, r, http.StatusBadRequest, fmt.Errorf("invalid prepared request"))
+		return
 	}
-	_ = httpjson.Write(w, http.StatusOK, map[string]any{
-		"input_tokens": estimateAnthropicInputTokens(req),
-	})
+	estimate := estimateAnthropicInputTokens(req)
+	lifecycle.ObserveResponse(responseObservation{Mode: "local", MessageIDSource: "none", UsageSource: "estimated"})
+	lifecycle.ObserveUsage(usageObservation{InputTokens: estimate, Final: true})
+	if err := httpjson.Write(w, http.StatusOK, map[string]any{"input_tokens": estimate}); err != nil {
+		_ = lifecycle.Fail(responseFailure{StatusCode: http.StatusOK, Outcome: "sink_error", ErrorType: "response_write_failed"})
+		return
+	}
+	lifecycle.Committed()
+	_ = lifecycle.Finish(responseFinish{StatusCode: http.StatusOK, Outcome: "completed"})
 }
 
 func estimateAnthropicInputTokens(req *MessagesRequest) int {

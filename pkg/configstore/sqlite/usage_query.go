@@ -93,7 +93,7 @@ func interactionListBaseQuery() string {
 // timeseries and breakdown queries so both surfaces stay column-aligned.
 var (
 	llmGroups = map[string]string{
-		"route_id": "route_id", "provider_id": "provider_id", "virtual_key_id": "virtual_key_id", "upstream_model": "upstream_model", "llm_api": "llm_api", "run_id": "run_id", "runtime_type": "runtime_type",
+		"route_id": "route_id", "provider_id": "provider_id", "virtual_key_id": "virtual_key_id", "upstream_model": "upstream_model", "llm_api": "llm_api", "run_id": "run_id", "runtime_type": "runtime_type", "response_mode": "response_mode", "execution": "execution",
 	}
 	llmMeasures = `COUNT(*) AS request_count, COALESCE(SUM(success),0) AS success_count,
 		COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0) AS failure_count,

@@ -21,6 +21,7 @@ import (
 
 	// LLM Providers (register runtime factories via init())
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropic"
+	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/claudecode"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/codex"
 	_ "github.com/agent-guide/agent-gateway/pkg/llm/provider/deepseek"

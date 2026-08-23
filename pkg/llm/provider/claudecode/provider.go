@@ -65,8 +65,14 @@ var defaultClaudeCodeFingerprintHeaders = map[string]string{
 func init() {
 	provider.RegisterProviderFactory("claudecode", New)
 	provider.RegisterProviderTypeCapabilities("claudecode", provider.ProviderTypeCapabilities{
-		NativeDialects:    provider.NewProtocolDialectSet(provider.ProtocolDialectAnthropic),
-		ReasoningDialects: provider.NewProtocolDialectSet(provider.ProtocolDialectAnthropic),
+		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{
+			provider.FeatureAnthropicServerToolRequest:   {},
+			provider.FeatureAnthropicNativeResponse:      {},
+			provider.FeatureAnthropicNativeHistoryReplay: {},
+			provider.FeatureAnthropicReasoningReplay:     {},
+			provider.FeatureAnthropicStreamRelay:         {},
+			provider.FeatureAnthropicBodyRelay:           {},
+		},
 	})
 }
 
@@ -147,14 +153,45 @@ func (p *Provider) chat(ctx context.Context, req *provider.ChatRequest) (*provid
 			return nil, statuserr.Wrap(err, http.StatusBadGateway)
 		}
 
+		rawBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, statuserr.Wrap(fmt.Errorf("claudecode: read response: %w", err), http.StatusBadGateway)
+		}
 		var payload anthropicbase.MessagesResponse
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		if err := json.Unmarshal(rawBody, &payload); err != nil {
 			return nil, statuserr.Wrap(fmt.Errorf("claudecode: decode response: %w", err), http.StatusBadGateway)
 		}
 		chatResp := payload.ToChatResponse()
 		restoreClaudeCodeToolNames(chatResp.Message, toolNames)
+		restoredBody, err := restoreClaudeCodeToolNamesInResponseBody(rawBody, toolNames)
+		if err != nil {
+			return nil, statuserr.Wrap(fmt.Errorf("claudecode: restore response body tool names: %w", err), http.StatusBadGateway)
+		}
+		anthropicbase.AttachAnthropicResponseBody(chatResp.Message, restoredBody)
 		return chatResp, nil
 	})
+}
+
+func restoreClaudeCodeToolNamesInResponseBody(raw json.RawMessage, names map[string]string) (json.RawMessage, error) {
+	if len(names) == 0 {
+		return append(json.RawMessage(nil), raw...), nil
+	}
+	var response map[string]any
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, err
+	}
+	content, _ := response["content"].([]any)
+	for _, item := range content {
+		block, _ := item.(map[string]any)
+		if block["type"] != "tool_use" {
+			continue
+		}
+		name, _ := block["name"].(string)
+		if restored, ok := names[name]; ok {
+			block["name"] = restored
+		}
+	}
+	return json.Marshal(response)
 }
 
 func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*schema.StreamReader[*schema.Message], error) {
@@ -583,7 +620,7 @@ func restoreClaudeCodeToolNames(msg *schema.Message, claudeToCodex map[string]st
 			msg.ToolCalls[i].Function.Name = codexName
 		}
 	}
-	provider.RewriteAnthropicContentToolNames(msg, claudeToCodex)
+	anthropicbase.RewriteAnthropicContentToolNames(msg, claudeToCodex)
 }
 
 // requestEffort derives Claude's output_config.effort from the inbound reasoning

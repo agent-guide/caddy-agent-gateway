@@ -51,6 +51,9 @@ func (m *ChatModel) Generate(ctx context.Context, input []*schema.Message, opts 
 	if resp == nil || resp.Message == nil {
 		return nil, fmt.Errorf("einomodel: provider returned an empty response")
 	}
+	if err := provider.FoldMessageProtocolState(resp.Message); err != nil {
+		return nil, fmt.Errorf("einomodel: fold protocol state: %w", err)
+	}
 	return resp.Message, nil
 }
 
@@ -88,9 +91,13 @@ func (m *ChatModel) chatRequest(input []*schema.Message, opts []einomodel.Option
 	if common := einomodel.GetCommonOptions(nil, merged...); common != nil && common.Model != nil && strings.TrimSpace(*common.Model) != "" {
 		modelName = strings.TrimSpace(*common.Model)
 	}
-	return &provider.ChatRequest{
+	request := &provider.ChatRequest{
 		Model:    modelName,
 		Messages: input,
 		Options:  merged,
 	}
+	if chatOpts := provider.GetChatOptions(merged...); chatOpts != nil {
+		request.ProtocolState = provider.CloneProtocolState(chatOpts.ProtocolState)
+	}
+	return request
 }

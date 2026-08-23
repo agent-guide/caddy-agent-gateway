@@ -23,6 +23,7 @@ func (stubLLMApiHandler) MatchLLMApi(*http.Request) bool { return true }
 
 func (stubLLMApiHandler) PrepareLLMApiRequest(*http.Request) (*PreparedLLMApiRequest, llmroutepkg.RequestRequirements, error) {
 	return &PreparedLLMApiRequest{
+		Disposition: ExecutionProvider,
 		Type:        provider.LLMApiRequestTypeChat,
 		ChatRequest: &provider.ChatRequest{},
 	}, llmroutepkg.RequestRequirements{}, nil
@@ -35,6 +36,35 @@ func (stubLLMApiHandler) ServeLLMApi(w http.ResponseWriter, _ *http.Request, _ p
 
 type nonMatchingLLMApiHandler struct {
 	stubLLMApiHandler
+}
+
+type localLLMApiHandler struct {
+	providerWasNil bool
+}
+
+func TestPreparedLLMApiRequestRejectsUnknownExecutionDisposition(t *testing.T) {
+	request := &PreparedLLMApiRequest{
+		Type:        provider.LLMApiRequestTypeChat,
+		ChatRequest: &provider.ChatRequest{},
+	}
+	if request.IsValid() {
+		t.Fatal("request without execution disposition was accepted")
+	}
+	request.Disposition = ExecutionDisposition("future")
+	if request.IsValid() {
+		t.Fatal("request with unknown execution disposition was accepted")
+	}
+}
+
+func (*localLLMApiHandler) Name() string                   { return "local-stub" }
+func (*localLLMApiHandler) MatchLLMApi(*http.Request) bool { return true }
+func (*localLLMApiHandler) PrepareLLMApiRequest(*http.Request) (*PreparedLLMApiRequest, llmroutepkg.RequestRequirements, error) {
+	return &PreparedLLMApiRequest{Disposition: ExecutionLocal, Type: provider.LLMApiRequestTypeChat, RawRequest: struct{}{}}, llmroutepkg.RequestRequirements{}, nil
+}
+func (h *localLLMApiHandler) ServeLLMApi(w http.ResponseWriter, _ *http.Request, prov provider.Provider, _ *PreparedLLMApiRequest) error {
+	h.providerWasNil = prov == nil
+	w.WriteHeader(http.StatusOK)
+	return nil
 }
 
 func (nonMatchingLLMApiHandler) MatchLLMApi(*http.Request) bool { return false }
@@ -82,6 +112,34 @@ func TestHandlerRequiresVirtualKeyBeforeLLMApiMatch(t *testing.T) {
 	}
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandlerLocalExecutionSkipsRoutedProvider(t *testing.T) {
+	gw := gateway.NewAgentGateway()
+	if err := gw.Bootstrap(context.Background(), gateway.BootstrapOptions{
+		StaticLLMRoutes: mustRouteConfigs(t, []llmroutepkg.LLMRoute{{
+			AgentRouteConfig: llmroutepkg.AgentRouteConfig{ID: "local-route", Protocol: llmroutepkg.RouteProtocol("local-stub"), MatchPolicy: llmroutepkg.RouteMatchPolicy{PathPrefix: "/"}},
+			TargetPolicy:     &llmroutepkg.RouteDirectProviderPolicy{ProviderTarget: llmroutepkg.DirectProviderTarget{ProviderID: "must-not-resolve"}},
+		}}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	api := &localLLMApiHandler{}
+	handler := NewHandler(gw, map[string]LLMApiHandler{"local-stub": api}, nil, HandlerOptions{})
+	recorder := httptest.NewRecorder()
+	if err := handler.Dispatch(recorder, httptest.NewRequest(http.MethodPost, "/local", strings.NewReader(`{}`)), nil); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || !api.providerWasNil {
+		t.Fatalf("status=%d providerWasNil=%v", recorder.Code, api.providerWasNil)
+	}
+}
+
+func TestRequirementGapHasBoundedRejectionErrorType(t *testing.T) {
+	err := &provider.RequirementGap{Candidate: provider.CandidateIdentity{ProviderType: "fixture"}, Missing: []provider.ProtocolFeature{provider.FeatureAnthropicNativeHistoryReplay}}
+	if got := dispatchErrorType("resolve provider", err); got != "protocol_requirement_rejected" {
+		t.Fatalf("error type = %q", got)
 	}
 }
 

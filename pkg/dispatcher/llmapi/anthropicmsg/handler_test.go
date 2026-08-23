@@ -13,15 +13,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/pkg/credential"
 	sched "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
+	"github.com/agent-guide/agent-gateway/pkg/dispatcher"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 	"github.com/cloudwego/eino/schema"
 )
 
-func requiresDialect(dialects map[provider.ProtocolDialect]struct{}, dialect provider.ProtocolDialect) bool {
-	_, ok := dialects[dialect]
-	return ok
+func requiresFeature(requirements provider.ProtocolRequirementSet, feature provider.ProtocolFeature) bool {
+	for _, item := range requirements.Features() {
+		if item == feature {
+			return true
+		}
+	}
+	return false
 }
 
 type testProvider struct {
@@ -53,6 +60,37 @@ type testStreamingProvider struct {
 	cfg     provider.ProviderConfig
 	chunks  []*schema.Message
 	recvErr error
+}
+
+type testRoutedExecutor struct {
+	chat   *provider.ChatExecution
+	stream *provider.StreamExecution
+}
+
+func (p *testRoutedExecutor) ExecuteChat(context.Context, *provider.ChatRequest) (*provider.ChatExecution, error) {
+	return p.chat, nil
+}
+
+func (p *testRoutedExecutor) ExecuteStreamChat(context.Context, *provider.ChatRequest) (*provider.StreamExecution, error) {
+	return p.stream, nil
+}
+
+func (p *testRoutedExecutor) Chat(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
+	return nil, errors.New("ordinary Chat adapter must not select response mode")
+}
+
+func (p *testRoutedExecutor) StreamChat(context.Context, *provider.ChatRequest) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("ordinary StreamChat adapter must not select response mode")
+}
+
+func (p *testRoutedExecutor) ListModels(context.Context) ([]provider.ModelInfo, error) {
+	return nil, nil
+}
+func (p *testRoutedExecutor) Capabilities() provider.ProviderCapabilities {
+	return provider.ProviderCapabilities{Streaming: true}
+}
+func (p *testRoutedExecutor) Config() provider.ProviderConfig {
+	return provider.ProviderConfig{ProviderType: "deliberately-not-the-served-candidate"}
 }
 
 func (p *testStreamingProvider) Chat(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
@@ -165,6 +203,65 @@ func TestMatchLLMApiIncludesCountTokens(t *testing.T) {
 	}
 }
 
+func TestBatchRelayModeReadsServedCandidate(t *testing.T) {
+	handler := NewHandler(StandardProfile())
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"client-model","max_tokens":64,"messages":[{"role":"user","content":"hello"}]
+	}`))
+	prepared, _, err := handler.PrepareLLMApiRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := schema.AssistantMessage("native answer", nil)
+	anthropicbase.AttachAnthropicResponseBody(message, json.RawMessage(`{
+		"id":"msg_served_candidate","type":"message","role":"assistant","model":"upstream-model",
+		"content":[{"type":"text","text":"native answer"}],"stop_reason":"end_turn",
+		"usage":{"input_tokens":2,"output_tokens":3},"future":"preserve"
+	}`))
+	executor := &testRoutedExecutor{chat: &provider.ChatExecution{
+		Response: &provider.ChatResponse{Message: message},
+		Resolved: provider.ResolvedExecution{Candidate: provider.ServedCandidate{
+			Dialect:  provider.ProtocolDialectAnthropic,
+			Features: map[provider.ProtocolFeature]struct{}{provider.FeatureAnthropicBodyRelay: {}},
+		}},
+	}}
+	recorder := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(recorder, request, executor, prepared); err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["id"] != "msg_served_candidate" || response["model"] != "client-model" || response["future"] != "preserve" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestRequestProtocolStateIsIndependentOfMessageOrdering(t *testing.T) {
+	request := &MessagesRequest{
+		Model: "client-model", MaxTokens: 64,
+		Tools: []ToolDefinition{{Type: "web_search_20250305", Name: "web_search"}},
+		Messages: []MessageItem{
+			{Role: "user", Content: MessageContent{{Type: "text", Text: "first"}}},
+			{Role: "assistant", Content: MessageContent{{Type: "text", Text: "second"}}},
+		},
+	}
+	first := (&Converter{}).ToInternal(request)
+	request.Messages[0], request.Messages[1] = request.Messages[1], request.Messages[0]
+	second := (&Converter{}).ToInternal(request)
+	firstTools, _ := anthropicbase.AnthropicRequestTools(first.ProtocolState)
+	secondTools, _ := anthropicbase.AnthropicRequestTools(second.ProtocolState)
+	if len(firstTools) != 1 || len(secondTools) != 1 || !bytes.Equal(firstTools[0], secondTools[0]) {
+		t.Fatalf("request state changed with message order: %q / %q", firstTools, secondTools)
+	}
+	for _, message := range append(first.Messages, second.Messages...) {
+		if state := provider.ProtocolStateFromMessage(message); state != nil && len(state.Envelopes) > 0 && state.Envelopes[0].Scope == provider.NativeScopeRequest {
+			t.Fatal("request state was attached to a conversation message")
+		}
+	}
+}
+
 func TestPrepareLLMApiRequestRejectsInvalidClientToolSchema(t *testing.T) {
 	handler := NewHandler(StandardProfile())
 	for _, inputSchema := range []string{`"not-an-object"`, `{"type":"string"}`, `{"type":"object","properties":123}`} {
@@ -201,9 +298,8 @@ func TestServeLLMApiCountTokensReturnsNotImplemented(t *testing.T) {
 		Model:    "claude-sonnet-4-5",
 		Messages: []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "hello world"}}}},
 		Tools: []ToolDefinition{{
-			Name:        "lookup",
-			Description: "Lookup data",
-			InputSchema: json.RawMessage(`{"type":"object"}`),
+			Type: "web_search_20250305",
+			Name: "web_search",
 		}},
 	})
 	if err != nil {
@@ -211,13 +307,50 @@ func TestServeLLMApiCountTokensReturnsNotImplemented(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens?beta=true", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-
-	if err := handler.ServeLLMApi(rec, req, &testProvider{}, nil); err != nil {
+	prepared, requirements, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Disposition != dispatcher.ExecutionLocal || !requirements.ProtocolRequirements.Empty() {
+		t.Fatalf("local preparation = %+v, requirements = %+v", prepared, requirements)
+	}
+	if err := handler.ServeLLMApi(rec, req, nil, prepared); err != nil {
 		t.Fatalf("ServeLLMApi returned error: %v", err)
 	}
 
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCountTokensLocalExecutionUsesSharedLifecycle(t *testing.T) {
+	handler := NewHandler(ClaudeCodeProfile())
+	span := &recordingInteractionSpan{}
+	request := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", strings.NewReader(`{
+		"model":"client-model","messages":[{"role":"user","content":"hello world"}],
+		"tools":[{"type":"web_search_20250305","name":"web_search"}]
+	}`))
+	request = request.WithContext(usage.ContextWithSpan(request.Context(), span))
+	prepared, requirements, err := handler.PrepareLLMApiRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Disposition != dispatcher.ExecutionLocal || !requirements.ProtocolRequirements.Empty() {
+		t.Fatalf("prepared=%+v requirements=%+v", prepared, requirements)
+	}
+	recorder := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(recorder, request, nil, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Code != http.StatusOK || len(span.finishes) != 1 || !span.finishes[0].Success {
+		t.Fatalf("status=%d finishes=%+v", recorder.Code, span.finishes)
+	}
+	if len(span.exts) < 2 {
+		t.Fatalf("extensions = %#v", span.exts)
+	}
+	final, ok := span.exts[len(span.exts)-1].(usage.LLMExtension)
+	if !ok || final.UsageSource != "estimated" || final.InputTokens == nil || final.ProviderID != "" {
+		t.Fatalf("final extension = %#v", span.exts[len(span.exts)-1])
 	}
 }
 
@@ -745,12 +878,12 @@ func TestToInternalPreservesServerToolsAndNormalizesParameterlessClientTools(t *
 		t.Fatalf("heartbeat schema = %+v, %v; want empty object schema", js, err)
 	}
 
-	extra := provider.ChatExtraFieldsFromOptions(chatReq.Options...)
-	if extra == nil || len(extra.AnthropicTools) != 2 {
-		t.Fatalf("native tools = %+v, want both original tool definitions", extra)
+	nativeTools, nativeChoice := anthropicbase.AnthropicRequestTools(chatReq.ProtocolState)
+	if len(nativeTools) != 2 {
+		t.Fatalf("native tools = %+v, want both original tool definitions", nativeTools)
 	}
 	var serverTool map[string]any
-	if err := json.Unmarshal(extra.AnthropicTools[0], &serverTool); err != nil {
+	if err := json.Unmarshal(nativeTools[0], &serverTool); err != nil {
 		t.Fatalf("decode preserved server tool: %v", err)
 	}
 	if serverTool["type"] != "web_search_20260209" || serverTool["max_uses"] != float64(3) {
@@ -760,14 +893,14 @@ func TestToInternalPreservesServerToolsAndNormalizesParameterlessClientTools(t *
 		t.Fatalf("server tool gained input_schema: %#v", serverTool)
 	}
 	var clientTool map[string]any
-	if err := json.Unmarshal(extra.AnthropicTools[1], &clientTool); err != nil {
+	if err := json.Unmarshal(nativeTools[1], &clientTool); err != nil {
 		t.Fatalf("decode preserved client tool: %v", err)
 	}
 	if schemaValue, ok := clientTool["input_schema"].(map[string]any); !ok || schemaValue["type"] != "object" {
 		t.Fatalf("normalized client tool = %#v, want object input_schema", clientTool)
 	}
-	if string(extra.AnthropicToolChoice) != `{"type":"auto","disable_parallel_tool_use":true}` {
-		t.Fatalf("tool_choice = %s, want exact native value", extra.AnthropicToolChoice)
+	if string(nativeChoice) != `{"type":"auto","disable_parallel_tool_use":true}` {
+		t.Fatalf("tool_choice = %s, want exact native value", nativeChoice)
 	}
 }
 
@@ -788,8 +921,8 @@ func TestToInternalUsesGenericToolPathForModeledClientTools(t *testing.T) {
 	if extra == nil {
 		t.Fatal("ChatExtraFields = nil, want parallel tool setting")
 	}
-	if len(extra.AnthropicTools) != 0 || len(extra.AnthropicToolChoice) != 0 {
-		t.Fatalf("ordinary client tools unexpectedly used raw Anthropic replay: %+v", extra)
+	if nativeTools, nativeChoice := anthropicbase.AnthropicRequestTools(chatReq.ProtocolState); len(nativeTools) != 0 || len(nativeChoice) != 0 {
+		t.Fatalf("ordinary client tools unexpectedly used raw Anthropic replay: %s %+v", nativeChoice, nativeTools)
 	}
 	if extra.ParallelToolCalls == nil || *extra.ParallelToolCalls {
 		t.Fatalf("parallel tool setting = %v, want disabled", extra.ParallelToolCalls)
@@ -808,9 +941,9 @@ func TestToInternalPreservesUnmodeledClientToolFields(t *testing.T) {
 	}
 
 	chatReq := (&Converter{}).ToInternal(&req)
-	extra := provider.ChatExtraFieldsFromOptions(chatReq.Options...)
-	if extra == nil || len(extra.AnthropicTools) != 1 || !bytes.Contains(extra.AnthropicTools[0], []byte(`"defer_loading":true`)) {
-		t.Fatalf("unmodeled custom tool field was not retained: %+v", extra)
+	nativeTools, _ := anthropicbase.AnthropicRequestTools(chatReq.ProtocolState)
+	if len(nativeTools) != 1 || !bytes.Contains(nativeTools[0], []byte(`"defer_loading":true`)) {
+		t.Fatalf("unmodeled custom tool field was not retained: %+v", nativeTools)
 	}
 }
 
@@ -831,7 +964,7 @@ func TestConverterPreservesNativeServerToolContentBothDirections(t *testing.T) {
 	if len(chatReq.Messages) != 1 {
 		t.Fatalf("messages = %+v, want one assistant message", chatReq.Messages)
 	}
-	if blocks := provider.AnthropicContentBlocksFromMessage(chatReq.Messages[0]); len(blocks) != 3 {
+	if blocks := anthropicbase.AnthropicContentBlocksFromMessage(chatReq.Messages[0]); len(blocks) != 3 {
 		t.Fatalf("native blocks = %d, want 3", len(blocks))
 	}
 	response := (&Converter{}).FromInternal(&provider.ChatResponse{Message: chatReq.Messages[0]}, req.Model)
@@ -850,7 +983,7 @@ func TestConverterPreservesNativeServerToolContentBothDirections(t *testing.T) {
 		t.Fatalf("unmarshal citation-only history: %v", err)
 	}
 	citationReq := (&Converter{}).ToInternal(&citationOnly)
-	if len(citationReq.Messages) != 1 || len(provider.AnthropicContentBlocksFromMessage(citationReq.Messages[0])) != 1 {
+	if len(citationReq.Messages) != 1 || len(anthropicbase.AnthropicContentBlocksFromMessage(citationReq.Messages[0])) != 1 {
 		t.Fatalf("citation-only history lost native metadata: %+v", citationReq.Messages)
 	}
 }
@@ -866,8 +999,13 @@ func TestPrepareLLMApiRequestRequiresAnthropicNativeProvider(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
 	}
-	if requirements.RequireTools || !requiresDialect(requirements.RequiredNativeDialects, provider.ProtocolDialectAnthropic) {
+	if requirements.RequireTools || !requiresFeature(requirements.ProtocolRequirements, provider.FeatureAnthropicServerToolRequest) ||
+		!requiresFeature(requirements.ProtocolRequirements, provider.FeatureAnthropicNativeResponse) ||
+		!requiresFeature(requirements.ProtocolRequirements, provider.FeatureAnthropicNativeHistoryReplay) {
 		t.Fatalf("requirements = %+v, want native fidelity without generic client-tool capability", requirements)
+	}
+	if reasons := requirements.ProtocolRequirements.Reasons(provider.FeatureAnthropicServerToolRequest); !slices.Equal(reasons, []provider.RequirementReason{provider.ReasonAnthropicServerTool}) {
+		t.Fatalf("server tool reasons = %v", reasons)
 	}
 }
 
@@ -881,10 +1019,10 @@ func TestPrepareLLMApiRequestIgnoresNullUnmodeledContentFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
 	}
-	if requiresDialect(requirements.RequiredNativeDialects, provider.ProtocolDialectAnthropic) {
+	if !requirements.ProtocolRequirements.Empty() {
 		t.Fatal("null citations unexpectedly required Anthropic-native replay")
 	}
-	if provider.HasAnthropicNativeContent(prepared.ChatRequest.Messages) {
+	if anthropicbase.HasAnthropicNativeContent(prepared.ChatRequest.Messages) {
 		t.Fatal("null citations unexpectedly attached native content")
 	}
 }
@@ -896,11 +1034,11 @@ func TestServeLLMApiStreamsNativeServerToolEvents(t *testing.T) {
 	stop := json.RawMessage(`{"type":"content_block_stop","index":0}`)
 	citation := json.RawMessage(`{"type":"content_block_delta","index":1,"delta":{"type":"citations_delta","citation":{"url":"https://example.com"}}}`)
 	prov := &testStreamingProvider{chunks: []*schema.Message{
-		provider.AttachAnthropicStreamEvent(nil, "content_block_start", start),
-		provider.AttachAnthropicStreamEvent(nil, "content_block_delta", delta),
-		provider.AttachAnthropicStreamEvent(nil, "content_block_stop", stop),
+		anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_start", start),
+		anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_delta", delta),
+		anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_stop", stop),
 		{Role: schema.Assistant, Content: "Result"},
-		provider.AttachAnthropicStreamEvent(nil, "content_block_delta", citation),
+		anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_delta", citation),
 		{Role: schema.Assistant, ResponseMeta: &schema.ResponseMeta{FinishReason: "end_turn"}},
 	}}
 	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"search"}]}`)
@@ -928,9 +1066,9 @@ func TestServeLLMApiClosesGeneratedTextAndRemapsNativeBlockIndex(t *testing.T) {
 	stop := json.RawMessage(`{"type":"content_block_stop","index":2}`)
 	prov := &testStreamingProvider{chunks: []*schema.Message{
 		{Role: schema.Assistant, Content: "before"},
-		provider.AttachAnthropicStreamEvent(nil, "content_block_start", start),
-		provider.AttachAnthropicStreamEvent(nil, "content_block_delta", delta),
-		provider.AttachAnthropicStreamEvent(nil, "content_block_stop", stop),
+		anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_start", start),
+		anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_delta", delta),
+		anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_stop", stop),
 		{Role: schema.Assistant, Content: "after"},
 		{Role: schema.Assistant, ResponseMeta: &schema.ResponseMeta{FinishReason: "end_turn"}},
 	}}
@@ -1467,13 +1605,13 @@ func TestPrepareLLMApiRequestRequiresNativeProviderForSignedReasoning(t *testing
 	if err != nil {
 		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
 	}
-	if !requiresDialect(requirements.RequiredReasoningDialects, provider.ProtocolDialectAnthropic) {
+	if !requiresFeature(requirements.ProtocolRequirements, provider.FeatureAnthropicReasoningReplay) {
 		t.Fatal("signed reasoning did not require Anthropic reasoning replay")
 	}
-	if requiresDialect(requirements.RequiredNativeDialects, provider.ProtocolDialectAnthropic) {
+	if requiresFeature(requirements.ProtocolRequirements, provider.FeatureAnthropicNativeHistoryReplay) {
 		t.Fatal("modeled signed reasoning unnecessarily required full native-content support")
 	}
-	if !provider.HasAnthropicNativeReasoning(prepared.ChatRequest.Messages) {
+	if !anthropicbase.HasAnthropicNativeReasoning(prepared.ChatRequest.Messages) {
 		t.Fatal("signed reasoning was not retained in the internal request")
 	}
 }
@@ -1485,9 +1623,9 @@ func TestServeLLMApiFailsClosedForUnmappableNativeStreamEvents(t *testing.T) {
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "claudecode", ProviderType: "claudecode"},
 		chunks: []*schema.Message{
-			provider.AttachAnthropicStreamEvent(nil, "content_block_delta",
+			anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_delta",
 				json.RawMessage(`{"type":"content_block_delta","index":7,"delta":{"type":"citations_delta","citation":{"url":"https://example.com"}}}`)),
-			provider.AttachAnthropicStreamEvent(nil, "content_block_stop",
+			anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_stop",
 				json.RawMessage(`{"type":"content_block_stop","index":7}`)),
 			{Role: schema.Assistant, Content: "answer"},
 		},

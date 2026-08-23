@@ -59,7 +59,8 @@ func (h *Handler) MatchLLMApi(r *http.Request) bool {
 func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLMApiRequest, llmroutepkg.RequestRequirements, error) {
 	if r.URL.Path == "/v1/models" || r.URL.Path == "/models" {
 		return &dispatcher.PreparedLLMApiRequest{
-			Type: provider.LLMApiRequestTypeModels,
+			Disposition: dispatcher.ExecutionProvider,
+			Type:        provider.LLMApiRequestTypeModels,
 			RawRequest: struct {
 				Path string
 			}{Path: r.URL.Path},
@@ -84,6 +85,7 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 			zap.Bool("has_input", req.Input != nil),
 		)
 		prepared := &dispatcher.PreparedLLMApiRequest{
+			Disposition:      dispatcher.ExecutionProvider,
 			Type:             provider.LLMApiRequestTypeResponses,
 			ResponsesRequest: &req,
 			StreamRequested:  req.Stream,
@@ -118,6 +120,7 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 
 	conv := &Converter{}
 	prepared := &dispatcher.PreparedLLMApiRequest{
+		Disposition:     dispatcher.ExecutionProvider,
 		Type:            provider.LLMApiRequestTypeChat,
 		ChatRequest:     conv.ToInternal(&req),
 		StreamRequested: req.Stream,

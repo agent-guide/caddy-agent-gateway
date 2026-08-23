@@ -40,6 +40,21 @@ func mergeLLM(dst *LLMExtension, src LLMExtension) {
 	if src.ResponseCommitted != nil {
 		dst.ResponseCommitted = src.ResponseCommitted
 	}
+	if src.ResponseMode != "" {
+		dst.ResponseMode = src.ResponseMode
+	}
+	if src.RelayIneligibleReason != "" {
+		dst.RelayIneligibleReason = src.RelayIneligibleReason
+	}
+	if src.MessageIDSource != "" {
+		dst.MessageIDSource = src.MessageIDSource
+	}
+	if src.UsageSource != "" {
+		dst.UsageSource = src.UsageSource
+	}
+	if src.Execution != "" {
+		dst.Execution = src.Execution
+	}
 	if src.InputTokens != nil {
 		dst.InputTokens = src.InputTokens
 	}

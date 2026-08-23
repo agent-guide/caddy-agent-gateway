@@ -1,14 +1,16 @@
 package anthropicmsg
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -45,7 +47,7 @@ func TestStreamEncoderDoesNotCommitUntilMeaningfulOutput(t *testing.T) {
 	if len(sink.events) != 0 {
 		t.Fatalf("Open emitted %d events", len(sink.events))
 	}
-	if err := encoder.Accept(providerStreamEvent{Native: &provider.AnthropicStreamEvent{Event: "ping", Data: json.RawMessage(`{"type":"ping"}`)}}); err != nil {
+	if err := encoder.Accept(providerStreamEvent{Native: &anthropicbase.AnthropicStreamEvent{Event: "ping", Data: json.RawMessage(`{"type":"ping"}`)}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(sink.events) != 0 {
@@ -119,4 +121,68 @@ func TestStreamEncoderSinkFailureFinalizesOnce(t *testing.T) {
 	if len(span.finishes) != 1 {
 		t.Fatalf("terminal finishes = %d, want 1", len(span.finishes))
 	}
+}
+
+func TestStreamEncoderRelaysNativeLifecycleWithoutReindexing(t *testing.T) {
+	inputs := readNativeStreamFixture(t)
+	sink := &memoryStreamSink{}
+	span := &recordingInteractionSpan{}
+	lifecycle := newSpanResponseLifecycle(span, "stream")
+	encoder := newAnthropicStreamEncoder(t.Context(), streamEncoderOptions{Model: "client-model", Mode: streamModeNativeRelay}, sink, lifecycle)
+	if err := encoder.Open(); err != nil {
+		t.Fatal(err)
+	}
+	for i := range inputs {
+		if err := encoder.Accept(providerStreamEvent{Native: &inputs[i]}); err != nil {
+			t.Fatalf("accept %s: %v", inputs[i].Event, err)
+		}
+	}
+	if err := encoder.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink.events) != len(inputs) {
+		t.Fatalf("relayed events = %d, want %d", len(sink.events), len(inputs))
+	}
+	var start struct {
+		Message struct {
+			ID    string `json:"id"`
+			Model string `json:"model"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal(sink.events[0].Data, &start); err != nil {
+		t.Fatal(err)
+	}
+	if start.Message.ID != "msg_fixture_native_1" || start.Message.Model != "client-model" {
+		t.Fatalf("message_start = %+v", start.Message)
+	}
+	for i := range inputs {
+		if sink.events[i].Event != inputs[i].Event {
+			t.Fatalf("event %d = %s, want %s", i, sink.events[i].Event, inputs[i].Event)
+		}
+	}
+}
+
+func readNativeStreamFixture(t *testing.T) []anthropicbase.AnthropicStreamEvent {
+	t.Helper()
+	file, err := os.Open("testdata/characterization/native_stream.sse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var inputs []anthropicbase.AnthropicStreamEvent
+	var event string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			event = strings.TrimPrefix(line, "event: ")
+		}
+		if strings.HasPrefix(line, "data: ") {
+			inputs = append(inputs, anthropicbase.AnthropicStreamEvent{Event: event, Data: json.RawMessage(strings.TrimPrefix(line, "data: "))})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return inputs
 }

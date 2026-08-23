@@ -28,41 +28,12 @@ const ProtocolDialectAnthropic ProtocolDialect = "anthropic"
 // ProviderTypeCapabilities describes protocol-level fidelity that is stable
 // for every instance of one registered provider type.
 type ProviderTypeCapabilities struct {
-	NativeDialects    map[ProtocolDialect]struct{}
-	ReasoningDialects map[ProtocolDialect]struct{}
+	ProtocolFeatures map[ProtocolFeature]struct{}
 }
 
-// NewProtocolDialectSet builds a provider capability or request requirement
-// set without exposing dialect-specific fields in routing code.
-func NewProtocolDialectSet(dialects ...ProtocolDialect) map[ProtocolDialect]struct{} {
-	set := make(map[ProtocolDialect]struct{}, len(dialects))
-	for _, dialect := range dialects {
-		if dialect != "" {
-			set[dialect] = struct{}{}
-		}
-	}
-	return set
-}
-
-func (c ProviderTypeCapabilities) SupportsNativeDialect(dialect ProtocolDialect) bool {
-	_, ok := c.NativeDialects[dialect]
+func (c ProviderTypeCapabilities) SupportsProtocolFeature(feature ProtocolFeature) bool {
+	_, ok := c.ProtocolFeatures[feature]
 	return ok
-}
-
-func (c ProviderTypeCapabilities) SupportsReasoningDialect(dialect ProtocolDialect) bool {
-	_, ok := c.ReasoningDialects[dialect]
-	return ok
-}
-
-func cloneProtocolDialects(src map[ProtocolDialect]struct{}) map[ProtocolDialect]struct{} {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[ProtocolDialect]struct{}, len(src))
-	for dialect := range src {
-		dst[dialect] = struct{}{}
-	}
-	return dst
 }
 
 var (
@@ -90,10 +61,12 @@ func RegisterProviderTypeCapabilities(name string, capabilities ProviderTypeCapa
 	if name == "" {
 		return
 	}
+	if err := validateProtocolFeatureSupport(capabilities); err != nil {
+		panic(err)
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	capabilities.NativeDialects = cloneProtocolDialects(capabilities.NativeDialects)
-	capabilities.ReasoningDialects = cloneProtocolDialects(capabilities.ReasoningDialects)
+	capabilities.ProtocolFeatures = cloneProtocolFeatures(capabilities.ProtocolFeatures)
 	typeCapabilities[name] = capabilities
 }
 
@@ -104,9 +77,16 @@ func CapabilitiesForProviderType(name string) ProviderTypeCapabilities {
 	mu.RLock()
 	defer mu.RUnlock()
 	capabilities := typeCapabilities[name]
-	capabilities.NativeDialects = cloneProtocolDialects(capabilities.NativeDialects)
-	capabilities.ReasoningDialects = cloneProtocolDialects(capabilities.ReasoningDialects)
+	capabilities.ProtocolFeatures = cloneProtocolFeatures(capabilities.ProtocolFeatures)
 	return capabilities
+}
+
+func cloneProtocolFeatures(src map[ProtocolFeature]struct{}) map[ProtocolFeature]struct{} {
+	dst := make(map[ProtocolFeature]struct{}, len(src))
+	for feature := range src {
+		dst[feature] = struct{}{}
+	}
+	return dst
 }
 
 // NewProvider creates a provider by name using registered factories.

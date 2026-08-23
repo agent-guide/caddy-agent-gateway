@@ -101,28 +101,17 @@ func (p *RouteDirectProviderPolicy) ResolveTarget(ctx context.Context, routeID s
 	if err != nil {
 		return nil, err
 	}
-	if len(req.RequiredNativeDialects) > 0 || len(req.RequiredReasoningDialects) > 0 {
-		capabilities := provider.CapabilitiesForProviderType(cfg.ProviderType)
-		if dialect, ok := firstUnsupportedDialect(req.RequiredNativeDialects, capabilities.SupportsNativeDialect); ok {
-			// The upstream is healthy; the route simply cannot serve this request
-			// shape, which matches the "unsupported functionality" semantics the
-			// provider layer already uses for unimplemented APIs.
-			message := fmt.Sprintf("route provider type %q cannot preserve %s-native request state", cfg.ProviderType, dialect)
-			if cfg.ProviderType == "anthropic" && dialect == provider.ProtocolDialectAnthropic {
-				message += `; use provider_type "claudecode" for Anthropic server-tool and native-history replay`
-			}
-			return nil, statuserr.New(http.StatusNotImplemented, message)
-		}
-		if dialect, ok := firstUnsupportedDialect(req.RequiredReasoningDialects, capabilities.SupportsReasoningDialect); ok {
-			return nil, statuserr.New(http.StatusNotImplemented, fmt.Sprintf("route provider type %q cannot replay %s reasoning state", cfg.ProviderType, dialect))
-		}
-	}
-	// Resolve an empty requested model to the provider's default here rather
-	// than inside the provider, so the executed upstream model is explicit in
-	// the request and truthful in usage events.
+	// Resolve an empty requested model before eligibility checks so a typed
+	// rejection still identifies the exact provider/model candidate.
 	upstreamModel := req.Model
 	if upstreamModel == "" {
 		upstreamModel = cfg.DefaultModel
+	}
+	capabilities := provider.CapabilitiesForProviderType(cfg.ProviderType)
+	if missing := provider.MissingProtocolFeatures(req.ProtocolRequirements, capabilities.ProtocolFeatures); len(missing) > 0 {
+		return nil, &provider.RequirementGap{Candidate: provider.CandidateIdentity{
+			ProviderID: providerID, ProviderType: cfg.ProviderType, UpstreamModel: upstreamModel,
+		}, Missing: missing}
 	}
 	return &ResolvedTarget{
 		ProviderID:      providerID,
@@ -213,6 +202,7 @@ func (p *RouteLogicalModelTargetPolicy) ResolveTarget(ctx context.Context, route
 	}
 
 	candidates := make([]resolvedCandidate, 0, len(target.Candidates))
+	var requirementGaps []provider.RequirementGap
 	for _, candidate := range target.Candidates {
 		if _, excluded := req.ExcludedCandidates[CandidateKey(candidate.ProviderID, candidate.UpstreamModel)]; excluded {
 			continue
@@ -239,13 +229,23 @@ func (p *RouteLogicalModelTargetPolicy) ResolveTarget(ctx context.Context, route
 			Weight:          candidate.Weight,
 			Priority:        candidate.Priority,
 		}
-		if !resolved.meetsRequirements(req) {
+		if !resolved.meetsGenericRequirements(req) {
+			continue
+		}
+		capabilities := provider.CapabilitiesForProviderType(resolved.ProviderType)
+		if missing := provider.MissingProtocolFeatures(req.ProtocolRequirements, capabilities.ProtocolFeatures); len(missing) > 0 {
+			requirementGaps = append(requirementGaps, provider.RequirementGap{Candidate: provider.CandidateIdentity{
+				ProviderID: resolved.ProviderID, ProviderType: resolved.ProviderType, UpstreamModel: resolved.UpstreamModel,
+			}, Missing: missing})
 			continue
 		}
 		candidates = append(candidates, resolved)
 	}
 
 	if len(candidates) == 0 {
+		if len(requirementGaps) > 0 {
+			return nil, &provider.RequirementGapsError{Target: modelName, Gaps: requirementGaps}
+		}
 		message := fmt.Sprintf("model target %q has no eligible bindings", modelName)
 		if requirements := requestRequirementNames(req); len(requirements) > 0 {
 			message += fmt.Sprintf(" for request requirements: %s", strings.Join(requirements, ", "))
@@ -290,43 +290,13 @@ func LogicalModelTargetPolicyOf(policy RouteTargetPolicy) (*RouteLogicalModelTar
 // RequestRequirements captures request attributes required for route resolution.
 // Model means logical model ID in logical-model mode and upstream model in direct mode.
 type RequestRequirements struct {
-	Model                     string
-	RequireStreaming          bool
-	RequireTools              bool
-	RequireVision             bool
-	RequireEmbeddings         bool
-	RequiredNativeDialects    map[provider.ProtocolDialect]struct{}
-	RequiredReasoningDialects map[provider.ProtocolDialect]struct{}
-	ExcludedCandidates        map[string]struct{}
-}
-
-func (r RequestRequirements) WithNativeDialect(dialect provider.ProtocolDialect) RequestRequirements {
-	r.RequiredNativeDialects = cloneDialectRequirements(r.RequiredNativeDialects)
-	r.RequiredNativeDialects[dialect] = struct{}{}
-	return r
-}
-
-func (r RequestRequirements) WithReasoningDialect(dialect provider.ProtocolDialect) RequestRequirements {
-	r.RequiredReasoningDialects = cloneDialectRequirements(r.RequiredReasoningDialects)
-	r.RequiredReasoningDialects[dialect] = struct{}{}
-	return r
-}
-
-func cloneDialectRequirements(src map[provider.ProtocolDialect]struct{}) map[provider.ProtocolDialect]struct{} {
-	dst := make(map[provider.ProtocolDialect]struct{}, len(src)+1)
-	for dialect := range src {
-		dst[dialect] = struct{}{}
-	}
-	return dst
-}
-
-func firstUnsupportedDialect(required map[provider.ProtocolDialect]struct{}, supports func(provider.ProtocolDialect) bool) (provider.ProtocolDialect, bool) {
-	for dialect := range required {
-		if !supports(dialect) {
-			return dialect, true
-		}
-	}
-	return "", false
+	Model                string
+	RequireStreaming     bool
+	RequireTools         bool
+	RequireVision        bool
+	RequireEmbeddings    bool
+	ProtocolRequirements provider.ProtocolRequirementSet
+	ExcludedCandidates   map[string]struct{}
 }
 
 func requestRequirementNames(req RequestRequirements) []string {
@@ -343,11 +313,8 @@ func requestRequirementNames(req RequestRequirements) []string {
 	if req.RequireEmbeddings {
 		names = append(names, "embeddings")
 	}
-	for dialect := range req.RequiredNativeDialects {
-		names = append(names, fmt.Sprintf("%s-native fidelity", dialect))
-	}
-	for dialect := range req.RequiredReasoningDialects {
-		names = append(names, fmt.Sprintf("%s reasoning replay", dialect))
+	for _, feature := range req.ProtocolRequirements.Features() {
+		names = append(names, string(feature))
 	}
 	sort.Strings(names)
 	return names
@@ -399,7 +366,7 @@ type resolvedCandidate struct {
 	Priority        int
 }
 
-func (c resolvedCandidate) meetsRequirements(req RequestRequirements) bool {
+func (c resolvedCandidate) meetsGenericRequirements(req RequestRequirements) bool {
 	if req.RequireStreaming && !c.Capabilities.Streaming {
 		return false
 	}
@@ -411,15 +378,6 @@ func (c resolvedCandidate) meetsRequirements(req RequestRequirements) bool {
 	}
 	if req.RequireEmbeddings && !c.Capabilities.Embeddings {
 		return false
-	}
-	if len(req.RequiredNativeDialects) > 0 || len(req.RequiredReasoningDialects) > 0 {
-		capabilities := provider.CapabilitiesForProviderType(c.ProviderType)
-		if _, unsupported := firstUnsupportedDialect(req.RequiredNativeDialects, capabilities.SupportsNativeDialect); unsupported {
-			return false
-		}
-		if _, unsupported := firstUnsupportedDialect(req.RequiredReasoningDialects, capabilities.SupportsReasoningDialect); unsupported {
-			return false
-		}
 	}
 	return true
 }

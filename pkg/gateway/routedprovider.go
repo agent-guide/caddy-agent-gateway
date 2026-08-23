@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
@@ -47,27 +46,35 @@ type resolvedAttempt struct {
 var errManagedCredentialUnavailable = errors.New("managed credential unavailable")
 
 func (p *RoutedProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
-	var out *provider.ChatResponse
+	execution, err := p.ExecuteChat(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if execution != nil {
+		var tokens provider.Usage
+		if execution.Response != nil {
+			tokens = provider.UsageFromMessage(execution.Response.Message)
+		}
+		recordResolvedExecutionUsage(ctx, execution.Resolved, tokens)
+		return execution.Response, nil
+	}
+	return nil, nil
+}
+
+func (p *RoutedProvider) ExecuteChat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatExecution, error) {
+	var out *provider.ChatExecution
 	requirements := p.requestRequirements
-	if requestHasAnthropicNativeState(req) {
-		requirements = requirements.WithNativeDialect(provider.ProtocolDialectAnthropic)
+	if err := validateAttachedProtocolRequirements(req, requirements.ProtocolRequirements); err != nil {
+		return nil, err
 	}
-	if requestHasAnthropicReasoningState(req) {
-		requirements = requirements.WithReasoningDialect(provider.ProtocolDialectAnthropic)
-	}
-	p.logDialectAffinity(req.Model, requirements)
+	p.logProtocolRequirements(req.Model, requirements)
 	err := p.executeWithFallback(ctx, req.Model, requirements, func(ctx context.Context, attempt *resolvedAttempt) error {
 		cloned := *req
+		cloned.ProtocolState = provider.CloneProtocolState(req.ProtocolState)
 		cloned.Model = attempt.target.UpstreamModel
 		resp, err := attempt.base.Chat(ctx, &cloned)
 		if err == nil {
-			req.Model = cloned.Model
-			out = resp
-			var tokens provider.Usage
-			if resp != nil {
-				tokens = provider.UsageFromMessage(resp.Message)
-			}
-			recordProviderUsage(ctx, attempt, tokens)
+			out = &provider.ChatExecution{Response: resp, Resolved: resolvedExecution(req.Model, attempt)}
 		}
 		return err
 	})
@@ -75,61 +82,104 @@ func (p *RoutedProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*
 }
 
 func (p *RoutedProvider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*schema.StreamReader[*schema.Message], error) {
-	var out *schema.StreamReader[*schema.Message]
+	execution, err := p.ExecuteStreamChat(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if execution != nil {
+		recordResolvedExecutionUsage(ctx, execution.Resolved, provider.Usage{})
+		return execution.Stream, nil
+	}
+	return nil, nil
+}
+
+func (p *RoutedProvider) ExecuteStreamChat(ctx context.Context, req *provider.ChatRequest) (*provider.StreamExecution, error) {
+	var out *provider.StreamExecution
 	requirements := p.requestRequirements
-	if requestHasAnthropicNativeState(req) {
-		requirements = requirements.WithNativeDialect(provider.ProtocolDialectAnthropic)
+	if err := validateAttachedProtocolRequirements(req, requirements.ProtocolRequirements); err != nil {
+		return nil, err
 	}
-	if requestHasAnthropicReasoningState(req) {
-		requirements = requirements.WithReasoningDialect(provider.ProtocolDialectAnthropic)
-	}
-	p.logDialectAffinity(req.Model, requirements)
+	p.logProtocolRequirements(req.Model, requirements)
 	err := p.executeWithFallback(ctx, req.Model, requirements, func(ctx context.Context, attempt *resolvedAttempt) error {
 		cloned := *req
+		cloned.ProtocolState = provider.CloneProtocolState(req.ProtocolState)
 		cloned.Model = attempt.target.UpstreamModel
 		stream, err := attempt.base.StreamChat(ctx, &cloned)
 		if err == nil {
-			req.Model = cloned.Model
-			out = stream
-			recordProviderUsage(ctx, attempt, provider.Usage{})
+			out = &provider.StreamExecution{Stream: stream, Resolved: resolvedExecution(req.Model, attempt)}
 		}
 		return err
 	})
 	return out, err
 }
 
-func requestHasAnthropicNativeState(req *provider.ChatRequest) bool {
-	return req != nil && (provider.HasAnthropicServerTools(req.Options...) || provider.HasAnthropicNativeContent(req.Messages))
+func resolvedExecution(clientModel string, attempt *resolvedAttempt) provider.ResolvedExecution {
+	if attempt == nil || attempt.target == nil {
+		return provider.ResolvedExecution{}
+	}
+	typeCapabilities := provider.CapabilitiesForProviderType(attempt.target.ProviderType)
+	dialect := provider.ProtocolDialect("")
+	for feature := range typeCapabilities.ProtocolFeatures {
+		definition, err := provider.ProtocolFeatureDefinitionFor(feature)
+		if err == nil && (dialect == "" || dialect == definition.Dialect) {
+			dialect = definition.Dialect
+		}
+	}
+	resolved := provider.ResolvedExecution{Candidate: provider.ServedCandidate{
+		Dialect: dialect, ProviderType: attempt.target.ProviderType, ProviderID: attempt.target.ProviderID,
+		LogicalModel: attempt.target.LogicalModel, ClientModel: clientModel, UpstreamModel: attempt.target.UpstreamModel,
+		Features: typeCapabilities.ProtocolFeatures,
+	}, Attribution: provider.AttemptAttribution{CredentialSource: "static"}}
+	if attempt.cred != nil {
+		resolved.Attribution.CredentialSource = attempt.cred.Type
+		resolved.Attribution.CredentialID = attempt.cred.ID
+	}
+	return resolved
 }
 
-func requestHasAnthropicReasoningState(req *provider.ChatRequest) bool {
-	return req != nil && provider.HasAnthropicNativeReasoning(req.Messages)
+func recordResolvedExecutionUsage(ctx context.Context, resolved provider.ResolvedExecution, tokens provider.Usage) {
+	total := tokens.TotalTokens
+	if total == 0 {
+		total = tokens.InputTokens + tokens.OutputTokens
+	}
+	usage.SpanFromContext(ctx).SetExtension(usage.LLMExtension{
+		ProviderID: resolved.Candidate.ProviderID, ProviderType: resolved.Candidate.ProviderType,
+		LogicalModel: resolved.Candidate.LogicalModel, UpstreamModel: resolved.Candidate.UpstreamModel,
+		CredentialID: resolved.Attribution.CredentialID, CredentialSource: resolved.Attribution.CredentialSource,
+		InputTokens: usage.Int(tokens.InputTokens), OutputTokens: usage.Int(tokens.OutputTokens), TotalTokens: usage.Int(total),
+		CachedTokens: usage.Int(tokens.CachedTokens), ReasoningTokens: usage.Int(tokens.ReasoningTokens),
+		UsageFinalized: usage.Bool(tokens.InputTokens > 0 || tokens.OutputTokens > 0 || total > 0),
+	})
 }
 
-func (p *RoutedProvider) logDialectAffinity(model string, requirements llmroutepkg.RequestRequirements) {
-	if p.logger == nil || len(requirements.RequiredNativeDialects) == 0 && len(requirements.RequiredReasoningDialects) == 0 {
+func validateAttachedProtocolRequirements(req *provider.ChatRequest, expected provider.ProtocolRequirementSet) error {
+	var attached provider.ProtocolRequirementSet
+	if req != nil && req.ProtocolState != nil {
+		attached = req.ProtocolState.Requirements
+	}
+	if !attached.Equal(expected) {
+		return statuserr.New(http.StatusBadRequest, "chat request protocol requirements disagree with route selection")
+	}
+	return nil
+}
+
+func (p *RoutedProvider) logProtocolRequirements(model string, requirements llmroutepkg.RequestRequirements) {
+	if p.logger == nil || requirements.ProtocolRequirements.Empty() {
 		return
 	}
-	native := dialectNames(requirements.RequiredNativeDialects)
-	reasoning := dialectNames(requirements.RequiredReasoningDialects)
+	features := requirements.ProtocolRequirements.Features()
+	featureNames := make([]string, len(features))
+	for i, feature := range features {
+		featureNames[i] = string(feature)
+	}
 	fields := []zap.Field{
 		zap.String("model", model),
-		zap.Strings("required_native_dialects", native),
-		zap.Strings("required_reasoning_dialects", reasoning),
+		zap.Strings("required_protocol_features", featureNames),
 	}
 	if p.route != nil {
 		fields = append(fields, zap.String("route_id", p.route.ID))
 	}
 	p.logger.Debug("request protocol state restricts provider fallback", fields...)
-}
-
-func dialectNames(dialects map[provider.ProtocolDialect]struct{}) []string {
-	names := make([]string, 0, len(dialects))
-	for dialect := range dialects {
-		names = append(names, string(dialect))
-	}
-	sort.Strings(names)
-	return names
 }
 
 func (p *RoutedProvider) CreateResponses(ctx context.Context, req *provider.ResponsesRequest) (*provider.ResponsesResponse, error) {

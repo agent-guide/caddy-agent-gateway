@@ -77,10 +77,10 @@ func BuildMessagesRequest(state *provider.ChatRequestState, opts BuildMessagesOp
 	} else {
 		req.Tools = []ToolDef{}
 	}
-	if extra := provider.ChatExtraFieldsFromOptions(state.Options...); extra != nil && len(extra.AnthropicTools) > 0 {
-		req.Tools = make([]ToolDef, 0, len(extra.AnthropicTools))
+	if nativeTools, nativeChoice := AnthropicRequestTools(state.ProtocolState); len(nativeTools) > 0 {
+		req.Tools = make([]ToolDef, 0, len(nativeTools))
 		req.ToolChoice = nil
-		for _, raw := range extra.AnthropicTools {
+		for _, raw := range nativeTools {
 			var tool ToolDef
 			if err := json.Unmarshal(raw, &tool); err != nil {
 				// Forward the declaration verbatim rather than silently
@@ -90,8 +90,8 @@ func BuildMessagesRequest(state *provider.ChatRequestState, opts BuildMessagesOp
 			}
 			req.Tools = append(req.Tools, tool)
 		}
-		if len(extra.AnthropicToolChoice) > 0 {
-			req.ToolChoice = append(json.RawMessage(nil), extra.AnthropicToolChoice...)
+		if len(nativeChoice) > 0 {
+			req.ToolChoice = append(json.RawMessage(nil), nativeChoice...)
 		}
 	}
 
@@ -439,7 +439,7 @@ func convertUserMessage(msg *schema.Message, cacheUserText bool, explicitCacheCo
 }
 
 func nativeMessageContent(msg *schema.Message) []ContentBlock {
-	rawBlocks := provider.AnthropicContentBlocksFromMessage(msg)
+	rawBlocks := AnthropicContentBlocksFromMessage(msg)
 	if len(rawBlocks) == 0 {
 		return nil
 	}
@@ -559,6 +559,6 @@ func (r *MessagesResponse) ToChatResponse() *provider.ChatResponse {
 		},
 	}
 	provider.AttachReasoningParts(msg, structuredReasoning...)
-	provider.AttachAnthropicContentBlocks(msg, nativeBlocks)
+	AttachAnthropicContentBlocks(msg, nativeBlocks)
 	return &provider.ChatResponse{Message: msg}
 }

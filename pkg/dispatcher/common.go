@@ -24,7 +24,15 @@ type LLMApiHandler interface {
 	ServeLLMApi(http.ResponseWriter, *http.Request, provider.Provider, *PreparedLLMApiRequest) error
 }
 
+type ExecutionDisposition string
+
+const (
+	ExecutionProvider ExecutionDisposition = "provider"
+	ExecutionLocal    ExecutionDisposition = "local"
+)
+
 type PreparedLLMApiRequest struct {
+	Disposition      ExecutionDisposition
 	Type             provider.LLMApiRequestType
 	ChatRequest      *provider.ChatRequest
 	EmbeddingRequest *provider.EmbeddingRequest
@@ -60,11 +68,20 @@ func (r *PreparedLLMApiRequest) Stream() bool {
 	if r == nil {
 		return false
 	}
+	if r.Disposition != ExecutionProvider && r.Disposition != ExecutionLocal {
+		return false
+	}
 	return r.StreamRequested
 }
 
 func (r *PreparedLLMApiRequest) IsValid() bool {
 	if r == nil {
+		return false
+	}
+	if r.Disposition == ExecutionLocal {
+		return r.RawRequest != nil
+	}
+	if r.Disposition != ExecutionProvider {
 		return false
 	}
 	switch r.Type {
@@ -180,6 +197,11 @@ func WriteProviderErrorLog(logger *zap.Logger, w http.ResponseWriter, r *http.Re
 }
 
 func dispatchErrorType(phase string, err error) string {
+	var gap *provider.RequirementGap
+	var gaps *provider.RequirementGapsError
+	if errors.As(err, &gap) || errors.As(err, &gaps) {
+		return "protocol_requirement_rejected"
+	}
 	phase = strings.ToLower(phase)
 	switch {
 	case strings.Contains(phase, "virtual key"):

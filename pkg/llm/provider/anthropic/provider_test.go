@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -145,7 +146,7 @@ func TestAttachCapturedReasoningDoesNotExposeUnsupportedNativeContent(t *testing
 	if len(parts) != 1 || parts[0].Reasoning == nil || parts[0].Reasoning.Signature != "sig" {
 		t.Fatalf("captured reasoning = %+v, want signed thinking", parts)
 	}
-	if provider.HasAnthropicNativeContent([]*schema.Message{msg}) {
+	if anthropicbase.HasAnthropicNativeContent([]*schema.Message{msg}) {
 		t.Fatal("eino Anthropic provider exposed native content it cannot replay")
 	}
 }
@@ -157,7 +158,7 @@ func TestChatReplaysNativeAnthropicCustomToolFields(t *testing.T) {
 			t.Fatalf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		_, _ = w.Write([]byte(`{"id":"msg_native_1","type":"message","role":"assistant","model":"claude-upstream","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"future_response_field":"preserve"}`))
 	}))
 	defer server.Close()
 
@@ -171,16 +172,17 @@ func TestChatReplaysNativeAnthropicCustomToolFields(t *testing.T) {
 	}
 	tool := json.RawMessage(`{"type":"custom","name":"lookup","description":"Lookup data","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"defer_loading":true}`)
 	choice := json.RawMessage(`{"type":"auto","disable_parallel_tool_use":true}`)
-	_, err = prov.Chat(context.Background(), &provider.ChatRequest{
-		Model:    "claude-sonnet-4-6",
-		Messages: []*schema.Message{schema.UserMessage("search")},
-		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
-			AnthropicTools:      []json.RawMessage{tool},
-			AnthropicToolChoice: choice,
-		})},
+	response, err := prov.Chat(context.Background(), &provider.ChatRequest{
+		Model:         "claude-sonnet-4-6",
+		Messages:      []*schema.Message{schema.UserMessage("search")},
+		ProtocolState: anthropicbase.NewAnthropicRequestProtocolState([]json.RawMessage{tool}, choice),
 	})
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
+	}
+	rawBody := anthropicbase.AnthropicResponseBodyFromMessage(response.Message)
+	if !bytes.Contains(rawBody, []byte(`"future_response_field":"preserve"`)) {
+		t.Fatalf("raw response body was not retained: %s", rawBody)
 	}
 	tools, ok := request["tools"].([]any)
 	if !ok || len(tools) != 1 {

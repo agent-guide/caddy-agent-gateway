@@ -205,8 +205,14 @@ Logical-model routes filter candidates against request needs. Requests with
 client-executed tools require a managed-model candidate whose resolved
 capabilities include `tools: true`; incomplete managed-model capability metadata
 can therefore make a tool request return “no eligible bindings.” Anthropic
-server tools use protocol-dialect fidelity filtering instead of this generic
-client-tool capability.
+server tools use atomic protocol-feature filtering instead of this generic
+client-tool capability. Native Anthropic request/history/response values use a
+scoped protocol-state envelope internally; when a selected provider declares
+complete Anthropic body or stream delivery, the Messages response coordinator
+relays that native response with only the client-visible model rewritten.
+`/v1/messages/count_tokens` is classified as local execution during parsing,
+so it still passes route auth, size, and rate-limit governance but does not
+resolve a provider, candidate, credential, or protocol-fidelity requirement.
 
 ## MCP Quick Start
 

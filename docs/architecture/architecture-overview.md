@@ -179,8 +179,14 @@ Important characteristics:
 - embeddings are optional through `EmbeddingProvider`
 - providers expose capability metadata and runtime config
 - logical-model resolution filters managed-model capabilities for generic
-  request needs such as client tools, and filters provider-type dialect sets
-  for opaque native/reasoning replay before credential selection
+  request needs such as client tools, and performs generic set inclusion over
+  AST-derived protocol requirements and provider-type atomic features before
+  credential selection
+- protocol-native request/history/response state crosses provider and eino
+  boundaries through scoped `ProtocolState` envelopes. Registered dialect
+  codecs fold transport-only response bodies and SSE events into replayable
+  history, while the served candidate's atomic features select validated native
+  response relay without mutating the caller's logical model
 
 Built-in providers:
 

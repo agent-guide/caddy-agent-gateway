@@ -15,6 +15,7 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/httpclient"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 )
 
 func TestChatUsesOAuthTokenBearerHeaders(t *testing.T) {
@@ -941,12 +942,9 @@ func TestChatMapsNativeRawCodexToolNamesForClaudeCode(t *testing.T) {
 	tool := json.RawMessage(`{"name":"exec_command","description":"Run a command","input_schema":{"type":"object","properties":{"cmd":{"type":"string"}}},"defer_loading":true}`)
 	choice := json.RawMessage(`{"type":"tool","name":"exec_command"}`)
 	resp, err := prov.Chat(context.Background(), &provider.ChatRequest{
-		Model:    "claude-sonnet-4-6",
-		Messages: []*schema.Message{schema.UserMessage("run pwd")},
-		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
-			AnthropicTools:      []json.RawMessage{tool},
-			AnthropicToolChoice: choice,
-		})},
+		Model:         "claude-sonnet-4-6",
+		Messages:      []*schema.Message{schema.UserMessage("run pwd")},
+		ProtocolState: anthropicbase.NewAnthropicRequestProtocolState([]json.RawMessage{tool}, choice),
 	})
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
@@ -1086,12 +1084,10 @@ func TestNativeRawToolsRejectCodexCompatNameCollision(t *testing.T) {
 	chatReq := &provider.ChatRequest{
 		Model:    "claude-sonnet-4-6",
 		Messages: []*schema.Message{schema.UserMessage("run")},
-		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
-			AnthropicTools: []json.RawMessage{
-				json.RawMessage(`{"name":"exec_command","input_schema":{"type":"object"}}`),
-				json.RawMessage(`{"name":"Bash","input_schema":{"type":"object"}}`),
-			},
-		})},
+		ProtocolState: anthropicbase.NewAnthropicRequestProtocolState([]json.RawMessage{
+			json.RawMessage(`{"name":"exec_command","input_schema":{"type":"object"}}`),
+			json.RawMessage(`{"name":"Bash","input_schema":{"type":"object"}}`),
+		}, nil),
 	}
 	state, err := provider.ResolveChatRequest(context.Background(), provider.ProviderConfig{}, chatReq)
 	if err != nil {
@@ -1178,14 +1174,8 @@ func TestStreamChatParsesAnthropicSSE(t *testing.T) {
 	}
 	defer stream.Close()
 
-	first, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("first recv: %v", err)
-	}
-	second, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("second recv: %v", err)
-	}
+	first := recvNextGenericChunk(t, stream)
+	second := recvNextGenericChunk(t, stream)
 	if first.Content != "hel" || second.Content != "lo" {
 		t.Fatalf("unexpected chunks: first=%+v second=%+v", first, second)
 	}
@@ -1281,10 +1271,7 @@ func TestStreamChatMapsCodexToolNamesForClaudeCode(t *testing.T) {
 	}
 	defer stream.Close()
 
-	msg, err := stream.Recv()
-	if err != nil {
-		t.Fatalf("recv: %v", err)
-	}
+	msg := recvNextGenericChunk(t, stream)
 	if len(reqBody.Tools) != 1 || reqBody.Tools[0].Name != "Bash" {
 		t.Fatalf("request tools = %+v, want Bash alias", reqBody.Tools)
 	}
@@ -1294,6 +1281,19 @@ func TestStreamChatMapsCodexToolNamesForClaudeCode(t *testing.T) {
 	tc := msg.ToolCalls[0]
 	if tc.Function.Name != "exec_command" || tc.Function.Arguments != `{"cmd":"pwd"}` {
 		t.Fatalf("tool call = %+v, want restored exec_command", tc)
+	}
+}
+
+func recvNextGenericChunk(t *testing.T, stream *schema.StreamReader[*schema.Message]) *schema.Message {
+	t.Helper()
+	for {
+		msg, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("recv generic chunk: %v", err)
+		}
+		if len(anthropicbase.AnthropicRelayStreamEventsFromMessage(msg)) == 0 {
+			return msg
+		}
 	}
 }
 

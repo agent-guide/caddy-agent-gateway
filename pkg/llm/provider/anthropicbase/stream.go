@@ -66,6 +66,10 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 	if payload == "" {
 		return nil
 	}
+	// Preserve the complete upstream event stream for validated same-dialect
+	// relay. Generic and projection chunks emitted below remain available to
+	// non-Anthropic consumers and normalized response mode.
+	sw.Send(AttachAnthropicRelayStreamEvent(nil, eventName, json.RawMessage(payload)), nil)
 	if state == nil {
 		state = &StreamState{
 			pendingToolCalls: make(map[int]*pendingToolCall),
@@ -236,6 +240,6 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 }
 
 func emitNativeStreamEvent(sw *schema.StreamWriter[*schema.Message], eventName, payload string) {
-	msg := provider.AttachAnthropicStreamEvent(nil, eventName, json.RawMessage(payload))
+	msg := AttachAnthropicStreamEvent(nil, eventName, json.RawMessage(payload))
 	sw.Send(msg, nil)
 }

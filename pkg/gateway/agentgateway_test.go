@@ -76,28 +76,21 @@ func (p testProvider) Config() provider.ProviderConfig {
 	return p.cfg
 }
 
-func TestRequestSeparatesAnthropicReasoningFromFullNativeState(t *testing.T) {
-	msg := provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant},
-		provider.NewReasoningOutputPart("inspect", "authentic-signature", nil))
-	req := &provider.ChatRequest{Messages: []*schema.Message{msg}}
-	if requestHasAnthropicNativeState(req) {
-		t.Fatal("modeled signed reasoning unnecessarily required full native-content support")
-	}
-	if !requestHasAnthropicReasoningState(req) {
-		t.Fatal("signed reasoning did not require Anthropic reasoning replay")
-	}
-}
-
-func TestRoutedProviderLogsDialectAffinity(t *testing.T) {
+func TestRoutedProviderLogsProtocolRequirements(t *testing.T) {
 	core, logs := observer.New(zap.DebugLevel)
 	routed := &RoutedProvider{
 		route:  &llmroutepkg.LLMRoute{AgentRouteConfig: llmroutepkg.AgentRouteConfig{ID: "claude-route"}},
 		logger: zap.New(core),
 	}
-	requirements := llmroutepkg.RequestRequirements{}.
-		WithNativeDialect(provider.ProtocolDialectAnthropic).
-		WithReasoningDialect(provider.ProtocolDialectAnthropic)
-	routed.logDialectAffinity("claude-sonnet", requirements)
+	protocolRequirements, err := provider.NewProtocolRequirementSet(map[provider.ProtocolFeature][]provider.RequirementReason{
+		provider.FeatureAnthropicNativeHistoryReplay: {provider.ReasonAnthropicNativeHistory},
+		provider.FeatureAnthropicReasoningReplay:     {provider.ReasonAnthropicSignedReasoning},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requirements := llmroutepkg.RequestRequirements{ProtocolRequirements: protocolRequirements}
+	routed.logProtocolRequirements("claude-sonnet", requirements)
 
 	entries := logs.FilterMessage("request protocol state restricts provider fallback").All()
 	if len(entries) != 1 {
@@ -106,6 +99,22 @@ func TestRoutedProviderLogsDialectAffinity(t *testing.T) {
 	context := entries[0].ContextMap()
 	if context["route_id"] != "claude-route" || context["model"] != "claude-sonnet" {
 		t.Fatalf("affinity log context = %+v", context)
+	}
+}
+
+func TestRoutedProviderRejectsProtocolRequirementDisagreement(t *testing.T) {
+	expected, err := provider.NewProtocolRequirementSet(map[provider.ProtocolFeature][]provider.RequirementReason{
+		provider.FeatureAnthropicReasoningReplay: {provider.ReasonAnthropicSignedReasoning},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAttachedProtocolRequirements(&provider.ChatRequest{}, expected); err == nil {
+		t.Fatal("missing attached requirements were accepted")
+	}
+	request := &provider.ChatRequest{ProtocolState: &provider.ProtocolState{Requirements: provider.CloneProtocolRequirementSet(expected)}}
+	if err := validateAttachedProtocolRequirements(request, expected); err != nil {
+		t.Fatalf("matching requirements rejected: %v", err)
 	}
 }
 
@@ -222,8 +231,8 @@ func TestNewRoutedProviderModelTargetRewritesDuringExecution(t *testing.T) {
 	if _, err := routedProvider.Chat(context.Background(), chatReq); err != nil {
 		t.Fatalf("Chat returned error: %v", err)
 	}
-	if chatReq.Model != "gpt-4.1-mini" {
-		t.Fatalf("Chat request model = %q, want gpt-4.1-mini", chatReq.Model)
+	if chatReq.Model != "chat-fast" {
+		t.Fatalf("Chat request model = %q, want caller model preserved", chatReq.Model)
 	}
 }
 
@@ -896,11 +905,17 @@ func TestRoutedProviderFallsBackToAnotherModelAfterCandidateCredentialsExhausted
 	}
 
 	req := &provider.ChatRequest{Model: "chat-fast"}
-	if _, err := routedProvider.Chat(context.Background(), req); err != nil {
-		t.Fatalf("Chat returned error: %v", err)
+	execution, err := routedProvider.ExecuteChat(context.Background(), req)
+	if err != nil {
+		t.Fatalf("ExecuteChat returned error: %v", err)
 	}
-	if req.Model != "gpt-4.1-mini" {
-		t.Fatalf("request model = %q, want fallback model gpt-4.1-mini", req.Model)
+	if req.Model != "chat-fast" {
+		t.Fatalf("request model = %q, want caller model preserved", req.Model)
+	}
+	if execution == nil || execution.Resolved.Candidate.ProviderID != "openai-backup" ||
+		execution.Resolved.Candidate.ClientModel != "chat-fast" || execution.Resolved.Candidate.UpstreamModel != "gpt-4.1-mini" ||
+		execution.Resolved.Attribution.CredentialID != "cred-openai-backup" {
+		t.Fatalf("resolved execution = %+v", execution)
 	}
 	if !slices.Equal(attempts, []string{"gpt-4.1|main-key", "gpt-4.1-mini|backup-key"}) {
 		t.Fatalf("attempts = %v, want same candidate exhaustion before model fallback", attempts)

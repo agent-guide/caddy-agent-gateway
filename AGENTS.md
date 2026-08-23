@@ -119,6 +119,10 @@ stamps Agent identity on the interaction span. Subsystem detail:
 The `anthropic` and `cc` runtime packages are thin ingress profiles over the
 shared Anthropic Messages core in `pkg/dispatcher/llmapi/anthropicmsg/`. That
 core owns parsing, conversion, response lifecycle, and SSE block state.
+Protocol-native state uses the scoped, dialect-neutral
+`provider.ProtocolState`; same-dialect responses can select validated native
+body or stream relay from the `ResolvedExecution` returned by the enriched
+`RoutedProvider` contract.
 
 Responsibilities:
 
@@ -179,6 +183,8 @@ HTTP request
   -> rewrite path using route.match.path_prefix
   -> AgentGateway.ResolveVirtualKey(...)
   -> protocol handler PrepareLLMApiRequest(...)
+  -> if execution is local: serve without provider/candidate/credential resolution
+  -> otherwise: filter candidates by generic capabilities and AST-derived atomic protocol features
   -> if route uses model targets: resolve the requested route model name to one concrete binding and rewrite request model
   -> else: use route.target_policy.provider_target.provider_id
   -> select a credential and invoke the external refresher when close to expiry
@@ -187,7 +193,9 @@ HTTP request
   -> protocol handler writes JSON or SSE response
 ```
 
-Key detail: provider resolution still happens after protocol parsing, but the request `model` now means route target name in model-target mode and upstream model name in direct-provider mode.
+Key detail: provider resolution happens after protocol parsing only for
+`execution=provider`; the request `model` means route target name in model-target
+mode and upstream model name in direct-provider mode.
 
 ## Caddyfile Shape
 

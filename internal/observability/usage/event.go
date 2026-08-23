@@ -31,21 +31,26 @@ type InteractionEvent struct {
 
 type LLMUsageEvent struct {
 	InteractionEvent
-	LLMAPI            string
-	APIOperation      string
-	ProviderID        string
-	ProviderType      string
-	LogicalModel      string
-	UpstreamModel     string
-	CredentialSource  string
-	CredentialID      string
-	Stream            bool
-	Transport         string
-	ResponseOutcome   string
-	ResponseCommitted bool
-	InputTokens       int
-	OutputTokens      int
-	TotalTokens       int
+	LLMAPI                string
+	APIOperation          string
+	ProviderID            string
+	ProviderType          string
+	LogicalModel          string
+	UpstreamModel         string
+	CredentialSource      string
+	CredentialID          string
+	Stream                bool
+	Transport             string
+	ResponseOutcome       string
+	ResponseCommitted     bool
+	ResponseMode          string
+	RelayIneligibleReason string
+	MessageIDSource       string
+	UsageSource           string
+	Execution             string
+	InputTokens           int
+	OutputTokens          int
+	TotalTokens           int
 	// CachedTokens is the cache-served subset of InputTokens; ReasoningTokens
 	// is the reasoning subset of OutputTokens. Zero when the upstream does not
 	// report the breakdown.
@@ -119,28 +124,33 @@ type BuiltinUsageEvent struct {
 }
 
 type LLMExtension struct {
-	LLMAPI            string
-	APIOperation      string
-	ProviderID        string
-	ProviderType      string
-	LogicalModel      string
-	UpstreamModel     string
-	CredentialSource  string
-	CredentialID      string
-	Stream            *bool
-	Transport         string
-	ResponseOutcome   string
-	ResponseCommitted *bool
-	InputTokens       *int
-	OutputTokens      *int
-	TotalTokens       *int
-	CachedTokens      *int
-	ReasoningTokens   *int
-	UsageFinalized    *bool
-	RequestToolCount  *int
-	RequestToolNames  []string
-	ToolCallCount     *int
-	ToolNames         []string
+	LLMAPI                string
+	APIOperation          string
+	ProviderID            string
+	ProviderType          string
+	LogicalModel          string
+	UpstreamModel         string
+	CredentialSource      string
+	CredentialID          string
+	Stream                *bool
+	Transport             string
+	ResponseOutcome       string
+	ResponseCommitted     *bool
+	ResponseMode          string
+	RelayIneligibleReason string
+	MessageIDSource       string
+	UsageSource           string
+	Execution             string
+	InputTokens           *int
+	OutputTokens          *int
+	TotalTokens           *int
+	CachedTokens          *int
+	ReasoningTokens       *int
+	UsageFinalized        *bool
+	RequestToolCount      *int
+	RequestToolNames      []string
+	ToolCallCount         *int
+	ToolNames             []string
 }
 
 type MCPExtension struct {

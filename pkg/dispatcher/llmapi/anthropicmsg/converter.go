@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 )
 
 // Converter converts between Anthropic API format and internal format.
@@ -60,10 +61,37 @@ func (c *Converter) ToInternal(req *MessagesRequest) *provider.ChatRequest {
 	}
 
 	return &provider.ChatRequest{
-		Model:    req.Model,
-		Messages: msgs,
-		Options:  opts,
+		Model:         req.Model,
+		Messages:      msgs,
+		Options:       opts,
+		ProtocolState: requestProtocolState(req),
 	}
+}
+
+func requestProtocolState(req *MessagesRequest) *provider.ProtocolState {
+	if req == nil {
+		return nil
+	}
+	requirements := deriveAnthropicRequirements(req)
+	state := &provider.ProtocolState{Requirements: requirements}
+	if toolsRequireRawAnthropicReplay(req.Tools) || toolChoiceRequiresRawAnthropicReplay(req.ToolChoice) {
+		for i, tool := range req.Tools {
+			state.Envelopes = append(state.Envelopes, provider.NativeEnvelope{
+				Dialect: provider.ProtocolDialectAnthropic, Scope: provider.NativeScopeRequest, Kind: provider.NativeKindToolDefinition,
+				Location: provider.NativeLocation{ToolIndex: i}, Raw: tool.rawJSON(),
+			})
+		}
+		if len(req.ToolChoice) > 0 {
+			state.Envelopes = append(state.Envelopes, provider.NativeEnvelope{
+				Dialect: provider.ProtocolDialectAnthropic, Scope: provider.NativeScopeRequest, Kind: provider.NativeKindToolChoice,
+				Raw: append(json.RawMessage(nil), req.ToolChoice...),
+			})
+		}
+	}
+	if len(state.Envelopes) == 0 && state.Requirements.Empty() {
+		return nil
+	}
+	return state
 }
 
 // chatExtraFields carries inbound Anthropic-native fields that have no eino
@@ -71,16 +99,6 @@ func (c *Converter) ToInternal(req *MessagesRequest) *provider.ChatRequest {
 // the provider can re-emit them on the upstream request.
 func chatExtraFields(req *MessagesRequest) *provider.ChatExtraFields {
 	extra := &provider.ChatExtraFields{}
-	preserveRawTools := toolsRequireRawAnthropicReplay(req.Tools) || toolChoiceRequiresRawAnthropicReplay(req.ToolChoice)
-	if preserveRawTools && len(req.Tools) > 0 {
-		extra.AnthropicTools = make([]json.RawMessage, 0, len(req.Tools))
-		for _, tool := range req.Tools {
-			extra.AnthropicTools = append(extra.AnthropicTools, tool.rawJSON())
-		}
-	}
-	if preserveRawTools && len(req.ToolChoice) > 0 {
-		extra.AnthropicToolChoice = append(json.RawMessage(nil), req.ToolChoice...)
-	}
 	if thinking := thinkingFields(req.Thinking); len(thinking) > 0 {
 		extra.Thinking = thinking
 	}
@@ -95,7 +113,7 @@ func chatExtraFields(req *MessagesRequest) *provider.ChatExtraFields {
 		parallel := !disabled
 		extra.ParallelToolCalls = &parallel
 	}
-	if len(extra.Thinking) == 0 && extra.ReasoningEffort == "" && len(extra.Metadata) == 0 && extra.ResponseFormat == nil && extra.ParallelToolCalls == nil && len(extra.AnthropicTools) == 0 && len(extra.AnthropicToolChoice) == 0 {
+	if len(extra.Thinking) == 0 && extra.ReasoningEffort == "" && len(extra.Metadata) == 0 && extra.ResponseFormat == nil && extra.ParallelToolCalls == nil {
 		return nil
 	}
 	return extra
@@ -228,7 +246,7 @@ func toolDefsToToolInfos(defs []ToolDefinition) []*schema.ToolInfo {
 	tools := make([]*schema.ToolInfo, 0, len(defs))
 	for _, td := range defs {
 		// Anthropic server tools are identified by a versioned type and omit
-		// input_schema. Keep them only in ChatExtraFields.AnthropicTools; turning
+		// input_schema. Keep them only in request-scoped ProtocolState; turning
 		// them into a parameterless client tool would lose their execution model.
 		if td.isServerTool() && isEmptyJSON(td.InputSchema) {
 			continue
@@ -342,7 +360,7 @@ func convertAssistantItem(content MessageContent, nativeBlocks []json.RawMessage
 		ReasoningContent: strings.Join(reasoningParts, "\n"),
 	}
 	provider.AttachReasoningParts(msg, structuredReasoning...)
-	provider.AttachAnthropicContentBlocks(msg, nativeBlocks)
+	anthropicbase.AttachAnthropicContentBlocks(msg, nativeBlocks)
 	return []*schema.Message{msg}
 }
 
@@ -353,7 +371,7 @@ func convertUserItem(content MessageContent, nativeBlocks []json.RawMessage) []*
 		// attached raw blocks even though they are not duplicated as schema.Tool
 		// messages (which would make the upstream result appear twice).
 		msg := &schema.Message{Role: schema.User, Content: content.Text()}
-		provider.AttachAnthropicContentBlocks(msg, nativeBlocks)
+		anthropicbase.AttachAnthropicContentBlocks(msg, nativeBlocks)
 		return []*schema.Message{msg}
 	}
 	var inputParts []schema.MessageInputPart
@@ -468,7 +486,7 @@ func (c *Converter) FromInternal(resp *provider.ChatResponse, model string) *Mes
 		stopReason = "tool_use"
 	}
 	return &MessagesResponse{
-		ID:         "",
+		ID:         newAnthropicMessageID(),
 		Type:       "message",
 		Role:       "assistant",
 		Model:      model,
@@ -503,10 +521,14 @@ func mapFinishReason(reason string) string {
 }
 
 func contentFromMessage(msg *schema.Message) []ContentBlockResponse {
+	return reduceResponseItems(responseItemsFromMessage(msg))
+}
+
+func contentBlocksFromMessage(msg *schema.Message) []ContentBlockResponse {
 	if msg == nil {
 		return []ContentBlockResponse{}
 	}
-	if native := provider.AnthropicContentBlocksFromMessage(msg); len(native) > 0 {
+	if native := anthropicbase.AnthropicContentBlocksFromMessage(msg); len(native) > 0 {
 		blocks := make([]ContentBlockResponse, 0, len(native))
 		for _, raw := range native {
 			blocks = append(blocks, ContentBlockResponse{Raw: raw})

@@ -2,6 +2,7 @@ package llmroute
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -9,6 +10,19 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/gateway/modelcatalog"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
+
+func testProtocolRequirements(t *testing.T, features ...provider.ProtocolFeature) provider.ProtocolRequirementSet {
+	t.Helper()
+	values := make(map[provider.ProtocolFeature][]provider.RequirementReason, len(features))
+	for _, feature := range features {
+		values[feature] = []provider.RequirementReason{"test"}
+	}
+	set, err := provider.NewProtocolRequirementSet(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return set
+}
 
 type testModelCatalogResolver struct {
 	models map[string]modelcatalog.ResolvedManagedModel
@@ -52,9 +66,11 @@ func TestCredentialTypeOrderDefaultsToAPIKeyThenOAuthToken(t *testing.T) {
 	}
 }
 
-func TestResolveTargetFiltersAnthropicNativeCapability(t *testing.T) {
+func TestResolveTargetFiltersProtocolFeatureCapability(t *testing.T) {
 	provider.RegisterProviderTypeCapabilities("native-test", provider.ProviderTypeCapabilities{
-		NativeDialects: provider.NewProtocolDialectSet(provider.ProtocolDialectAnthropic),
+		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{
+			provider.FeatureAnthropicNativeResponse: {}, provider.FeatureAnthropicNativeHistoryReplay: {},
+		},
 	})
 	route := LLMRoute{
 		AgentRouteConfig: AgentRouteConfig{ID: "native-route"},
@@ -78,7 +94,7 @@ func TestResolveTargetFiltersAnthropicNativeCapability(t *testing.T) {
 		"native":  {Id: "native", ProviderType: "native-test"},
 	}}
 
-	requirements := RequestRequirements{RequireTools: true}.WithNativeDialect(provider.ProtocolDialectAnthropic)
+	requirements := RequestRequirements{RequireTools: true, ProtocolRequirements: testProtocolRequirements(t, provider.FeatureAnthropicNativeHistoryReplay)}
 	target, err := route.ResolveTarget(context.Background(), catalog, configs, requirements)
 	if err != nil {
 		t.Fatalf("ResolveTarget() error = %v", err)
@@ -88,29 +104,33 @@ func TestResolveTargetFiltersAnthropicNativeCapability(t *testing.T) {
 	}
 }
 
-func TestDirectProviderRejectsMissingAnthropicNativeCapability(t *testing.T) {
+func TestDirectProviderReturnsRequirementGap(t *testing.T) {
 	route := LLMRoute{
 		AgentRouteConfig: AgentRouteConfig{ID: "native-direct"},
 		TargetPolicy:     &RouteDirectProviderPolicy{ProviderTarget: DirectProviderTarget{ProviderID: "generic"}},
 	}
 	_, err := route.ResolveTarget(context.Background(), testModelCatalogResolver{}, testProviderConfigResolver{configs: map[string]provider.ProviderConfig{
-		"generic": {Id: "generic", ProviderType: "generic-test"},
-	}}, RequestRequirements{}.WithNativeDialect(provider.ProtocolDialectAnthropic))
-	if err == nil {
-		t.Fatal("ResolveTarget() error = nil, want native capability rejection")
+		"generic": {Id: "generic", ProviderType: "generic-test", DefaultModel: "generic-default"},
+	}}, RequestRequirements{ProtocolRequirements: testProtocolRequirements(t, provider.FeatureAnthropicNativeHistoryReplay)})
+	var gap *provider.RequirementGap
+	if !errors.As(err, &gap) || len(gap.Missing) != 1 || gap.Missing[0] != provider.FeatureAnthropicNativeHistoryReplay {
+		t.Fatalf("ResolveTarget() error = %v, want typed requirement gap", err)
+	}
+	if gap.Candidate.ProviderID != "generic" || gap.Candidate.ProviderType != "generic-test" || gap.Candidate.UpstreamModel != "generic-default" {
+		t.Fatalf("candidate identity = %+v, want complete direct-provider identity", gap.Candidate)
 	}
 }
 
-func TestDirectAnthropicProviderNativeRejectionSuggestsClaudeCode(t *testing.T) {
+func TestDirectAnthropicProviderReportsMissingFeature(t *testing.T) {
 	route := LLMRoute{
 		AgentRouteConfig: AgentRouteConfig{ID: "anthropic-direct"},
 		TargetPolicy:     &RouteDirectProviderPolicy{ProviderTarget: DirectProviderTarget{ProviderID: "anthropic"}},
 	}
 	_, err := route.ResolveTarget(context.Background(), testModelCatalogResolver{}, testProviderConfigResolver{configs: map[string]provider.ProviderConfig{
 		"anthropic": {Id: "anthropic", ProviderType: "anthropic"},
-	}}, RequestRequirements{}.WithNativeDialect(provider.ProtocolDialectAnthropic))
-	if err == nil || !strings.Contains(err.Error(), `provider_type "claudecode"`) {
-		t.Fatalf("ResolveTarget() error = %v, want claudecode guidance", err)
+	}}, RequestRequirements{ProtocolRequirements: testProtocolRequirements(t, provider.FeatureAnthropicNativeHistoryReplay)})
+	if err == nil || !strings.Contains(err.Error(), string(provider.FeatureAnthropicNativeHistoryReplay)) {
+		t.Fatalf("ResolveTarget() error = %v, want missing feature", err)
 	}
 }
 
@@ -140,9 +160,9 @@ func TestLogicalModelNoEligibleBindingsNamesRequirements(t *testing.T) {
 	}
 }
 
-func TestDirectProviderUsesNarrowAnthropicReasoningCapability(t *testing.T) {
+func TestDirectProviderUsesAtomicReasoningCapability(t *testing.T) {
 	provider.RegisterProviderTypeCapabilities("reasoning-test", provider.ProviderTypeCapabilities{
-		ReasoningDialects: provider.NewProtocolDialectSet(provider.ProtocolDialectAnthropic),
+		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{provider.FeatureAnthropicReasoningReplay: {}},
 	})
 	route := LLMRoute{
 		AgentRouteConfig: AgentRouteConfig{ID: "reasoning-direct"},
@@ -152,11 +172,11 @@ func TestDirectProviderUsesNarrowAnthropicReasoningCapability(t *testing.T) {
 		"reasoning": {Id: "reasoning", ProviderType: "reasoning-test"},
 	}}
 	if _, err := route.ResolveTarget(context.Background(), testModelCatalogResolver{}, configs,
-		RequestRequirements{}.WithReasoningDialect(provider.ProtocolDialectAnthropic)); err != nil {
+		RequestRequirements{ProtocolRequirements: testProtocolRequirements(t, provider.FeatureAnthropicReasoningReplay)}); err != nil {
 		t.Fatalf("reasoning-capable provider rejected: %v", err)
 	}
 	if _, err := route.ResolveTarget(context.Background(), testModelCatalogResolver{}, configs,
-		RequestRequirements{}.WithNativeDialect(provider.ProtocolDialectAnthropic)); err == nil {
+		RequestRequirements{ProtocolRequirements: testProtocolRequirements(t, provider.FeatureAnthropicNativeHistoryReplay)}); err == nil {
 		t.Fatal("reasoning-only provider accepted full Anthropic-native state")
 	}
 }

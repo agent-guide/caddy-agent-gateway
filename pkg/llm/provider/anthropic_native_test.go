@@ -1,58 +1,127 @@
-package provider
+package provider_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
 	"github.com/cloudwego/eino/schema"
 )
 
 func TestAnthropicNativeExtrasConcat(t *testing.T) {
-	first := AttachAnthropicStreamEvent(nil, "content_block_start", json.RawMessage(`{"index":0}`))
-	AttachAnthropicContentBlocks(first, []json.RawMessage{json.RawMessage(`{"type":"server_tool_use"}`)})
-	second := AttachAnthropicStreamEvent(nil, "content_block_stop", json.RawMessage(`{"index":0}`))
-	AttachAnthropicContentBlocks(second, []json.RawMessage{json.RawMessage(`{"type":"text","text":"done"}`)})
+	first := anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_start", json.RawMessage(`{"index":0}`))
+	anthropicbase.AttachAnthropicContentBlocks(first, []json.RawMessage{
+		json.RawMessage(`{"type":"server_tool_use"}`),
+		json.RawMessage(`{"type":"text","text":"done"}`),
+	})
+	second := anthropicbase.AttachAnthropicStreamEvent(nil, "content_block_stop", json.RawMessage(`{"index":0}`))
 
 	merged, err := schema.ConcatMessages([]*schema.Message{first, second})
 	if err != nil {
 		t.Fatalf("ConcatMessages() error = %v", err)
 	}
-	if events := AnthropicStreamEventsFromMessage(merged); len(events) != 2 || events[0].Event != "content_block_start" || events[1].Event != "content_block_stop" {
-		t.Fatalf("stream events = %+v, want ordered start/stop", events)
+	if events := anthropicbase.AnthropicStreamEventsFromMessage(merged); len(events) != 0 {
+		t.Fatalf("transport-only stream events remained after concat: %+v", events)
 	}
-	if blocks := AnthropicContentBlocksFromMessage(merged); len(blocks) != 2 {
+	if blocks := anthropicbase.AnthropicContentBlocksFromMessage(merged); len(blocks) != 2 {
 		t.Fatalf("content blocks = %d, want 2", len(blocks))
 	}
 }
 
+func TestProtocolStateRejectsUnregisteredDialect(t *testing.T) {
+	msg := &schema.Message{Role: schema.Assistant}
+	provider.AttachMessageProtocolState(msg, &provider.ProtocolState{Envelopes: []provider.NativeEnvelope{{
+		Dialect: provider.ProtocolDialect("unregistered-fixture"), Scope: provider.NativeScopeMessageHistory,
+		Kind: provider.NativeKindContentBlock, Raw: json.RawMessage(`{"type":"fixture"}`),
+	}}})
+	err := provider.FoldMessageProtocolState(msg)
+	if err == nil || !strings.Contains(err.Error(), "no registered codec") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestMessageCarrierRejectsRequestScope(t *testing.T) {
+	msg := &schema.Message{Role: schema.Assistant}
+	provider.AttachMessageProtocolState(msg, &provider.ProtocolState{Envelopes: []provider.NativeEnvelope{{
+		Dialect: provider.ProtocolDialectAnthropic, Scope: provider.NativeScopeRequest,
+		Kind: provider.NativeKindToolDefinition, Raw: json.RawMessage(`{"type":"web_search_20250305","name":"web_search"}`),
+	}}})
+	if provider.ProtocolStateFromMessage(msg) == nil {
+		t.Fatal("fixture request state was not attached")
+	}
+	_, err := provider.MergeMessageProtocolStates(provider.ProtocolStateFromMessage(msg))
+	if err == nil || !strings.Contains(err.Error(), "request envelope") {
+		t.Fatalf("concat error = %v", err)
+	}
+}
+
+func TestAnthropicRelayStreamConcatFoldsTransportState(t *testing.T) {
+	fixtures := []struct {
+		event string
+		data  string
+	}{
+		{"message_start", `{"type":"message_start","message":{"id":"msg_1"}}`},
+		{"content_block_start", `{"type":"content_block_start","index":4,"content_block":{"type":"text","text":"","future":"preserved"}}`},
+		{"content_block_delta", `{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"hel"}}`},
+		{"content_block_delta", `{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"lo"}}`},
+		{"content_block_stop", `{"type":"content_block_stop","index":4}`},
+		{"message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`},
+		{"message_stop", `{"type":"message_stop"}`},
+	}
+	chunks := make([]*schema.Message, 0, len(fixtures))
+	for _, fixture := range fixtures {
+		chunks = append(chunks, anthropicbase.AttachAnthropicRelayStreamEvent(nil, fixture.event, json.RawMessage(fixture.data)))
+	}
+	merged, err := schema.ConcatMessages(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if events := anthropicbase.AnthropicRelayStreamEventsFromMessage(merged); len(events) != 0 {
+		t.Fatalf("transport events retained: %+v", events)
+	}
+	blocks := anthropicbase.AnthropicContentBlocksFromMessage(merged)
+	if len(blocks) != 1 {
+		t.Fatalf("history blocks = %d, want 1", len(blocks))
+	}
+	var block map[string]any
+	if err := json.Unmarshal(blocks[0], &block); err != nil {
+		t.Fatal(err)
+	}
+	if block["text"] != "hello" || block["future"] != "preserved" {
+		t.Fatalf("folded block = %#v", block)
+	}
+}
+
 func TestHasAnthropicNativeContentDoesNotExposeStoredSlice(t *testing.T) {
-	msg := AttachAnthropicContentBlocks(schema.UserMessage("history"), []json.RawMessage{json.RawMessage(`{"type":"document"}`)})
-	if !HasAnthropicNativeContent([]*schema.Message{msg}) {
+	msg := anthropicbase.AttachAnthropicContentBlocks(schema.UserMessage("history"), []json.RawMessage{json.RawMessage(`{"type":"document"}`)})
+	if !anthropicbase.HasAnthropicNativeContent([]*schema.Message{msg}) {
 		t.Fatal("HasAnthropicNativeContent() = false, want true")
 	}
-	blocks := AnthropicContentBlocksFromMessage(msg)
+	blocks := anthropicbase.AnthropicContentBlocksFromMessage(msg)
 	blocks[0][0] = '['
-	if got := string(AnthropicContentBlocksFromMessage(msg)[0]); got != `{"type":"document"}` {
+	if got := string(anthropicbase.AnthropicContentBlocksFromMessage(msg)[0]); got != `{"type":"document"}` {
 		t.Fatalf("stored block mutated through returned slice: %s", got)
 	}
 }
 
 func TestHasAnthropicNativeReasoning(t *testing.T) {
-	authentic := AttachReasoningParts(&schema.Message{Role: schema.Assistant},
-		NewReasoningOutputPart("inspect", "authentic-signature", nil))
-	if !HasAnthropicNativeReasoning([]*schema.Message{authentic}) {
+	authentic := provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant},
+		provider.NewReasoningOutputPart("inspect", "authentic-signature", nil))
+	if !anthropicbase.HasAnthropicNativeReasoning([]*schema.Message{authentic}) {
 		t.Fatal("authentic signature was not detected")
 	}
 
-	gateway := AttachReasoningParts(&schema.Message{Role: schema.Assistant},
-		NewReasoningOutputPart("inspect", GatewayThinkingSignature("inspect"), nil))
-	if HasAnthropicNativeReasoning([]*schema.Message{gateway}) {
+	gateway := provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant},
+		provider.NewReasoningOutputPart("inspect", provider.GatewayThinkingSignature("inspect"), nil))
+	if anthropicbase.HasAnthropicNativeReasoning([]*schema.Message{gateway}) {
 		t.Fatal("gateway placeholder signature was treated as native state")
 	}
 
-	encrypted := AttachReasoningParts(&schema.Message{Role: schema.Assistant},
-		NewEncryptedReasoningOutputPart("opaque", nil))
-	if !HasAnthropicNativeReasoning([]*schema.Message{encrypted}) {
+	encrypted := provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant},
+		provider.NewEncryptedReasoningOutputPart("opaque", nil))
+	if !anthropicbase.HasAnthropicNativeReasoning([]*schema.Message{encrypted}) {
 		t.Fatal("encrypted reasoning was not detected")
 	}
 }
