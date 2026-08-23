@@ -56,7 +56,8 @@ Provider registration rules:
 
 - implement the `provider.Provider` interface
 - register the factory with `provider.RegisterProviderFactory(...)`
-- register stable protocol-fidelity metadata with
+- register stable protocol-fidelity metadata with an explicit single dialect
+  and its atomic feature set through
   `provider.RegisterProviderTypeCapabilities(...)` when route candidate
   filtering must happen before provider construction or credential selection
 - add a blank import for the runtime provider package in `cmd/agw/main.go`, `cmd/agwd/main.go`, and `cmd/agwctl/cmd_gateway.go`; agwctl needs it because `validate`/`apply` check `provider_type` against the locally linked provider registry

@@ -73,10 +73,14 @@ func TestProviderCapabilityFeatureSetIsValidatedAndCloned(t *testing.T) {
 	const providerType = "test-protocol-feature-provider"
 	features := map[ProtocolFeature]struct{}{FeatureAnthropicBodyRelay: {}}
 	RegisterProviderTypeCapabilities(providerType, ProviderTypeCapabilities{
+		Dialect:          ProtocolDialectAnthropic,
 		ProtocolFeatures: features,
 	})
 	delete(features, FeatureAnthropicBodyRelay)
 	got := CapabilitiesForProviderType(providerType)
+	if got.Dialect != ProtocolDialectAnthropic {
+		t.Fatalf("dialect = %q, want anthropic", got.Dialect)
+	}
 	if !got.SupportsProtocolFeature(FeatureAnthropicBodyRelay) {
 		t.Fatal("registration retained caller-owned feature map")
 	}
@@ -93,6 +97,38 @@ func TestProviderCapabilityRejectsUnknownFeature(t *testing.T) {
 		}
 	}()
 	RegisterProviderTypeCapabilities("test-unknown-protocol-feature", ProviderTypeCapabilities{
+		Dialect:          ProtocolDialectAnthropic,
 		ProtocolFeatures: map[ProtocolFeature]struct{}{ProtocolFeature("unknown.feature"): {}},
+	})
+}
+
+func TestProviderCapabilityRequiresExplicitMatchingDialect(t *testing.T) {
+	const (
+		dialect ProtocolDialect = "test-explicit-dialect"
+		feature ProtocolFeature = "test-explicit-dialect.replay"
+	)
+	RegisterProtocolFeature(ProtocolFeatureDefinition{ID: feature, Dialect: dialect, Class: ProtocolFeatureClassRequirement})
+
+	t.Run("missing", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("feature registration without dialect did not panic")
+			}
+		}()
+		RegisterProviderTypeCapabilities("test-missing-explicit-dialect", ProviderTypeCapabilities{
+			ProtocolFeatures: map[ProtocolFeature]struct{}{feature: {}},
+		})
+	})
+
+	t.Run("mismatch", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("cross-dialect feature registration did not panic")
+			}
+		}()
+		RegisterProviderTypeCapabilities("test-mismatched-explicit-dialect", ProviderTypeCapabilities{
+			Dialect:          ProtocolDialectAnthropic,
+			ProtocolFeatures: map[ProtocolFeature]struct{}{feature: {}},
+		})
 	})
 }

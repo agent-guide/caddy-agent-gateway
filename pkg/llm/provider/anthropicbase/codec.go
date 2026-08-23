@@ -44,6 +44,10 @@ func (anthropicCodec) Capture(input provider.NativeCaptureInput) (provider.Nativ
 }
 
 func (anthropicCodec) Overlay(input provider.NativeOverlayInput) (json.RawMessage, error) {
+	// Baselines currently describe fields of the modeled object passed by the
+	// caller. Nested mutation fidelity therefore depends on callers capturing a
+	// content block as its own ModeledObject instead of treating a containing
+	// response array as one modeled field.
 	if input.Envelope.Dialect != provider.ProtocolDialectAnthropic {
 		return nil, fmt.Errorf("anthropic codec: wrong envelope dialect %q", input.Envelope.Dialect)
 	}
@@ -106,6 +110,8 @@ func (anthropicCodec) FoldStreamEvents(envelopes []provider.NativeEnvelope) ([]p
 		return nil, err
 	}
 	var folded []provider.NativeEnvelope
+	var historyBlocks []provider.NativeEnvelope
+	requiresNativeHistory := false
 	type openBlock struct {
 		location provider.NativeLocation
 		value    map[string]any
@@ -152,9 +158,16 @@ func (anthropicCodec) FoldStreamEvents(envelopes []provider.NativeEnvelope) ([]p
 			if err != nil {
 				return nil, fmt.Errorf("anthropic codec: encode folded block: %w", err)
 			}
-			folded = append(folded, provider.NativeEnvelope{Dialect: provider.ProtocolDialectAnthropic, Scope: provider.NativeScopeMessageHistory, Kind: provider.NativeKindContentBlock, Location: active.location, Raw: raw})
+			historyBlocks = append(historyBlocks, provider.NativeEnvelope{Dialect: provider.ProtocolDialectAnthropic, Scope: provider.NativeScopeMessageHistory, Kind: provider.NativeKindContentBlock, Location: active.location, Raw: raw})
+			var block ResponseBlock
+			if err := json.Unmarshal(raw, &block); err != nil || block.requiresNativeReplay() {
+				requiresNativeHistory = true
+			}
 			active = nil
 		}
+	}
+	if requiresNativeHistory {
+		folded = append(folded, historyBlocks...)
 	}
 	return folded, nil
 }
@@ -262,7 +275,11 @@ func (anthropicCodec) ValidateOrder(envelopes []provider.NativeEnvelope) error {
 		case "error":
 			return fmt.Errorf("anthropic codec: upstream error event cannot become history")
 		default:
-			return fmt.Errorf("anthropic codec: unsupported stream event %q", event)
+			if !started {
+				return fmt.Errorf("anthropic codec: unsupported pre-message stream event %q", event)
+			}
+			// Unknown message-level events are retained on the downstream relay but
+			// do not contribute to replayable message history.
 		}
 	}
 	if active >= 0 {

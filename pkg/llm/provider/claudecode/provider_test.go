@@ -1271,6 +1271,14 @@ func TestStreamChatMapsCodexToolNamesForClaudeCode(t *testing.T) {
 	}
 	defer stream.Close()
 
+	relayChunk, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv relay chunk: %v", err)
+	}
+	relayEvents := anthropicbase.AnthropicRelayStreamEventsFromMessage(relayChunk)
+	if len(relayEvents) != 1 || relayEvents[0].Event != "content_block_start" || !strings.Contains(string(relayEvents[0].Data), `"name":"exec_command"`) {
+		t.Fatalf("relay events = %+v, want restored exec_command", relayEvents)
+	}
 	msg := recvNextGenericChunk(t, stream)
 	if len(reqBody.Tools) != 1 || reqBody.Tools[0].Name != "Bash" {
 		t.Fatalf("request tools = %+v, want Bash alias", reqBody.Tools)

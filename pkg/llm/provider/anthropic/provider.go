@@ -46,6 +46,7 @@ const (
 func init() {
 	provider.RegisterProviderFactory("anthropic", New)
 	provider.RegisterProviderTypeCapabilities("anthropic", provider.ProviderTypeCapabilities{
+		Dialect: provider.ProtocolDialectAnthropic,
 		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{
 			provider.FeatureAnthropicReasoningReplay: {},
 			provider.FeatureAnthropicBodyRelay:       {},

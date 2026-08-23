@@ -57,4 +57,4 @@ func (e *RequirementGapsError) Error() string {
 	return fmt.Sprintf("model target %q has no eligible bindings; missing protocol features: %s", e.Target, strings.Join(names, ", "))
 }
 
-func (*RequirementGapsError) StatusCode() int { return http.StatusBadGateway }
+func (*RequirementGapsError) StatusCode() int { return http.StatusNotImplemented }

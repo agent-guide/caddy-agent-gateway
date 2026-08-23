@@ -165,6 +165,7 @@ func TestSecondDialectUsesGenericProtocolExtensionPoints(t *testing.T) {
 		ID: fixtureRelayFeature, Dialect: fixtureDialect, Class: provider.ProtocolFeatureClassModeSelection,
 	})
 	provider.RegisterProviderTypeCapabilities("fixture-raw", provider.ProviderTypeCapabilities{
+		Dialect:          fixtureDialect,
 		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{fixtureReplayFeature: {}, fixtureRelayFeature: {}},
 	})
 

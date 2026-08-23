@@ -17,8 +17,10 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/credential"
 	sched "github.com/agent-guide/agent-gateway/pkg/credential/scheduler"
 	"github.com/agent-guide/agent-gateway/pkg/dispatcher"
+	"github.com/agent-guide/agent-gateway/pkg/httpclient"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider/anthropicbase"
+	"github.com/agent-guide/agent-gateway/pkg/llm/provider/claudecode"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -65,6 +67,21 @@ type testStreamingProvider struct {
 type testRoutedExecutor struct {
 	chat   *provider.ChatExecution
 	stream *provider.StreamExecution
+}
+
+type testResolvedProvider struct {
+	provider.Provider
+	candidate provider.ServedCandidate
+}
+
+func (p *testResolvedProvider) ExecuteChat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatExecution, error) {
+	resp, err := p.Provider.Chat(ctx, req)
+	return &provider.ChatExecution{Response: resp, Resolved: provider.ResolvedExecution{Candidate: p.candidate}}, err
+}
+
+func (p *testResolvedProvider) ExecuteStreamChat(ctx context.Context, req *provider.ChatRequest) (*provider.StreamExecution, error) {
+	stream, err := p.Provider.StreamChat(ctx, req)
+	return &provider.StreamExecution{Stream: stream, Resolved: provider.ResolvedExecution{Candidate: p.candidate}}, err
 }
 
 func (p *testRoutedExecutor) ExecuteChat(context.Context, *provider.ChatRequest) (*provider.ChatExecution, error) {
@@ -488,6 +505,77 @@ func TestServeLLMApiReturnsHTTPErrorForInvalidFirstRelayEvent(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "overlaps active block") {
 		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestServeLLMApiRestoresClaudeCodeToolNameInNativeRelay(t *testing.T) {
+	var upstreamToolName string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+			return
+		}
+		if len(request.Tools) > 0 {
+			upstreamToolName = request.Tools[0].Name
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_upstream\",\"model\":\"upstream-model\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n")
+		_, _ = io.WriteString(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{}}}\n\n")
+		_, _ = io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}}\n\n")
+		_, _ = io.WriteString(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		_, _ = io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":1}}\n\n")
+		_, _ = io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	base, err := claudecode.New(provider.ProviderConfig{
+		Id: "claudecode", ProviderType: "claudecode", BaseURL: server.URL, APIKey: "fixture",
+		Options: map[string]any{"compact": "codex"},
+		Network: httpclient.NetworkConfig{RequestTimeoutSeconds: 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prov := &testResolvedProvider{Provider: base, candidate: provider.ServedCandidate{
+		Dialect:  provider.ProtocolDialectAnthropic,
+		Features: map[provider.ProtocolFeature]struct{}{provider.FeatureAnthropicStreamRelay: {}},
+	}}
+	handler := NewHandler(ClaudeCodeProfile())
+	span := &recordingInteractionSpan{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"client-model","max_tokens":16,"stream":true,
+		"messages":[{"role":"user","content":"run pwd"}],
+		"tools":[{"name":"exec_command","description":"run command","input_schema":{"type":"object"}}]
+	}`))
+	req = req.WithContext(usage.ContextWithSpan(req.Context(), span))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamToolName != "Bash" {
+		t.Fatalf("upstream tool name = %q, want Bash", upstreamToolName)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"name":"exec_command"`) || strings.Contains(body, `"name":"Bash"`) {
+		t.Fatalf("relayed body did not restore tool name: %s", body)
+	}
+	if len(span.exts) == 0 {
+		t.Fatal("relay tool metrics were not recorded")
+	}
+	toolExtension, ok := span.exts[len(span.exts)-1].(usage.LLMExtension)
+	if !ok || toolExtension.ToolCallCount == nil || *toolExtension.ToolCallCount != 1 || !slices.Contains(toolExtension.ToolNames, "exec_command") {
+		t.Fatalf("relay tool extension = %#v", span.exts[len(span.exts)-1])
 	}
 }
 

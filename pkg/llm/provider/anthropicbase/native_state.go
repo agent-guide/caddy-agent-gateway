@@ -2,6 +2,7 @@ package anthropicbase
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
@@ -80,6 +81,50 @@ func RewriteAnthropicContentToolNames(msg *schema.Message, names map[string]stri
 	if changed {
 		provider.AttachMessageProtocolState(msg, state)
 	}
+}
+
+// RewriteAnthropicRelayToolNames restores client-visible tool names in the raw
+// stream lifecycle used by same-dialect relay. The relay envelope is the wire
+// authority, so updating only the generic ToolCalls projection is insufficient.
+func RewriteAnthropicRelayToolNames(msg *schema.Message, names map[string]string) error {
+	if msg == nil || len(names) == 0 {
+		return nil
+	}
+	state := provider.ProtocolStateFromMessage(msg)
+	if state == nil {
+		return nil
+	}
+	changed := false
+	for i := range state.Envelopes {
+		envelope := &state.Envelopes[i]
+		if envelope.Dialect != provider.ProtocolDialectAnthropic || envelope.Scope != provider.NativeScopeStreamEvent || envelope.Kind != provider.NativeKindStreamEvent || envelope.Location.Event != "content_block_start" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal(envelope.Raw, &event); err != nil {
+			return fmt.Errorf("decode anthropic relay content_block_start: %w", err)
+		}
+		contentBlock, _ := event["content_block"].(map[string]any)
+		if contentBlock["type"] != "tool_use" {
+			continue
+		}
+		name, _ := contentBlock["name"].(string)
+		replacement, ok := names[name]
+		if !ok {
+			continue
+		}
+		contentBlock["name"] = replacement
+		updated, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("encode anthropic relay content_block_start: %w", err)
+		}
+		envelope.Raw = updated
+		changed = true
+	}
+	if changed {
+		provider.AttachMessageProtocolState(msg, state)
+	}
+	return nil
 }
 
 func AttachAnthropicStreamEvent(msg *schema.Message, event string, data json.RawMessage) *schema.Message {

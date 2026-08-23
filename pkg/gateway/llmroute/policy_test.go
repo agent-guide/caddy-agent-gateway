@@ -68,6 +68,7 @@ func TestCredentialTypeOrderDefaultsToAPIKeyThenOAuthToken(t *testing.T) {
 
 func TestResolveTargetFiltersProtocolFeatureCapability(t *testing.T) {
 	provider.RegisterProviderTypeCapabilities("native-test", provider.ProviderTypeCapabilities{
+		Dialect: provider.ProtocolDialectAnthropic,
 		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{
 			provider.FeatureAnthropicNativeResponse: {}, provider.FeatureAnthropicNativeHistoryReplay: {},
 		},
@@ -162,6 +163,7 @@ func TestLogicalModelNoEligibleBindingsNamesRequirements(t *testing.T) {
 
 func TestDirectProviderUsesAtomicReasoningCapability(t *testing.T) {
 	provider.RegisterProviderTypeCapabilities("reasoning-test", provider.ProviderTypeCapabilities{
+		Dialect:          provider.ProtocolDialectAnthropic,
 		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{provider.FeatureAnthropicReasoningReplay: {}},
 	})
 	route := LLMRoute{

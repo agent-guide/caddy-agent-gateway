@@ -65,6 +65,7 @@ var defaultClaudeCodeFingerprintHeaders = map[string]string{
 func init() {
 	provider.RegisterProviderFactory("claudecode", New)
 	provider.RegisterProviderTypeCapabilities("claudecode", provider.ProviderTypeCapabilities{
+		Dialect: provider.ProtocolDialectAnthropic,
 		ProtocolFeatures: map[provider.ProtocolFeature]struct{}{
 			provider.FeatureAnthropicServerToolRequest:   {},
 			provider.FeatureAnthropicNativeResponse:      {},
@@ -236,6 +237,10 @@ func (p *Provider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*
 				return
 			}
 			restoreClaudeCodeToolNames(msg, toolNames)
+			if err := anthropicbase.RewriteAnthropicRelayToolNames(msg, toolNames); err != nil {
+				sw.Send(nil, fmt.Errorf("claudecode: restore relay tool names: %w", err))
+				return
+			}
 			sw.Send(msg, nil)
 		}
 	}()

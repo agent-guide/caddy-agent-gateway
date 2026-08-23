@@ -83,10 +83,12 @@ type anthropicStreamEncoder struct {
 	lifecycle responseLifecycle
 	options   streamEncoderOptions
 
-	opened        bool
-	started       bool
-	ended         bool
-	relayComplete bool
+	opened                      bool
+	started                     bool
+	ended                       bool
+	relayComplete               bool
+	relayGenericContentObserved bool
+	relayNativeContentObserved  bool
 
 	nextBlockIndex int
 	activeKind     string
@@ -102,14 +104,16 @@ type anthropicStreamEncoder struct {
 	toolCallIDs        map[string]struct{}
 	deferredText       strings.Builder
 
-	stopReason      string
-	inputTokens     int
-	outputTokens    int
-	cachedTokens    int
-	reasoningTokens int
-	usageObserved   bool
-	usageFinalized  bool
-	toolNames       map[string]struct{}
+	stopReason       string
+	uncachedTokens   int
+	cacheWriteTokens int
+	inputTokens      int
+	outputTokens     int
+	cachedTokens     int
+	reasoningTokens  int
+	usageObserved    bool
+	usageFinalized   bool
+	toolNames        map[string]struct{}
 }
 
 func newAnthropicStreamEncoder(ctx context.Context, options streamEncoderOptions, sink streamEventSink, lifecycle responseLifecycle) *anthropicStreamEncoder {
@@ -159,6 +163,8 @@ func (e *anthropicStreamEncoder) Accept(event providerStreamEvent) error {
 		err = e.acceptNative(*event.Native)
 	} else if e.options.Mode != streamModeNativeRelay {
 		err = e.acceptGeneric(event.Generic)
+	} else if hasGenericStreamContent(event.Generic) {
+		e.relayGenericContentObserved = true
 	}
 	if err == nil || e.ended {
 		return err
@@ -182,6 +188,9 @@ func (e *anthropicStreamEncoder) Finish() error {
 	if e.options.Mode == streamModeNativeRelay {
 		if !e.started || !e.relayComplete || e.activeKind != "" {
 			return e.fail(fmt.Errorf("native relay ended before a complete message lifecycle"), "invalid_state")
+		}
+		if e.relayGenericContentObserved && !e.relayNativeContentObserved {
+			return e.fail(fmt.Errorf("native relay omitted content carried by the generic projection"), "invalid_state")
 		}
 		e.ended = true
 		e.observeUsage()
@@ -409,7 +418,11 @@ func (e *anthropicStreamEncoder) acceptRelayNative(event anthropicbase.Anthropic
 		if payload.ContentBlock.Type == "tool_use" && (payload.ContentBlock.ID == "" || payload.ContentBlock.Name == "") {
 			return fmt.Errorf("native relay tool_use block is missing id or name")
 		}
+		if payload.ContentBlock.Type == "tool_use" {
+			e.toolNames[payload.ContentBlock.Name] = struct{}{}
+		}
 		e.activeKind, e.activeIndex = "native_block", index
+		e.relayNativeContentObserved = true
 		return e.emitEvent(anthropicStreamEvent{Event: event.Event, Data: append(json.RawMessage(nil), event.Data...)})
 	case "content_block_delta", "content_block_stop":
 		index, ok := anthropicSSEEventIndex(event.Data)
@@ -448,6 +461,13 @@ func (e *anthropicStreamEncoder) acceptRelayNative(event anthropicbase.Anthropic
 	}
 }
 
+func hasGenericStreamContent(chunk *schema.Message) bool {
+	if chunk == nil {
+		return false
+	}
+	return chunk.Content != "" || chunk.ReasoningContent != "" || len(chunk.ToolCalls) > 0 || len(provider.ReasoningPartsFromMessage(chunk)) > 0
+}
+
 func rewriteNativeMessageStart(data json.RawMessage, model string) (json.RawMessage, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -469,16 +489,19 @@ func (e *anthropicStreamEncoder) observeNativeMessageStart(data json.RawMessage)
 	var payload struct {
 		Message struct {
 			Usage struct {
-				InputTokens  int `json:"input_tokens"`
-				OutputTokens int `json:"output_tokens"`
-				CacheRead    int `json:"cache_read_input_tokens"`
+				InputTokens   int `json:"input_tokens"`
+				OutputTokens  int `json:"output_tokens"`
+				CacheCreation int `json:"cache_creation_input_tokens"`
+				CacheRead     int `json:"cache_read_input_tokens"`
 			} `json:"usage"`
 		} `json:"message"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return err
 	}
-	e.inputTokens = payload.Message.Usage.InputTokens
+	e.uncachedTokens = payload.Message.Usage.InputTokens
+	e.cacheWriteTokens = payload.Message.Usage.CacheCreation
+	e.inputTokens = e.uncachedTokens + e.cacheWriteTokens + payload.Message.Usage.CacheRead
 	e.outputTokens = payload.Message.Usage.OutputTokens
 	e.cachedTokens = payload.Message.Usage.CacheRead
 	e.usageObserved = true
@@ -491,10 +514,10 @@ func (e *anthropicStreamEncoder) acceptNativeMessageDelta(data json.RawMessage) 
 			StopReason string `json:"stop_reason"`
 		} `json:"delta"`
 		Usage struct {
-			InputTokens   int `json:"input_tokens"`
-			OutputTokens  int `json:"output_tokens"`
-			CacheCreation int `json:"cache_creation_input_tokens"`
-			CacheRead     int `json:"cache_read_input_tokens"`
+			InputTokens   *int `json:"input_tokens"`
+			OutputTokens  *int `json:"output_tokens"`
+			CacheCreation *int `json:"cache_creation_input_tokens"`
+			CacheRead     *int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
@@ -503,10 +526,20 @@ func (e *anthropicStreamEncoder) acceptNativeMessageDelta(data json.RawMessage) 
 	if payload.Delta.StopReason != "" {
 		e.stopReason = mapAnthropicStopReason(payload.Delta.StopReason)
 	}
-	if payload.Usage.InputTokens != 0 || payload.Usage.OutputTokens != 0 || payload.Usage.CacheCreation != 0 || payload.Usage.CacheRead != 0 {
-		e.inputTokens = payload.Usage.InputTokens
-		e.outputTokens = payload.Usage.OutputTokens
-		e.cachedTokens = payload.Usage.CacheRead
+	if payload.Usage.InputTokens != nil || payload.Usage.OutputTokens != nil || payload.Usage.CacheCreation != nil || payload.Usage.CacheRead != nil {
+		if payload.Usage.InputTokens != nil {
+			e.uncachedTokens = *payload.Usage.InputTokens
+		}
+		if payload.Usage.CacheCreation != nil {
+			e.cacheWriteTokens = *payload.Usage.CacheCreation
+		}
+		if payload.Usage.CacheRead != nil {
+			e.cachedTokens = *payload.Usage.CacheRead
+		}
+		if payload.Usage.OutputTokens != nil {
+			e.outputTokens = *payload.Usage.OutputTokens
+		}
+		e.inputTokens = e.uncachedTokens + e.cacheWriteTokens + e.cachedTokens
 		e.usageObserved = true
 		e.usageFinalized = true
 	}
@@ -859,6 +892,11 @@ func (e *anthropicStreamEncoder) observeChunkMeta(chunk *schema.Message) {
 	}
 	if observed := provider.UsageFromMessage(chunk); observed.InputTokens != 0 || observed.OutputTokens != 0 || observed.CachedTokens != 0 || observed.ReasoningTokens != 0 {
 		e.inputTokens = observed.InputTokens
+		e.uncachedTokens = observed.InputTokens - observed.CachedTokens
+		if e.uncachedTokens < 0 {
+			e.uncachedTokens = 0
+		}
+		e.cacheWriteTokens = 0
 		e.outputTokens = observed.OutputTokens
 		e.cachedTokens = observed.CachedTokens
 		e.reasoningTokens = observed.ReasoningTokens

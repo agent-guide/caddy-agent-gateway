@@ -94,6 +94,27 @@ func TestAnthropicRelayStreamConcatFoldsTransportState(t *testing.T) {
 	}
 }
 
+func TestPlainTextRelayConcatDoesNotAttachNativeHistory(t *testing.T) {
+	chunks := []*schema.Message{
+		anthropicbase.AttachAnthropicRelayStreamEvent(nil, "message_start", json.RawMessage(`{"type":"message_start","message":{"id":"msg_1"}}`)),
+		anthropicbase.AttachAnthropicRelayStreamEvent(nil, "content_block_start", json.RawMessage(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)),
+		schema.AssistantMessage("hello", nil),
+		anthropicbase.AttachAnthropicRelayStreamEvent(nil, "content_block_delta", json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`)),
+		anthropicbase.AttachAnthropicRelayStreamEvent(nil, "content_block_stop", json.RawMessage(`{"type":"content_block_stop","index":0}`)),
+		anthropicbase.AttachAnthropicRelayStreamEvent(nil, "message_stop", json.RawMessage(`{"type":"message_stop"}`)),
+	}
+	merged, err := schema.ConcatMessages(chunks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.Content != "hello" {
+		t.Fatalf("content = %q, want hello", merged.Content)
+	}
+	if state := provider.ProtocolStateFromMessage(merged); state != nil {
+		t.Fatalf("plain text concat retained native state: %+v", state)
+	}
+}
+
 func TestHasAnthropicNativeContentDoesNotExposeStoredSlice(t *testing.T) {
 	msg := anthropicbase.AttachAnthropicContentBlocks(schema.UserMessage("history"), []json.RawMessage{json.RawMessage(`{"type":"document"}`)})
 	if !anthropicbase.HasAnthropicNativeContent([]*schema.Message{msg}) {

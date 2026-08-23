@@ -192,6 +192,40 @@ func TestStreamEncoderRelaysNativeLifecycleWithoutReindexing(t *testing.T) {
 			t.Fatalf("event %d = %s, want %s", i, sink.events[i].Event, inputs[i].Event)
 		}
 	}
+	var final usage.LLMExtension
+	for _, extension := range span.exts {
+		if typed, ok := extension.(usage.LLMExtension); ok && typed.ResponseOutcome == "completed" {
+			final = typed
+		}
+	}
+	if final.InputTokens == nil || *final.InputTokens != 19 || final.OutputTokens == nil || *final.OutputTokens != 7 || final.CachedTokens == nil || *final.CachedTokens != 5 {
+		t.Fatalf("relay usage = %+v, want input=19 output=7 cached=5", final)
+	}
+}
+
+func TestStreamEncoderRejectsRelayThatDropsGenericContent(t *testing.T) {
+	sink := &memoryStreamSink{}
+	span := &recordingInteractionSpan{}
+	lifecycle := newSpanResponseLifecycle(span, "stream")
+	encoder := newAnthropicStreamEncoder(t.Context(), streamEncoderOptions{Model: "client-model", Mode: streamModeNativeRelay}, sink, lifecycle)
+	if err := encoder.Open(); err != nil {
+		t.Fatal(err)
+	}
+	start := anthropicbase.AnthropicStreamEvent{Event: "message_start", Data: json.RawMessage(`{"type":"message_start","message":{"id":"msg_1","usage":{}}}`)}
+	stop := anthropicbase.AnthropicStreamEvent{Event: "message_stop", Data: json.RawMessage(`{"type":"message_stop"}`)}
+	if err := encoder.Accept(providerStreamEvent{Native: &start}); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Accept(providerStreamEvent{Generic: schema.AssistantMessage("silently dropped", nil)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Accept(providerStreamEvent{Native: &stop}); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Finish(); err == nil || !strings.Contains(err.Error(), "omitted content") {
+		t.Fatalf("Finish() error = %v, want relay projection mismatch", err)
+	}
+	assertLastResponseOutcome(t, span, "invalid_state")
 }
 
 func TestStreamEncoderConcurrentCancelAndEOFHasOneTerminalOutcome(t *testing.T) {

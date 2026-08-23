@@ -28,6 +28,7 @@ const ProtocolDialectAnthropic ProtocolDialect = "anthropic"
 // ProviderTypeCapabilities describes protocol-level fidelity that is stable
 // for every instance of one registered provider type.
 type ProviderTypeCapabilities struct {
+	Dialect          ProtocolDialect
 	ProtocolFeatures map[ProtocolFeature]struct{}
 }
 

@@ -118,15 +118,8 @@ func resolvedExecution(clientModel string, attempt *resolvedAttempt) provider.Re
 		return provider.ResolvedExecution{}
 	}
 	typeCapabilities := provider.CapabilitiesForProviderType(attempt.target.ProviderType)
-	dialect := provider.ProtocolDialect("")
-	for feature := range typeCapabilities.ProtocolFeatures {
-		definition, err := provider.ProtocolFeatureDefinitionFor(feature)
-		if err == nil && (dialect == "" || dialect == definition.Dialect) {
-			dialect = definition.Dialect
-		}
-	}
 	resolved := provider.ResolvedExecution{Candidate: provider.ServedCandidate{
-		Dialect: dialect, ProviderType: attempt.target.ProviderType, ProviderID: attempt.target.ProviderID,
+		Dialect: typeCapabilities.Dialect, ProviderType: attempt.target.ProviderType, ProviderID: attempt.target.ProviderID,
 		LogicalModel: attempt.target.LogicalModel, ClientModel: clientModel, UpstreamModel: attempt.target.UpstreamModel,
 		Features: typeCapabilities.ProtocolFeatures,
 	}, Attribution: provider.AttemptAttribution{CredentialSource: "static"}}

@@ -101,6 +101,9 @@ func ProtocolStateFromMessage(msg *schema.Message) *ProtocolState {
 		return nil
 	}
 	state := ProtocolState(stored)
+	if len(state.Envelopes) == 0 && state.Requirements.Empty() {
+		return nil
+	}
 	return CloneProtocolState(&state)
 }
 
@@ -185,6 +188,9 @@ func MergeMessageProtocolStates(states ...*ProtocolState) (*ProtocolState, error
 			return nil, err
 		}
 		merged.Envelopes = folded
+	}
+	if len(merged.Envelopes) == 0 {
+		return nil, nil
 	}
 	return merged, nil
 }

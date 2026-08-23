@@ -85,6 +85,45 @@ func TestCodecFoldsCompleteStreamIntoReplayableHistory(t *testing.T) {
 	}
 }
 
+func TestCodecDoesNotPinPlainTextStreamToAnthropicHistory(t *testing.T) {
+	folded, err := (anthropicCodec{}).FoldStreamEvents([]provider.NativeEnvelope{
+		streamEnvelope("message_start", 0, `{"type":"message_start","message":{"id":"msg_1"}}`),
+		streamEnvelope("content_block_start", 0, `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		streamEnvelope("content_block_delta", 0, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`),
+		streamEnvelope("content_block_stop", 0, `{"type":"content_block_stop","index":0}`),
+		streamEnvelope("message_stop", 0, `{"type":"message_stop"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folded) != 0 {
+		t.Fatalf("plain text folded state = %+v, want no native history", folded)
+	}
+}
+
+func TestCodecIgnoresUnknownMessageEventInsideValidLifecycle(t *testing.T) {
+	folded, err := (anthropicCodec{}).FoldStreamEvents([]provider.NativeEnvelope{
+		streamEnvelope("message_start", 0, `{"type":"message_start","message":{"id":"msg_1"}}`),
+		streamEnvelope("future_message_metadata", 0, `{"type":"future_message_metadata","opaque":true}`),
+		streamEnvelope("message_stop", 0, `{"type":"message_stop"}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folded) != 0 {
+		t.Fatalf("unknown message metadata folded into history: %+v", folded)
+	}
+}
+
+func TestCodecRejectsUnknownEventBeforeMessageStart(t *testing.T) {
+	_, err := (anthropicCodec{}).FoldStreamEvents([]provider.NativeEnvelope{
+		streamEnvelope("future_message_metadata", 0, `{"type":"future_message_metadata"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "pre-message") {
+		t.Fatalf("error = %v, want controlled pre-message rejection", err)
+	}
+}
+
 func TestCodecRejectsOverlappingBlocks(t *testing.T) {
 	_, err := (anthropicCodec{}).FoldStreamEvents([]provider.NativeEnvelope{
 		streamEnvelope("message_start", 0, `{"type":"message_start","message":{"id":"msg_1"}}`),

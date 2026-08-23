@@ -76,10 +76,16 @@ func ProtocolFeatureDefinitionFor(id ProtocolFeature) (ProtocolFeatureDefinition
 }
 
 func validateProtocolFeatureSupport(capabilities ProviderTypeCapabilities) error {
+	if len(capabilities.ProtocolFeatures) > 0 && capabilities.Dialect == "" {
+		return fmt.Errorf("provider: protocol features require an explicit dialect")
+	}
 	for feature := range capabilities.ProtocolFeatures {
 		definition, err := ProtocolFeatureDefinitionFor(feature)
 		if err != nil {
 			return err
+		}
+		if definition.Dialect != capabilities.Dialect {
+			return fmt.Errorf("provider: protocol feature %q belongs to dialect %q, not provider dialect %q", feature, definition.Dialect, capabilities.Dialect)
 		}
 		for _, dependency := range definition.DependsOn {
 			if !capabilities.SupportsProtocolFeature(dependency) {

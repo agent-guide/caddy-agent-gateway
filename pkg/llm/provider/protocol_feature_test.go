@@ -45,6 +45,7 @@ func TestProviderCapabilitiesValidateFeatureDependencies(t *testing.T) {
 		}
 	}()
 	RegisterProviderTypeCapabilities("test-missing-feature-dependency", ProviderTypeCapabilities{
+		Dialect:          ProtocolDialectAnthropic,
 		ProtocolFeatures: map[ProtocolFeature]struct{}{FeatureAnthropicNativeHistoryReplay: {}},
 	})
 }
