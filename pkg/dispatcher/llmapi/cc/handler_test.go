@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/anthropic"
+	"github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/anthropicmsg"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/cloudwego/eino/schema"
 )
@@ -86,14 +86,14 @@ func TestHandlerName(t *testing.T) {
 
 func TestServeLLMApiCountTokensReturnsEstimate(t *testing.T) {
 	handler := NewHandler(nil)
-	body, err := json.Marshal(anthropic.MessagesRequest{
+	body, err := json.Marshal(anthropicmsg.MessagesRequest{
 		Model:     "claude-sonnet-4-5",
 		MaxTokens: 16,
-		Messages: []anthropic.MessageItem{{
+		Messages: []anthropicmsg.MessageItem{{
 			Role:    "user",
-			Content: anthropic.MessageContent{{Type: "text", Text: "hello"}},
+			Content: anthropicmsg.MessageContent{{Type: "text", Text: "hello"}},
 		}},
-		Tools: []anthropic.ToolDefinition{{
+		Tools: []anthropicmsg.ToolDefinition{{
 			Name:        "lookup",
 			Description: "Lookup data",
 		}},
@@ -141,13 +141,13 @@ func TestServeLLMApiStreamPassesThroughStatefulClaudeCodeToolUse(t *testing.T) {
 		}},
 	}
 
-	body, err := json.Marshal(anthropic.MessagesRequest{
+	body, err := json.Marshal(anthropicmsg.MessagesRequest{
 		Model:     "claude-sonnet-4-5",
 		MaxTokens: 16,
 		Stream:    true,
-		Messages: []anthropic.MessageItem{{
+		Messages: []anthropicmsg.MessageItem{{
 			Role:    "user",
-			Content: anthropic.MessageContent{{Type: "text", Text: "hello"}},
+			Content: anthropicmsg.MessageContent{{Type: "text", Text: "hello"}},
 		}},
 	})
 	if err != nil {

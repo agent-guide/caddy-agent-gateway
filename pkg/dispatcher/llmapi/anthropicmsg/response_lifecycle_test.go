@@ -1,4 +1,4 @@
-package anthropic
+package anthropicmsg
 
 import (
 	"errors"

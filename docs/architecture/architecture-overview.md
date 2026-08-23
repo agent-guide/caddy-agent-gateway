@@ -116,7 +116,12 @@ The HTTP handler is `http.handlers.agent_route_dispatcher`, and it loads LLM pro
 - `agent_route_dispatcher.llm_apis.anthropic`
 - `agent_route_dispatcher.llm_apis.cc`
 
-The `cc` handler is the Claude Code CLI-compatible ingress profile. It uses the Anthropic Messages wire format and keeps Claude Code-specific behavior out of the generic Anthropic handler and provider implementations.
+The `anthropic` and `cc` handlers are thin sibling ingress profiles over the
+shared `pkg/dispatcher/llmapi/anthropicmsg` Messages core. The core owns parsing,
+conversion, response lifecycle, and SSE content-block ordering. The `cc`
+profile's declared ingress difference is its local `count_tokens` estimate
+shim; provider authentication and Claude Code fingerprint shaping remain in the
+provider layer.
 
 MCP handling is enabled with the dispatcher-local `mcp` option instead of a separate HTTP handler module. ACP handling is enabled the same way with `acp`; it uses gateway-owned route endpoints for turns, permission decisions, route-scoped session listing, and transcript replay, then routes to `pkg/acp` instead of the LLM provider interface.
 

@@ -1,4 +1,4 @@
-package anthropic
+package anthropicmsg
 
 import (
 	"bytes"
@@ -157,7 +157,7 @@ func newTestCredentialScheduler(t *testing.T, mgr *credential.Manager) sched.Cre
 }
 
 func TestMatchLLMApiIncludesCountTokens(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
 
 	if !handler.MatchLLMApi(req) {
@@ -166,7 +166,7 @@ func TestMatchLLMApiIncludesCountTokens(t *testing.T) {
 }
 
 func TestPrepareLLMApiRequestRejectsInvalidClientToolSchema(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	for _, inputSchema := range []string{`"not-an-object"`, `{"type":"string"}`, `{"type":"object","properties":123}`} {
 		body := `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"broken","input_schema":` + inputSchema + `}]}`
 		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
@@ -196,7 +196,7 @@ func TestToInternalDoesNotSilentlyDropInvalidClientToolSchema(t *testing.T) {
 }
 
 func TestServeLLMApiCountTokensReturnsNotImplemented(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	body, err := json.Marshal(MessagesRequest{
 		Model:    "claude-sonnet-4-5",
 		Messages: []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "hello world"}}}},
@@ -242,7 +242,7 @@ func TestServeLLMApiMarksAnthropicStreamFailures(t *testing.T) {
 	}
 	scheduler := newTestCredentialScheduler(t, credMgr)
 	prov := &testCredentialMarkingProvider{base: baseProv, scheduler: scheduler, credID: "cred-anthropic-1"}
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 
 	body, err := json.Marshal(MessagesRequest{
 		Model:     "claude-sonnet-4-5",
@@ -295,7 +295,7 @@ func TestServeLLMApiMarksAnthropicStreamFailures(t *testing.T) {
 }
 
 func TestPrepareLLMApiRequestAcceptsSystemBlockArray(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 
 	body := []byte(`{
 		"model":"claude-sonnet-4-6",
@@ -331,7 +331,7 @@ func TestPrepareLLMApiRequestAcceptsSystemBlockArray(t *testing.T) {
 }
 
 func TestPrepareLLMApiRequestAcceptsStringSystemPrompt(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 
 	body := []byte(`{
 		"model":"claude-sonnet-4-6",
@@ -363,7 +363,7 @@ func TestPrepareLLMApiRequestAcceptsStringSystemPrompt(t *testing.T) {
 }
 
 func TestPrepareLLMApiRequestPreservesToolResultOrder(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 
 	body := []byte(`{
 		"model":"claude-sonnet-4-6",
@@ -398,7 +398,7 @@ func TestPrepareLLMApiRequestPreservesToolResultOrder(t *testing.T) {
 }
 
 func TestServeLLMApiStreamToolOnlyOmitsEmptyTextBlock(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "claudecode", ProviderType: "claudecode"},
 		chunks: []*schema.Message{{
@@ -456,7 +456,7 @@ func TestServeLLMApiStreamToolOnlyOmitsEmptyTextBlock(t *testing.T) {
 }
 
 func TestServeLLMApiStreamEmitsStatefulToolUse(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "codex", ProviderType: "codex"},
 		chunks: []*schema.Message{{
@@ -511,7 +511,7 @@ func TestServeLLMApiStreamEmitsStatefulToolUse(t *testing.T) {
 }
 
 func TestServeLLMApiStreamTextAfterToolUsesTextBlockIndex(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "codex", ProviderType: "codex"},
 		chunks: []*schema.Message{
@@ -571,7 +571,7 @@ data: {"index":1`) {
 }
 
 func TestServeLLMApiStreamAccumulatesFragmentedToolCall(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	idx0 := 0
 	// OpenAI-compatible providers (e.g. DeepSeek) stream one tool call as many
 	// fragments: id+name first, then argument deltas with only the index set.
@@ -642,7 +642,7 @@ func TestServeLLMApiStreamAccumulatesFragmentedToolCall(t *testing.T) {
 }
 
 func TestServeLLMApiStreamWaitsForToolIdentityBeforeStartingBlock(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	idx0 := 0
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "compat", ProviderType: "openai"},
@@ -862,7 +862,7 @@ func TestPrepareLLMApiRequestRequiresAnthropicNativeProvider(t *testing.T) {
 		"messages":[{"role":"assistant","content":[{"type":"text","text":"Result","citations":[{"url":"https://example.com"}]}]}]
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
-	_, requirements, err := NewHandler(nil).PrepareLLMApiRequest(req)
+	_, requirements, err := NewHandler(StandardProfile()).PrepareLLMApiRequest(req)
 	if err != nil {
 		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
 	}
@@ -877,7 +877,7 @@ func TestPrepareLLMApiRequestIgnoresNullUnmodeledContentFields(t *testing.T) {
 		"messages":[{"role":"assistant","content":[{"type":"text","text":"Result","citations":null}]}]
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
-	prepared, requirements, err := NewHandler(nil).PrepareLLMApiRequest(req)
+	prepared, requirements, err := NewHandler(StandardProfile()).PrepareLLMApiRequest(req)
 	if err != nil {
 		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
 	}
@@ -890,7 +890,7 @@ func TestPrepareLLMApiRequestIgnoresNullUnmodeledContentFields(t *testing.T) {
 }
 
 func TestServeLLMApiStreamsNativeServerToolEvents(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	start := json.RawMessage(`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}}`)
 	delta := json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"latest\"}"}}`)
 	stop := json.RawMessage(`{"type":"content_block_stop","index":0}`)
@@ -922,7 +922,7 @@ func TestServeLLMApiStreamsNativeServerToolEvents(t *testing.T) {
 }
 
 func TestServeLLMApiClosesGeneratedTextAndRemapsNativeBlockIndex(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	start := json.RawMessage(`{"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}}`)
 	delta := json.RawMessage(`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"latest\"}"}}`)
 	stop := json.RawMessage(`{"type":"content_block_stop","index":2}`)
@@ -1060,7 +1060,7 @@ func TestAnthropicConverterSynthesizesSignatureForFlatReasoning(t *testing.T) {
 }
 
 func TestServeLLMApiStreamsProviderReasoningAsThinkingBlock(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "zhipu", ProviderType: "zhipu"},
 		chunks: []*schema.Message{
@@ -1100,7 +1100,7 @@ func TestServeLLMApiStreamsProviderReasoningAsThinkingBlock(t *testing.T) {
 }
 
 func TestServeLLMApiStreamsStructuredReasoningWithoutChangingOpaqueState(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	index := 0
 	reasoningChunk := func(msg *schema.Message, parts ...schema.MessageOutputPart) *schema.Message {
 		return provider.AttachReasoningParts(msg, parts...)
@@ -1161,7 +1161,7 @@ func TestServeLLMApiStreamsStructuredReasoningWithoutChangingOpaqueState(t *test
 }
 
 func TestServeLLMApiDropsReasoningThatArrivesAfterText(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "chat-provider", ProviderType: "chat-provider"},
 		chunks: []*schema.Message{
@@ -1281,7 +1281,7 @@ func assertContentBlockDiscipline(t *testing.T, body string) {
 }
 
 func TestServeLLMApiStreamKeepsInterleavedToolFragmentsInOneBlock(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	idx0 := 0
 	// An upstream that interleaves text between tool-call fragments must still
 	// produce one tool_use block with one complete JSON input value.
@@ -1367,7 +1367,7 @@ func TestServeLLMApiStreamKeepsInterleavedToolFragmentsInOneBlock(t *testing.T) 
 }
 
 func TestServeLLMApiStreamSynthesizesMissingToolCallID(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	idx0 := 0
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "compatible", ProviderType: "openai"},
@@ -1410,7 +1410,7 @@ func TestServeLLMApiStreamSynthesizesMissingToolCallID(t *testing.T) {
 }
 
 func TestServeLLMApiStreamClosesCompleteToolBeforeFollowingText(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	idx0 := 0
 	prov := &testStreamingProvider{
 		cfg: provider.ProviderConfig{Id: "compatible", ProviderType: "openai"},
@@ -1463,7 +1463,7 @@ func TestPrepareLLMApiRequestRequiresNativeProviderForSignedReasoning(t *testing
 		]}]
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
-	prepared, requirements, err := NewHandler(nil).PrepareLLMApiRequest(req)
+	prepared, requirements, err := NewHandler(StandardProfile()).PrepareLLMApiRequest(req)
 	if err != nil {
 		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
 	}
@@ -1479,7 +1479,7 @@ func TestPrepareLLMApiRequestRequiresNativeProviderForSignedReasoning(t *testing
 }
 
 func TestServeLLMApiFailsClosedForUnmappableNativeStreamEvents(t *testing.T) {
-	handler := NewHandler(nil)
+	handler := NewHandler(StandardProfile())
 	// A native delta/stop whose upstream block was never started downstream has
 	// no index to point at; forwarding it would break the client's block map.
 	prov := &testStreamingProvider{

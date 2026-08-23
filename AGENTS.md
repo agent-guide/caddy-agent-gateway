@@ -116,13 +116,20 @@ stamps Agent identity on the interaction span. Subsystem detail:
   - Runtime package: `pkg/dispatcher/llmapi/cc/`
   - Caddy adapter: `caddy/dispatcher/llmapi/cc/`
 
+The `anthropic` and `cc` runtime packages are thin ingress profiles over the
+shared Anthropic Messages core in `pkg/dispatcher/llmapi/anthropicmsg/`. That
+core owns parsing, conversion, response lifecycle, and SSE block state.
+
 Responsibilities:
 
 - parse wire-format requests
 - convert HTTP payloads into `provider.ChatRequest`
 - convert provider responses back to protocol-specific JSON or SSE
 
-The `cc` handler is the Claude Code CLI-compatible Anthropic Messages profile. Keep Claude Code CLI-specific protocol shims in this handler rather than in generic providers.
+The `cc` handler is the Claude Code CLI-compatible Anthropic Messages profile.
+Its currently declared ingress difference is the local `count_tokens` estimate
+shim. Keep future Claude Code CLI-specific ingress validation/defaults in this
+profile rather than forking the shared Messages lifecycle.
 
 These modules are not standalone `http.handlers.*` modules. They are loaded by `agent_route_dispatcher`.
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	anthropicapi "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/anthropic"
+	"github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/anthropicmsg"
 	ccapi "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/cc"
 	openaiapi "github.com/agent-guide/agent-gateway/pkg/dispatcher/llmapi/openai"
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
@@ -246,14 +247,14 @@ func TestSanitizeResponsesRequestFiltersUnsupportedHostedToolsFromProtocolInputs
 
 	t.Run("anthropic messages", func(t *testing.T) {
 		handler := anthropicapi.NewHandler(nil)
-		body, err := json.Marshal(anthropicapi.MessagesRequest{
+		body, err := json.Marshal(anthropicmsg.MessagesRequest{
 			Model:     "claude-sonnet-4-5",
 			MaxTokens: 16,
-			Messages: []anthropicapi.MessageItem{{
+			Messages: []anthropicmsg.MessageItem{{
 				Role:    "user",
-				Content: anthropicapi.MessageContent{{Type: "text", Text: "hello"}},
+				Content: anthropicmsg.MessageContent{{Type: "text", Text: "hello"}},
 			}},
-			Tools: []anthropicapi.ToolDefinition{{
+			Tools: []anthropicmsg.ToolDefinition{{
 				Name:        "tool_search",
 				Description: "Hosted search",
 				InputSchema: json.RawMessage(`{"type":"object"}`),
@@ -285,14 +286,14 @@ func TestSanitizeResponsesRequestFiltersUnsupportedHostedToolsFromProtocolInputs
 
 	t.Run("cc messages", func(t *testing.T) {
 		handler := ccapi.NewHandler(nil)
-		body, err := json.Marshal(anthropicapi.MessagesRequest{
+		body, err := json.Marshal(anthropicmsg.MessagesRequest{
 			Model:     "claude-sonnet-4-5",
 			MaxTokens: 16,
-			Messages: []anthropicapi.MessageItem{{
+			Messages: []anthropicmsg.MessageItem{{
 				Role:    "user",
-				Content: anthropicapi.MessageContent{{Type: "text", Text: "hello"}},
+				Content: anthropicmsg.MessageContent{{Type: "text", Text: "hello"}},
 			}},
-			Tools: []anthropicapi.ToolDefinition{{
+			Tools: []anthropicmsg.ToolDefinition{{
 				Name:        "tool_search",
 				Description: "Hosted search",
 				InputSchema: json.RawMessage(`{"type":"object"}`),
