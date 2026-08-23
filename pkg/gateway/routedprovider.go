@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
@@ -47,7 +48,15 @@ var errManagedCredentialUnavailable = errors.New("managed credential unavailable
 
 func (p *RoutedProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*provider.ChatResponse, error) {
 	var out *provider.ChatResponse
-	err := p.executeWithFallback(ctx, req.Model, func(ctx context.Context, attempt *resolvedAttempt) error {
+	requirements := p.requestRequirements
+	if requestHasAnthropicNativeState(req) {
+		requirements = requirements.WithNativeDialect(provider.ProtocolDialectAnthropic)
+	}
+	if requestHasAnthropicReasoningState(req) {
+		requirements = requirements.WithReasoningDialect(provider.ProtocolDialectAnthropic)
+	}
+	p.logDialectAffinity(req.Model, requirements)
+	err := p.executeWithFallback(ctx, req.Model, requirements, func(ctx context.Context, attempt *resolvedAttempt) error {
 		cloned := *req
 		cloned.Model = attempt.target.UpstreamModel
 		resp, err := attempt.base.Chat(ctx, &cloned)
@@ -67,7 +76,15 @@ func (p *RoutedProvider) Chat(ctx context.Context, req *provider.ChatRequest) (*
 
 func (p *RoutedProvider) StreamChat(ctx context.Context, req *provider.ChatRequest) (*schema.StreamReader[*schema.Message], error) {
 	var out *schema.StreamReader[*schema.Message]
-	err := p.executeWithFallback(ctx, req.Model, func(ctx context.Context, attempt *resolvedAttempt) error {
+	requirements := p.requestRequirements
+	if requestHasAnthropicNativeState(req) {
+		requirements = requirements.WithNativeDialect(provider.ProtocolDialectAnthropic)
+	}
+	if requestHasAnthropicReasoningState(req) {
+		requirements = requirements.WithReasoningDialect(provider.ProtocolDialectAnthropic)
+	}
+	p.logDialectAffinity(req.Model, requirements)
+	err := p.executeWithFallback(ctx, req.Model, requirements, func(ctx context.Context, attempt *resolvedAttempt) error {
 		cloned := *req
 		cloned.Model = attempt.target.UpstreamModel
 		stream, err := attempt.base.StreamChat(ctx, &cloned)
@@ -81,9 +98,43 @@ func (p *RoutedProvider) StreamChat(ctx context.Context, req *provider.ChatReque
 	return out, err
 }
 
+func requestHasAnthropicNativeState(req *provider.ChatRequest) bool {
+	return req != nil && (provider.HasAnthropicServerTools(req.Options...) || provider.HasAnthropicNativeContent(req.Messages))
+}
+
+func requestHasAnthropicReasoningState(req *provider.ChatRequest) bool {
+	return req != nil && provider.HasAnthropicNativeReasoning(req.Messages)
+}
+
+func (p *RoutedProvider) logDialectAffinity(model string, requirements llmroutepkg.RequestRequirements) {
+	if p.logger == nil || len(requirements.RequiredNativeDialects) == 0 && len(requirements.RequiredReasoningDialects) == 0 {
+		return
+	}
+	native := dialectNames(requirements.RequiredNativeDialects)
+	reasoning := dialectNames(requirements.RequiredReasoningDialects)
+	fields := []zap.Field{
+		zap.String("model", model),
+		zap.Strings("required_native_dialects", native),
+		zap.Strings("required_reasoning_dialects", reasoning),
+	}
+	if p.route != nil {
+		fields = append(fields, zap.String("route_id", p.route.ID))
+	}
+	p.logger.Debug("request protocol state restricts provider fallback", fields...)
+}
+
+func dialectNames(dialects map[provider.ProtocolDialect]struct{}) []string {
+	names := make([]string, 0, len(dialects))
+	for dialect := range dialects {
+		names = append(names, string(dialect))
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (p *RoutedProvider) CreateResponses(ctx context.Context, req *provider.ResponsesRequest) (*provider.ResponsesResponse, error) {
 	var out *provider.ResponsesResponse
-	err := p.executeWithFallback(ctx, req.Model, func(ctx context.Context, attempt *resolvedAttempt) error {
+	err := p.executeWithFallback(ctx, req.Model, p.requestRequirements, func(ctx context.Context, attempt *resolvedAttempt) error {
 		base, ok := attempt.base.(provider.ResponsesProvider)
 		if !ok {
 			return statuserr.New(http.StatusNotImplemented, "responses api is not supported by this provider")
@@ -113,7 +164,7 @@ func (p *RoutedProvider) CreateResponses(ctx context.Context, req *provider.Resp
 
 func (p *RoutedProvider) StreamResponses(ctx context.Context, req *provider.ResponsesRequest) (*schema.StreamReader[*provider.ResponsesStreamEvent], error) {
 	var out *schema.StreamReader[*provider.ResponsesStreamEvent]
-	err := p.executeWithFallback(ctx, req.Model, func(ctx context.Context, attempt *resolvedAttempt) error {
+	err := p.executeWithFallback(ctx, req.Model, p.requestRequirements, func(ctx context.Context, attempt *resolvedAttempt) error {
 		base, ok := attempt.base.(provider.ResponsesProvider)
 		if !ok {
 			return statuserr.New(http.StatusNotImplemented, "responses api is not supported by this provider")
@@ -160,7 +211,7 @@ func recordProviderUsage(ctx context.Context, attempt *resolvedAttempt, tokens p
 }
 
 func (p *RoutedProvider) ListModels(ctx context.Context) ([]provider.ModelInfo, error) {
-	target, err := p.resolveTarget(ctx, "")
+	target, err := p.resolveTarget(ctx, "", p.requestRequirements)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +230,7 @@ func (p *RoutedProvider) Config() provider.ProviderConfig {
 	return provider.ProviderConfig{}
 }
 
-func (p *RoutedProvider) executeWithFallback(ctx context.Context, reqModel string, call func(context.Context, *resolvedAttempt) error) error {
+func (p *RoutedProvider) executeWithFallback(ctx context.Context, reqModel string, requirements llmroutepkg.RequestRequirements, call func(context.Context, *resolvedAttempt) error) error {
 	if p.route == nil {
 		return statuserr.New(http.StatusServiceUnavailable, "llm route is not configured")
 	}
@@ -202,7 +253,7 @@ func (p *RoutedProvider) executeWithFallback(ctx context.Context, reqModel strin
 	for {
 		var err error
 		if target == nil {
-			target, err = p.resolveTarget(ctx, reqModel, state.triedCandidates)
+			target, err = p.resolveTarget(ctx, reqModel, requirements, state.triedCandidates)
 			if err != nil {
 				if lastErr != nil {
 					return lastErr
@@ -266,8 +317,7 @@ func (p *RoutedProvider) advanceCandidate(state *executionState, target *llmrout
 	return true
 }
 
-func (p *RoutedProvider) resolveTarget(ctx context.Context, reqModel string, excluded ...map[string]struct{}) (*llmroutepkg.ResolvedTarget, error) {
-	req := p.requestRequirements
+func (p *RoutedProvider) resolveTarget(ctx context.Context, reqModel string, req llmroutepkg.RequestRequirements, excluded ...map[string]struct{}) (*llmroutepkg.ResolvedTarget, error) {
 	req.Model = reqModel
 	if len(excluded) > 0 {
 		req.ExcludedCandidates = excluded[0]

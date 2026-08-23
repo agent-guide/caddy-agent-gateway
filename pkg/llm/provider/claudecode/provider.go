@@ -64,6 +64,10 @@ var defaultClaudeCodeFingerprintHeaders = map[string]string{
 
 func init() {
 	provider.RegisterProviderFactory("claudecode", New)
+	provider.RegisterProviderTypeCapabilities("claudecode", provider.ProviderTypeCapabilities{
+		NativeDialects:    provider.NewProtocolDialectSet(provider.ProtocolDialectAnthropic),
+		ReasoningDialects: provider.NewProtocolDialectSet(provider.ProtocolDialectAnthropic),
+	})
 }
 
 type Provider struct {
@@ -579,6 +583,7 @@ func restoreClaudeCodeToolNames(msg *schema.Message, claudeToCodex map[string]st
 			msg.ToolCalls[i].Function.Name = codexName
 		}
 	}
+	provider.RewriteAnthropicContentToolNames(msg, claudeToCodex)
 }
 
 // requestEffort derives Claude's output_config.effort from the inbound reasoning

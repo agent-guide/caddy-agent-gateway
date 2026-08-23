@@ -22,7 +22,8 @@ func (c *Converter) ToInternal(req *MessagesRequest) *provider.ChatRequest {
 		msgs = append(msgs, schema.SystemMessage(systemText))
 	}
 	for _, m := range req.Messages {
-		msgs = append(msgs, convertMessageItem(m)...)
+		nativeBlocks := nativeContentBlocks(m.Content)
+		msgs = append(msgs, convertMessageItem(m, nativeBlocks)...)
 	}
 
 	var opts []einomodel.Option
@@ -40,7 +41,9 @@ func (c *Converter) ToInternal(req *MessagesRequest) *provider.ChatRequest {
 	}
 
 	if len(req.Tools) > 0 {
-		opts = append(opts, einomodel.WithTools(toolDefsToToolInfos(req.Tools)))
+		if tools := toolDefsToToolInfos(req.Tools); len(tools) > 0 {
+			opts = append(opts, einomodel.WithTools(tools))
+		}
 	}
 	if len(req.ToolChoice) > 0 {
 		if tc, names, ok := parseAnthropicToolChoice(req.ToolChoice); ok {
@@ -68,6 +71,16 @@ func (c *Converter) ToInternal(req *MessagesRequest) *provider.ChatRequest {
 // the provider can re-emit them on the upstream request.
 func chatExtraFields(req *MessagesRequest) *provider.ChatExtraFields {
 	extra := &provider.ChatExtraFields{}
+	preserveRawTools := toolsRequireRawAnthropicReplay(req.Tools) || toolChoiceRequiresRawAnthropicReplay(req.ToolChoice)
+	if preserveRawTools && len(req.Tools) > 0 {
+		extra.AnthropicTools = make([]json.RawMessage, 0, len(req.Tools))
+		for _, tool := range req.Tools {
+			extra.AnthropicTools = append(extra.AnthropicTools, tool.rawJSON())
+		}
+	}
+	if preserveRawTools && len(req.ToolChoice) > 0 {
+		extra.AnthropicToolChoice = append(json.RawMessage(nil), req.ToolChoice...)
+	}
 	if thinking := thinkingFields(req.Thinking); len(thinking) > 0 {
 		extra.Thinking = thinking
 	}
@@ -82,10 +95,47 @@ func chatExtraFields(req *MessagesRequest) *provider.ChatExtraFields {
 		parallel := !disabled
 		extra.ParallelToolCalls = &parallel
 	}
-	if len(extra.Thinking) == 0 && extra.ReasoningEffort == "" && len(extra.Metadata) == 0 && extra.ResponseFormat == nil && extra.ParallelToolCalls == nil {
+	if len(extra.Thinking) == 0 && extra.ReasoningEffort == "" && len(extra.Metadata) == 0 && extra.ResponseFormat == nil && extra.ParallelToolCalls == nil && len(extra.AnthropicTools) == 0 && len(extra.AnthropicToolChoice) == 0 {
 		return nil
 	}
 	return extra
+}
+
+func toolsRequireRawAnthropicReplay(tools []ToolDefinition) bool {
+	for _, tool := range tools {
+		if tool.isServerTool() || rawObjectHasNonNullUnknownFields(tool.raw,
+			"type", "name", "description", "input_schema") {
+			return true
+		}
+	}
+	return false
+}
+
+func toolChoiceRequiresRawAnthropicReplay(raw json.RawMessage) bool {
+	return rawObjectHasNonNullUnknownFields(raw, "type", "name", "disable_parallel_tool_use")
+}
+
+func rawObjectHasNonNullUnknownFields(raw json.RawMessage, known ...string) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return true
+	}
+	for _, field := range known {
+		delete(fields, field)
+	}
+	for _, value := range fields {
+		if !isJSONNull(value) {
+			return true
+		}
+	}
+	return false
+}
+
+func isJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
 }
 
 func disableParallelToolUseFromToolChoice(raw json.RawMessage) (bool, bool) {
@@ -177,8 +227,19 @@ func fieldsFromOutputConfig(raw json.RawMessage) (string, any) {
 func toolDefsToToolInfos(defs []ToolDefinition) []*schema.ToolInfo {
 	tools := make([]*schema.ToolInfo, 0, len(defs))
 	for _, td := range defs {
+		// Anthropic server tools are identified by a versioned type and omit
+		// input_schema. Keep them only in ChatExtraFields.AnthropicTools; turning
+		// them into a parameterless client tool would lose their execution model.
+		if td.isServerTool() && isEmptyJSON(td.InputSchema) {
+			continue
+		}
 		var js einojsonschema.Schema
-		if err := json.Unmarshal(td.InputSchema, &js); err != nil {
+		inputSchema, err := provider.NormalizeObjectToolInputSchema(td.InputSchema)
+		if err != nil {
+			tools = append(tools, &schema.ToolInfo{Name: td.Name, Desc: td.Description})
+			continue
+		}
+		if err := json.Unmarshal(inputSchema, &js); err != nil {
 			tools = append(tools, &schema.ToolInfo{Name: td.Name, Desc: td.Description})
 			continue
 		}
@@ -189,6 +250,11 @@ func toolDefsToToolInfos(defs []ToolDefinition) []*schema.ToolInfo {
 		})
 	}
 	return tools
+}
+
+func isEmptyJSON(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	return trimmed == "" || trimmed == "null"
 }
 
 func parseAnthropicToolChoice(raw json.RawMessage) (schema.ToolChoice, []string, bool) {
@@ -214,19 +280,19 @@ func parseAnthropicToolChoice(raw json.RawMessage) (schema.ToolChoice, []string,
 }
 
 // convertMessageItem converts one Anthropic MessageItem to one or more schema.Messages.
-func convertMessageItem(m MessageItem) []*schema.Message {
+func convertMessageItem(m MessageItem, nativeBlocks []json.RawMessage) []*schema.Message {
 	switch m.Role {
 	case "assistant":
-		return convertAssistantItem(m.Content)
+		return convertAssistantItem(m.Content, nativeBlocks)
 	case "user":
-		return convertUserItem(m.Content)
+		return convertUserItem(m.Content, nativeBlocks)
 	default:
 		// Treat unknown roles as user.
-		return convertUserItem(m.Content)
+		return convertUserItem(m.Content, nativeBlocks)
 	}
 }
 
-func convertAssistantItem(content MessageContent) []*schema.Message {
+func convertAssistantItem(content MessageContent, nativeBlocks []json.RawMessage) []*schema.Message {
 	var textParts []string
 	var reasoningParts []string
 	var structuredReasoning []schema.MessageOutputPart
@@ -266,7 +332,7 @@ func convertAssistantItem(content MessageContent) []*schema.Message {
 		}
 	}
 
-	if len(textParts) == 0 && len(structuredReasoning) == 0 && len(toolCalls) == 0 {
+	if len(textParts) == 0 && len(structuredReasoning) == 0 && len(toolCalls) == 0 && len(nativeBlocks) == 0 {
 		return nil
 	}
 	msg := &schema.Message{
@@ -276,10 +342,20 @@ func convertAssistantItem(content MessageContent) []*schema.Message {
 		ReasoningContent: strings.Join(reasoningParts, "\n"),
 	}
 	provider.AttachReasoningParts(msg, structuredReasoning...)
+	provider.AttachAnthropicContentBlocks(msg, nativeBlocks)
 	return []*schema.Message{msg}
 }
 
-func convertUserItem(content MessageContent) []*schema.Message {
+func convertUserItem(content MessageContent, nativeBlocks []json.RawMessage) []*schema.Message {
+	if len(nativeBlocks) > 0 {
+		// Native replay must keep the original ordered user block array on one
+		// message. In particular, tool_result associations remain present in the
+		// attached raw blocks even though they are not duplicated as schema.Tool
+		// messages (which would make the upstream result appear twice).
+		msg := &schema.Message{Role: schema.User, Content: content.Text()}
+		provider.AttachAnthropicContentBlocks(msg, nativeBlocks)
+		return []*schema.Message{msg}
+	}
 	var inputParts []schema.MessageInputPart
 	var result []*schema.Message
 
@@ -334,6 +410,55 @@ func convertUserItem(content MessageContent) []*schema.Message {
 	return result
 }
 
+func nativeContentBlocks(content MessageContent) []json.RawMessage {
+	hasNative := false
+	for _, block := range content {
+		if block.hasUnmodeledFields() {
+			hasNative = true
+			continue
+		}
+		switch block.Type {
+		case "text", "thinking", "redacted_thinking", "image", "tool_use", "tool_result":
+		default:
+			hasNative = true
+		}
+	}
+	if !hasNative {
+		return nil
+	}
+	blocks := make([]json.RawMessage, 0, len(content))
+	for _, block := range content {
+		blocks = append(blocks, block.rawJSON())
+	}
+	return blocks
+}
+
+func (b ContentBlock) hasUnmodeledFields() bool {
+	if len(b.raw) == 0 {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(b.raw, &fields) != nil {
+		// Raw native state that cannot be inspected must never be treated as
+		// safely representable by the generic message model.
+		return true
+	}
+	// Keep this list synchronized with ContentBlock's JSON fields. Anything not
+	// represented by that struct requires exact Anthropic replay.
+	for _, known := range []string{
+		"type", "text", "thinking", "signature", "data", "source", "id", "name",
+		"input", "tool_use_id", "content", "is_error", "cache_control",
+	} {
+		delete(fields, known)
+	}
+	for _, value := range fields {
+		if !isJSONNull(value) {
+			return true
+		}
+	}
+	return false
+}
+
 // FromInternal converts an internal ChatResponse to an Anthropic MessagesResponse.
 func (c *Converter) FromInternal(resp *provider.ChatResponse, model string) *MessagesResponse {
 	content := contentFromMessage(resp.Message)
@@ -380,6 +505,13 @@ func mapFinishReason(reason string) string {
 func contentFromMessage(msg *schema.Message) []ContentBlockResponse {
 	if msg == nil {
 		return []ContentBlockResponse{}
+	}
+	if native := provider.AnthropicContentBlocksFromMessage(msg); len(native) > 0 {
+		blocks := make([]ContentBlockResponse, 0, len(native))
+		for _, raw := range native {
+			blocks = append(blocks, ContentBlockResponse{Raw: raw})
+		}
+		return blocks
 	}
 	var blocks []ContentBlockResponse
 	structuredReasoning := false
@@ -524,6 +656,27 @@ type ContentBlock struct {
 	IsError   bool           `json:"is_error,omitempty"`
 	// shared
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
+	raw          json.RawMessage
+}
+
+func (b *ContentBlock) UnmarshalJSON(data []byte) error {
+	type wireContentBlock ContentBlock
+	var decoded wireContentBlock
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*b = ContentBlock(decoded)
+	b.raw = append(b.raw[:0], data...)
+	return nil
+}
+
+func (b ContentBlock) rawJSON() json.RawMessage {
+	if len(b.raw) > 0 {
+		return append(json.RawMessage(nil), b.raw...)
+	}
+	type wireContentBlock ContentBlock
+	raw, _ := json.Marshal(wireContentBlock(b))
+	return raw
 }
 
 type ImageSource struct {
@@ -538,9 +691,61 @@ type CacheControl struct {
 }
 
 type ToolDefinition struct {
+	Type        string          `json:"type,omitempty"`
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	raw         json.RawMessage
+}
+
+func (t *ToolDefinition) UnmarshalJSON(data []byte) error {
+	type wireToolDefinition ToolDefinition
+	var decoded wireToolDefinition
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*t = ToolDefinition(decoded)
+	t.raw = append(t.raw[:0], data...)
+	return nil
+}
+
+func (t ToolDefinition) rawJSON() json.RawMessage {
+	if t.isServerTool() {
+		if len(t.raw) > 0 {
+			return append(json.RawMessage(nil), t.raw...)
+		}
+		type wireToolDefinition ToolDefinition
+		raw, _ := json.Marshal(wireToolDefinition(t))
+		return raw
+	}
+	if !isEmptyJSON(t.InputSchema) {
+		if len(t.raw) > 0 {
+			return append(json.RawMessage(nil), t.raw...)
+		}
+		type wireToolDefinition ToolDefinition
+		raw, _ := json.Marshal(wireToolDefinition(t))
+		return raw
+	}
+	if len(t.raw) > 0 {
+		var fields map[string]any
+		if json.Unmarshal(t.raw, &fields) == nil {
+			normalized, _ := provider.NormalizeObjectToolInputSchema(nil)
+			var schemaValue any
+			_ = json.Unmarshal(normalized, &schemaValue)
+			fields["input_schema"] = schemaValue
+			raw, _ := json.Marshal(fields)
+			return raw
+		}
+	}
+	t.InputSchema, _ = provider.NormalizeObjectToolInputSchema(nil)
+	type wireToolDefinition ToolDefinition
+	raw, _ := json.Marshal(wireToolDefinition(t))
+	return raw
+}
+
+func (t ToolDefinition) isServerTool() bool {
+	typ := strings.TrimSpace(t.Type)
+	return typ != "" && typ != "custom"
 }
 
 type MessagesResponse struct {
@@ -566,6 +771,15 @@ type ContentBlockResponse struct {
 	ID    string          `json:"id,omitempty"`
 	Name  string          `json:"name,omitempty"`
 	Input json.RawMessage `json:"input,omitempty"`
+	Raw   json.RawMessage `json:"-"`
+}
+
+func (b ContentBlockResponse) MarshalJSON() ([]byte, error) {
+	if len(b.Raw) > 0 {
+		return b.Raw, nil
+	}
+	type wireContentBlockResponse ContentBlockResponse
+	return json.Marshal(wireContentBlockResponse(b))
 }
 
 type UsageResponse struct {

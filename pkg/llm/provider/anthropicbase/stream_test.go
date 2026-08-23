@@ -1,6 +1,7 @@
 package anthropicbase
 
 import (
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -9,6 +10,38 @@ import (
 
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 )
+
+func TestReadMessageStreamPreservesNativeServerToolAndCitationEvents(t *testing.T) {
+	body := strings.Join([]string{
+		"event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srv_1\",\"name\":\"web_search\",\"input\":{}}}\n\n",
+		"event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"latest\\\"}\"}}\n\n",
+		"event: content_block_stop\ndata: {\"index\":0}\n\n",
+		"event: content_block_delta\ndata: {\"index\":1,\"delta\":{\"type\":\"citations_delta\",\"citation\":{\"url\":\"https://example.com\"}}}\n\n",
+	}, "")
+	sr, sw := schema.Pipe[*schema.Message](8)
+	go ReadMessageStream(io.NopCloser(strings.NewReader(body)), sw, "test")
+	var events []provider.AnthropicStreamEvent
+	for {
+		msg, err := sr.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Recv() error = %v", err)
+		}
+		events = append(events, provider.AnthropicStreamEventsFromMessage(msg)...)
+	}
+	if len(events) != 4 {
+		t.Fatalf("events = %+v, want four native events", events)
+	}
+	if events[0].Event != "content_block_start" || events[3].Event != "content_block_delta" {
+		t.Fatalf("events = %+v", events)
+	}
+	var citation map[string]any
+	if err := json.Unmarshal(events[3].Data, &citation); err != nil || citation["index"] != float64(1) {
+		t.Fatalf("citation event = %s, %v", events[3].Data, err)
+	}
+}
 
 func TestReadMessageStreamPreservesThinkingSignatureAndRedactedData(t *testing.T) {
 	body := strings.Join([]string{

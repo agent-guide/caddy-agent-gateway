@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
@@ -15,9 +16,8 @@ type ChatOptions struct {
 	ChatExtra *ChatExtraFields
 }
 
-// ChatExtraFields carries chat-completions request fields that have no eino
-// common-option equivalent but should still reach OpenAI-compatible providers.
-// Values are already in chat wire shape so they pass through unchanged.
+// ChatExtraFields carries protocol request fields that have no eino
+// common-option equivalent but should still reach compatible providers.
 type ChatExtraFields struct {
 	ResponseFormat    any
 	Reasoning         map[string]any
@@ -29,6 +29,11 @@ type ChatExtraFields struct {
 	Metadata          map[string]any
 	ParallelToolCalls *bool
 	Store             *bool
+	// AnthropicTools preserves the complete Anthropic tool union. In particular,
+	// server-side tools such as web_search have a versioned type and no
+	// input_schema, so they cannot be represented by schema.ToolInfo.
+	AnthropicTools      []json.RawMessage
+	AnthropicToolChoice json.RawMessage
 }
 
 // WithChatExtraFields stores extra chat-completions request fields inside
@@ -201,7 +206,8 @@ func cloneChatExtraFields(src *ChatExtraFields) *ChatExtraFields {
 	}
 	if src.ResponseFormat == nil && len(src.Reasoning) == 0 && len(src.Thinking) == 0 && src.ReasoningEffort == "" &&
 		src.ToolStream == nil && len(src.StreamOptions) == 0 &&
-		src.User == "" && len(src.Metadata) == 0 && src.ParallelToolCalls == nil && src.Store == nil {
+		src.User == "" && len(src.Metadata) == 0 && src.ParallelToolCalls == nil && src.Store == nil &&
+		len(src.AnthropicTools) == 0 && len(src.AnthropicToolChoice) == 0 {
 		return nil
 	}
 	out := &ChatExtraFields{
@@ -232,6 +238,15 @@ func cloneChatExtraFields(src *ChatExtraFields) *ChatExtraFields {
 	if src.Store != nil {
 		v := *src.Store
 		out.Store = &v
+	}
+	if len(src.AnthropicTools) > 0 {
+		out.AnthropicTools = make([]json.RawMessage, len(src.AnthropicTools))
+		for i, raw := range src.AnthropicTools {
+			out.AnthropicTools[i] = append(json.RawMessage(nil), raw...)
+		}
+	}
+	if len(src.AnthropicToolChoice) > 0 {
+		out.AnthropicToolChoice = append(json.RawMessage(nil), src.AnthropicToolChoice...)
 	}
 	return out
 }

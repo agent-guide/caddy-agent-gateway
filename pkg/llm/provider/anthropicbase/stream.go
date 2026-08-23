@@ -15,6 +15,7 @@ import (
 type StreamState struct {
 	pendingToolCalls map[int]*pendingToolCall
 	reasoningBlocks  map[int]struct{}
+	nativeBlocks     map[int]struct{}
 	usage            MessagesUsage
 }
 
@@ -35,6 +36,7 @@ func ReadMessageStream(body io.ReadCloser, sw *schema.StreamWriter[*schema.Messa
 	state := &StreamState{
 		pendingToolCalls: make(map[int]*pendingToolCall),
 		reasoningBlocks:  make(map[int]struct{}),
+		nativeBlocks:     make(map[int]struct{}),
 	}
 	var eventName string
 	var data strings.Builder
@@ -68,6 +70,7 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 		state = &StreamState{
 			pendingToolCalls: make(map[int]*pendingToolCall),
 			reasoningBlocks:  make(map[int]struct{}),
+			nativeBlocks:     make(map[int]struct{}),
 		}
 	}
 	if state.pendingToolCalls == nil {
@@ -75,6 +78,9 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 	}
 	if state.reasoningBlocks == nil {
 		state.reasoningBlocks = make(map[int]struct{})
+	}
+	if state.nativeBlocks == nil {
+		state.nativeBlocks = make(map[int]struct{})
 	}
 
 	switch eventName {
@@ -118,6 +124,9 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 				id:    event.ContentBlock.ID,
 				name:  event.ContentBlock.Name,
 			}
+		default:
+			state.nativeBlocks[event.Index] = struct{}{}
+			emitNativeStreamEvent(sw, eventName, payload)
 		}
 
 	case "content_block_delta":
@@ -133,6 +142,10 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			return fmt.Errorf("%s: decode stream delta: %w", errorPrefix, err)
+		}
+		if _, ok := state.nativeBlocks[event.Index]; ok {
+			emitNativeStreamEvent(sw, eventName, payload)
+			return nil
 		}
 		switch event.Delta.Type {
 		case "thinking_delta":
@@ -152,6 +165,10 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 			if ptc, ok := state.pendingToolCalls[event.Index]; ok {
 				ptc.input.WriteString(event.Delta.PartialJSON)
 			}
+		default:
+			// Citation and future Anthropic-native deltas have no generic eino
+			// representation. Preserve the original event for the protocol handler.
+			emitNativeStreamEvent(sw, eventName, payload)
 		}
 
 	case "content_block_stop":
@@ -160,6 +177,11 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			return fmt.Errorf("%s: decode content_block_stop: %w", errorPrefix, err)
+		}
+		if _, ok := state.nativeBlocks[event.Index]; ok {
+			emitNativeStreamEvent(sw, eventName, payload)
+			delete(state.nativeBlocks, event.Index)
+			return nil
 		}
 		if ptc, ok := state.pendingToolCalls[event.Index]; ok {
 			inputStr := ptc.input.String()
@@ -211,4 +233,9 @@ func EmitStreamEvent(eventName string, payload string, sw *schema.StreamWriter[*
 		}
 	}
 	return nil
+}
+
+func emitNativeStreamEvent(sw *schema.StreamWriter[*schema.Message], eventName, payload string) {
+	msg := provider.AttachAnthropicStreamEvent(nil, eventName, json.RawMessage(payload))
+	sw.Send(msg, nil)
 }

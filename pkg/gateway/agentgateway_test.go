@@ -76,6 +76,39 @@ func (p testProvider) Config() provider.ProviderConfig {
 	return p.cfg
 }
 
+func TestRequestSeparatesAnthropicReasoningFromFullNativeState(t *testing.T) {
+	msg := provider.AttachReasoningParts(&schema.Message{Role: schema.Assistant},
+		provider.NewReasoningOutputPart("inspect", "authentic-signature", nil))
+	req := &provider.ChatRequest{Messages: []*schema.Message{msg}}
+	if requestHasAnthropicNativeState(req) {
+		t.Fatal("modeled signed reasoning unnecessarily required full native-content support")
+	}
+	if !requestHasAnthropicReasoningState(req) {
+		t.Fatal("signed reasoning did not require Anthropic reasoning replay")
+	}
+}
+
+func TestRoutedProviderLogsDialectAffinity(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	routed := &RoutedProvider{
+		route:  &llmroutepkg.LLMRoute{AgentRouteConfig: llmroutepkg.AgentRouteConfig{ID: "claude-route"}},
+		logger: zap.New(core),
+	}
+	requirements := llmroutepkg.RequestRequirements{}.
+		WithNativeDialect(provider.ProtocolDialectAnthropic).
+		WithReasoningDialect(provider.ProtocolDialectAnthropic)
+	routed.logDialectAffinity("claude-sonnet", requirements)
+
+	entries := logs.FilterMessage("request protocol state restricts provider fallback").All()
+	if len(entries) != 1 {
+		t.Fatalf("affinity log entries = %d, want 1", len(entries))
+	}
+	context := entries[0].ContextMap()
+	if context["route_id"] != "claude-route" || context["model"] != "claude-sonnet" {
+		t.Fatalf("affinity log context = %+v", context)
+	}
+}
+
 func (p *testContextCaptureProvider) Chat(ctx context.Context, _ *provider.ChatRequest) (*provider.ChatResponse, error) {
 	p.credential, _ = provider.CredentialFromContext(ctx)
 	return &provider.ChatResponse{}, nil

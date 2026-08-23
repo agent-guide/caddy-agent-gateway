@@ -126,6 +126,79 @@ func TestChatMapsExpandedFieldsToMessagesRequest(t *testing.T) {
 	}
 }
 
+func TestAttachCapturedReasoningDoesNotExposeUnsupportedNativeContent(t *testing.T) {
+	var captured anthropicbase.MessagesResponse
+	if err := json.Unmarshal([]byte(`{
+		"content":[
+			{"type":"thinking","thinking":"inspect","signature":"sig"},
+			{"type":"text","text":"answer","citations":[{"url":"https://example.com"}]}
+		],
+		"stop_reason":"end_turn",
+		"usage":{}
+	}`), &captured); err != nil {
+		t.Fatalf("unmarshal captured response: %v", err)
+	}
+
+	msg := &schema.Message{Role: schema.Assistant, Content: "answer"}
+	attachCapturedReasoning(msg, &captured)
+	parts := provider.ReasoningPartsFromMessage(msg)
+	if len(parts) != 1 || parts[0].Reasoning == nil || parts[0].Reasoning.Signature != "sig" {
+		t.Fatalf("captured reasoning = %+v, want signed thinking", parts)
+	}
+	if provider.HasAnthropicNativeContent([]*schema.Message{msg}) {
+		t.Fatal("eino Anthropic provider exposed native content it cannot replay")
+	}
+}
+
+func TestChatReplaysNativeAnthropicCustomToolFields(t *testing.T) {
+	var request map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"done"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	prov, err := New(provider.ProviderConfig{
+		BaseURL: server.URL,
+		APIKey:  "sk-ant-test",
+		Network: httpclient.NetworkConfig{RequestTimeoutSeconds: 5},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tool := json.RawMessage(`{"type":"custom","name":"lookup","description":"Lookup data","input_schema":{"type":"object","properties":{"query":{"type":"string"}}},"defer_loading":true}`)
+	choice := json.RawMessage(`{"type":"auto","disable_parallel_tool_use":true}`)
+	_, err = prov.Chat(context.Background(), &provider.ChatRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []*schema.Message{schema.UserMessage("search")},
+		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
+			AnthropicTools:      []json.RawMessage{tool},
+			AnthropicToolChoice: choice,
+		})},
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	tools, ok := request["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one server tool", request["tools"])
+	}
+	serverTool, ok := tools[0].(map[string]any)
+	if !ok || serverTool["type"] != "custom" || serverTool["defer_loading"] != true {
+		t.Fatalf("custom tool = %#v", tools[0])
+	}
+	if _, exists := serverTool["input_schema"]; !exists {
+		t.Fatalf("custom tool lost input_schema: %#v", serverTool)
+	}
+	toolChoice, ok := request["tool_choice"].(map[string]any)
+	if !ok || toolChoice["type"] != "auto" || toolChoice["disable_parallel_tool_use"] != true {
+		t.Fatalf("tool_choice = %#v", request["tool_choice"])
+	}
+}
+
 func TestChatReplaysGatewayReasoningWithoutUsingEinoMultimodalParts(t *testing.T) {
 	var reqBody anthropicbase.MessagesRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

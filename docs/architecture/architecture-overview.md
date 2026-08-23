@@ -173,6 +173,9 @@ Important characteristics:
 - model listing is supported
 - embeddings are optional through `EmbeddingProvider`
 - providers expose capability metadata and runtime config
+- logical-model resolution filters managed-model capabilities for generic
+  request needs such as client tools, and filters provider-type dialect sets
+  for opaque native/reasoning replay before credential selection
 
 Built-in providers:
 

@@ -92,6 +92,7 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 		requestRequirements := llmroutepkg.RequestRequirements{
 			Model:            req.Model,
 			RequireStreaming: req.Stream,
+			RequireTools:     len(req.Tools) > 0,
 		}
 		usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
 			LLMAPI:           h.Name(),
@@ -125,6 +126,7 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 	requestRequirements := llmroutepkg.RequestRequirements{
 		Model:            req.Model,
 		RequireStreaming: req.Stream,
+		RequireTools:     len(req.Tools) > 0,
 	}
 	usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
 		LLMAPI:           h.Name(),

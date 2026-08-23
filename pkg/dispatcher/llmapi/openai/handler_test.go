@@ -548,12 +548,15 @@ func TestPrepareLLMApiRequestPreservesChatCompletionToolingAndMultimodal(t *test
 	}`)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
-	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	prepared, requirements, err := handler.PrepareLLMApiRequest(req)
 	if err != nil {
 		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
 	}
 	if prepared == nil || prepared.ChatRequest == nil {
 		t.Fatal("prepared chat request is nil")
+	}
+	if !requirements.RequireTools {
+		t.Fatal("chat completion tools did not set RequireTools")
 	}
 	chatReq := prepared.ChatRequest
 	if len(chatReq.Messages) != 4 {
@@ -795,7 +798,7 @@ func TestServeLLMApiStreamsOpenAIChunks(t *testing.T) {
 func TestPrepareLLMApiRequestAllowsResponsesStateForProviderLevelHandling(t *testing.T) {
 	handler := newHandler()
 
-	body := `{"model":"gpt-4.1","input":"hello","previous_response_id":"resp_123"}`
+	body := `{"model":"gpt-4.1","input":"hello","previous_response_id":"resp_123","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
 
 	prepared, requirements, err := handler.PrepareLLMApiRequest(req)
@@ -816,6 +819,9 @@ func TestPrepareLLMApiRequestAllowsResponsesStateForProviderLevelHandling(t *tes
 	}
 	if requirements.RequireStreaming {
 		t.Fatal("requirements.RequireStreaming = true, want false")
+	}
+	if !requirements.RequireTools {
+		t.Fatal("responses tools did not set RequireTools")
 	}
 }
 

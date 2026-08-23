@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/cloudwego/eino/components/model"
@@ -917,6 +918,57 @@ func TestChatMapsCodexToolNamesForClaudeCode(t *testing.T) {
 	}
 }
 
+func TestChatMapsNativeRawCodexToolNamesForClaudeCode(t *testing.T) {
+	var reqBody messagesRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"cmd":"pwd"}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	prov, err := New(provider.ProviderConfig{
+		BaseURL: server.URL,
+		APIKey:  "sk-ant-api-fallback",
+		Network: httpclient.NetworkConfig{RequestTimeoutSeconds: 5},
+		Options: map[string]any{"compact": "codex"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tool := json.RawMessage(`{"name":"exec_command","description":"Run a command","input_schema":{"type":"object","properties":{"cmd":{"type":"string"}}},"defer_loading":true}`)
+	choice := json.RawMessage(`{"type":"tool","name":"exec_command"}`)
+	resp, err := prov.Chat(context.Background(), &provider.ChatRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []*schema.Message{schema.UserMessage("run pwd")},
+		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
+			AnthropicTools:      []json.RawMessage{tool},
+			AnthropicToolChoice: choice,
+		})},
+	})
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if len(reqBody.Tools) != 1 || reqBody.Tools[0].Name != "Bash" {
+		t.Fatalf("request tools = %+v, want Bash alias", reqBody.Tools)
+	}
+	wireTool, err := json.Marshal(reqBody.Tools[0])
+	if err != nil {
+		t.Fatalf("marshal wire tool: %v", err)
+	}
+	if !strings.Contains(string(wireTool), `"defer_loading":true`) || !strings.Contains(string(wireTool), `"name":"Bash"`) {
+		t.Fatalf("wire tool = %s, want retained extension and aliased name", wireTool)
+	}
+	if got := toolChoiceName(reqBody.ToolChoice); got != "Bash" {
+		t.Fatalf("tool_choice name = %q, want Bash", got)
+	}
+	if resp == nil || resp.Message == nil || len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Function.Name != "exec_command" {
+		t.Fatalf("response = %+v, want restored exec_command", resp)
+	}
+}
+
 func TestChatKeepsCodexToolNamesWithoutCompat(t *testing.T) {
 	var reqBody messagesRequest
 
@@ -1027,6 +1079,27 @@ func TestChatRejectsCodexCompatToolNameCollision(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Chat() error = nil, want compact=codex tool name collision")
+	}
+}
+
+func TestNativeRawToolsRejectCodexCompatNameCollision(t *testing.T) {
+	chatReq := &provider.ChatRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []*schema.Message{schema.UserMessage("run")},
+		Options: []model.Option{provider.WithChatExtraFields(&provider.ChatExtraFields{
+			AnthropicTools: []json.RawMessage{
+				json.RawMessage(`{"name":"exec_command","input_schema":{"type":"object"}}`),
+				json.RawMessage(`{"name":"Bash","input_schema":{"type":"object"}}`),
+			},
+		})},
+	}
+	state, err := provider.ResolveChatRequest(context.Background(), provider.ProviderConfig{}, chatReq)
+	if err != nil {
+		t.Fatalf("ResolveChatRequest: %v", err)
+	}
+	req := buildMessagesRequest(state, false, newRequestSession(), defaultClaudeCodeMaxTokens)
+	if _, err := applyCodexToolNameAliases(req); err == nil || !strings.Contains(err.Error(), "collision") {
+		t.Fatalf("collision error = %v, want explicit collision", err)
 	}
 }
 

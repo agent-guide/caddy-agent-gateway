@@ -45,6 +45,9 @@ const (
 
 func init() {
 	provider.RegisterProviderFactory("anthropic", New)
+	provider.RegisterProviderTypeCapabilities("anthropic", provider.ProviderTypeCapabilities{
+		ReasoningDialects: provider.NewProtocolDialectSet(provider.ProtocolDialectAnthropic),
+	})
 }
 
 type Provider struct {
@@ -210,6 +213,26 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest, 
 	}
 
 	extraRequestFields := map[string]any{}
+	nativeAnthropicTools := false
+	if extra := provider.ChatExtraFieldsFromOptions(state.Options...); extra != nil && len(extra.AnthropicTools) > 0 {
+		toolValues := make([]any, 0, len(extra.AnthropicTools))
+		for i, raw := range extra.AnthropicTools {
+			var value any
+			if err := json.Unmarshal(raw, &value); err != nil {
+				return nil, nil, nil, fmt.Errorf("anthropic: parse native tool %d: %w", i, err)
+			}
+			toolValues = append(toolValues, value)
+		}
+		extraRequestFields["tools"] = toolValues
+		nativeAnthropicTools = true
+		if len(extra.AnthropicToolChoice) > 0 {
+			var toolChoiceValue any
+			if err := json.Unmarshal(extra.AnthropicToolChoice, &toolChoiceValue); err != nil {
+				return nil, nil, nil, fmt.Errorf("anthropic: parse native tool_choice: %w", err)
+			}
+			extraRequestFields["tool_choice"] = toolChoiceValue
+		}
+	}
 	modelMessages, exactMessages, err := adaptSignedReasoningMessages(state.Messages)
 	if err != nil {
 		return nil, nil, nil, err
@@ -241,11 +264,11 @@ func (p *Provider) newChatModel(ctx context.Context, req *provider.ChatRequest, 
 	}
 	// Anthropic carries disable_parallel_tool_use inside tool_choice, so an
 	// explicit auto choice is required for the flag to reach the wire.
-	if toolChoice == nil && disableParallel && len(tools) > 0 {
+	if toolChoice == nil && disableParallel && len(tools) > 0 && !nativeAnthropicTools {
 		allowed := schema.ToolChoiceAllowed
 		toolChoice = &allowed
 	}
-	if toolChoice != nil {
+	if toolChoice != nil && !nativeAnthropicTools {
 		opts = append(opts, einomodel.WithToolChoice(*toolChoice, allowedToolNames...))
 		// The claude component drops disable_parallel_tool_use on the
 		// forced-named-tool choice shape; restore it via a JSON request patch.

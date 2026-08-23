@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,6 +18,11 @@ import (
 	"github.com/agent-guide/agent-gateway/pkg/llm/provider"
 	"github.com/cloudwego/eino/schema"
 )
+
+func requiresDialect(dialects map[provider.ProtocolDialect]struct{}, dialect provider.ProtocolDialect) bool {
+	_, ok := dialects[dialect]
+	return ok
+}
 
 type testProvider struct {
 	streamErr error
@@ -43,8 +50,9 @@ func (p *testProvider) Config() provider.ProviderConfig {
 }
 
 type testStreamingProvider struct {
-	cfg    provider.ProviderConfig
-	chunks []*schema.Message
+	cfg     provider.ProviderConfig
+	chunks  []*schema.Message
+	recvErr error
 }
 
 func (p *testStreamingProvider) Chat(context.Context, *provider.ChatRequest) (*provider.ChatResponse, error) {
@@ -57,6 +65,9 @@ func (p *testStreamingProvider) StreamChat(context.Context, *provider.ChatReques
 		defer sw.Close()
 		for _, chunk := range p.chunks {
 			sw.Send(chunk, nil)
+		}
+		if p.recvErr != nil {
+			sw.Send(nil, p.recvErr)
 		}
 	}()
 	return sr, nil
@@ -151,6 +162,36 @@ func TestMatchLLMApiIncludesCountTokens(t *testing.T) {
 
 	if !handler.MatchLLMApi(req) {
 		t.Fatal("MatchLLMApi returned false for /v1/messages/count_tokens")
+	}
+}
+
+func TestPrepareLLMApiRequestRejectsInvalidClientToolSchema(t *testing.T) {
+	handler := NewHandler(nil)
+	for _, inputSchema := range []string{`"not-an-object"`, `{"type":"string"}`, `{"type":"object","properties":123}`} {
+		body := `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"broken","input_schema":` + inputSchema + `}]}`
+		req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+		if _, _, err := handler.PrepareLLMApiRequest(req); err == nil || !strings.Contains(err.Error(), "input_schema") {
+			t.Fatalf("input_schema %s error = %v, want validation failure", inputSchema, err)
+		}
+	}
+}
+
+func TestToInternalDoesNotSilentlyDropInvalidClientToolSchema(t *testing.T) {
+	req := &MessagesRequest{
+		Model:    "claude-sonnet-4-6",
+		Messages: []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "hi"}}}},
+		Tools: []ToolDefinition{{
+			Name: "broken", Description: "still visible for direct converter callers",
+			InputSchema: json.RawMessage(`{"type":"object","properties":123}`),
+		}},
+	}
+	internal := (&Converter{}).ToInternal(req)
+	state, err := provider.ResolveChatRequest(context.Background(), provider.ProviderConfig{}, internal)
+	if err != nil {
+		t.Fatalf("ResolveChatRequest: %v", err)
+	}
+	if state.CommonOptions == nil || len(state.CommonOptions.Tools) != 1 || state.CommonOptions.Tools[0].Name != "broken" {
+		t.Fatalf("converted options = %+v, want degraded broken tool", state.CommonOptions)
 	}
 }
 
@@ -600,6 +641,48 @@ func TestServeLLMApiStreamAccumulatesFragmentedToolCall(t *testing.T) {
 	}
 }
 
+func TestServeLLMApiStreamWaitsForToolIdentityBeforeStartingBlock(t *testing.T) {
+	handler := NewHandler(nil)
+	idx0 := 0
+	prov := &testStreamingProvider{
+		cfg: provider.ProviderConfig{Id: "compat", ProviderType: "openai"},
+		chunks: []*schema.Message{
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				Index: &idx0, Function: schema.FunctionCall{Arguments: `{"city":`},
+			}}},
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				Index: &idx0, ID: "call_1", Function: schema.FunctionCall{Name: "get_weather", Arguments: `"Paris"}`},
+			}}, ResponseMeta: &schema.ResponseMeta{FinishReason: "tool_use"}},
+		},
+	}
+	body, err := json.Marshal(MessagesRequest{
+		Model: "claude-sonnet-4-5", MaxTokens: 16, Stream: true,
+		Messages: []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "weather"}}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi returned error: %v", err)
+	}
+	bodyText := rec.Body.String()
+	if strings.Contains(bodyText, `"id":"","input":{},"name":""`) {
+		t.Fatalf("tool block started before identity arrived: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"id":"call_1","input":{},"name":"get_weather","type":"tool_use"`) {
+		t.Fatalf("identified tool block missing: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"partial_json":"{\"city\":\"Paris\"}"`) {
+		t.Fatalf("buffered arguments missing: %s", bodyText)
+	}
+}
+
 func TestToInternalCarriesThinkingMetadataAndOutputConfig(t *testing.T) {
 	conv := &Converter{}
 	req := &MessagesRequest{
@@ -631,6 +714,275 @@ func TestToInternalCarriesThinkingMetadataAndOutputConfig(t *testing.T) {
 	format, ok := extra.ResponseFormat.(map[string]any)
 	if !ok || format["type"] != "json_schema" {
 		t.Fatalf("response_format = %#v, want json_schema format from output_config", extra.ResponseFormat)
+	}
+}
+
+func TestToInternalPreservesServerToolsAndNormalizesParameterlessClientTools(t *testing.T) {
+	var req MessagesRequest
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"user","content":"search"}],
+		"tools":[
+			{"type":"web_search_20260209","name":"web_search","max_uses":3,"allowed_domains":["example.com"]},
+			{"name":"heartbeat","description":"Check health","input_schema":null}
+		],
+		"tool_choice":{"type":"auto","disable_parallel_tool_use":true}
+	}`)
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	chatReq := (&Converter{}).ToInternal(&req)
+	state, err := provider.ResolveChatRequest(context.Background(), provider.ProviderConfig{}, chatReq)
+	if err != nil {
+		t.Fatalf("ResolveChatRequest: %v", err)
+	}
+	if state.CommonOptions == nil || len(state.CommonOptions.Tools) != 1 || state.CommonOptions.Tools[0].Name != "heartbeat" {
+		t.Fatalf("common tools = %+v, want only the client heartbeat tool", state.CommonOptions)
+	}
+	js, err := state.CommonOptions.Tools[0].ToJSONSchema()
+	if err != nil || js == nil || js.Type != "object" {
+		t.Fatalf("heartbeat schema = %+v, %v; want empty object schema", js, err)
+	}
+
+	extra := provider.ChatExtraFieldsFromOptions(chatReq.Options...)
+	if extra == nil || len(extra.AnthropicTools) != 2 {
+		t.Fatalf("native tools = %+v, want both original tool definitions", extra)
+	}
+	var serverTool map[string]any
+	if err := json.Unmarshal(extra.AnthropicTools[0], &serverTool); err != nil {
+		t.Fatalf("decode preserved server tool: %v", err)
+	}
+	if serverTool["type"] != "web_search_20260209" || serverTool["max_uses"] != float64(3) {
+		t.Fatalf("preserved server tool = %#v", serverTool)
+	}
+	if _, exists := serverTool["input_schema"]; exists {
+		t.Fatalf("server tool gained input_schema: %#v", serverTool)
+	}
+	var clientTool map[string]any
+	if err := json.Unmarshal(extra.AnthropicTools[1], &clientTool); err != nil {
+		t.Fatalf("decode preserved client tool: %v", err)
+	}
+	if schemaValue, ok := clientTool["input_schema"].(map[string]any); !ok || schemaValue["type"] != "object" {
+		t.Fatalf("normalized client tool = %#v, want object input_schema", clientTool)
+	}
+	if string(extra.AnthropicToolChoice) != `{"type":"auto","disable_parallel_tool_use":true}` {
+		t.Fatalf("tool_choice = %s, want exact native value", extra.AnthropicToolChoice)
+	}
+}
+
+func TestToInternalUsesGenericToolPathForModeledClientTools(t *testing.T) {
+	var req MessagesRequest
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"user","content":"lookup"}],
+		"tools":[{"type":"custom","name":"lookup","description":"Lookup data","input_schema":{"type":"object","properties":{}}}],
+		"tool_choice":{"type":"auto","disable_parallel_tool_use":true}
+	}`)
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	chatReq := (&Converter{}).ToInternal(&req)
+	extra := provider.ChatExtraFieldsFromOptions(chatReq.Options...)
+	if extra == nil {
+		t.Fatal("ChatExtraFields = nil, want parallel tool setting")
+	}
+	if len(extra.AnthropicTools) != 0 || len(extra.AnthropicToolChoice) != 0 {
+		t.Fatalf("ordinary client tools unexpectedly used raw Anthropic replay: %+v", extra)
+	}
+	if extra.ParallelToolCalls == nil || *extra.ParallelToolCalls {
+		t.Fatalf("parallel tool setting = %v, want disabled", extra.ParallelToolCalls)
+	}
+}
+
+func TestToInternalPreservesUnmodeledClientToolFields(t *testing.T) {
+	var req MessagesRequest
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"user","content":"lookup"}],
+		"tools":[{"type":"custom","name":"lookup","input_schema":{"type":"object"},"defer_loading":true}]
+	}`)
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+
+	chatReq := (&Converter{}).ToInternal(&req)
+	extra := provider.ChatExtraFieldsFromOptions(chatReq.Options...)
+	if extra == nil || len(extra.AnthropicTools) != 1 || !bytes.Contains(extra.AnthropicTools[0], []byte(`"defer_loading":true`)) {
+		t.Fatalf("unmodeled custom tool field was not retained: %+v", extra)
+	}
+}
+
+func TestConverterPreservesNativeServerToolContentBothDirections(t *testing.T) {
+	var req MessagesRequest
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"assistant","content":[
+			{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{"query":"latest"}},
+			{"type":"web_search_tool_result","tool_use_id":"srv_1","content":[{"type":"web_search_result","url":"https://example.com","title":"Example","encrypted_content":"opaque"}]},
+			{"type":"text","text":"Result","citations":[{"url":"https://example.com"}]}
+		]}]
+	}`)
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	chatReq := (&Converter{}).ToInternal(&req)
+	if len(chatReq.Messages) != 1 {
+		t.Fatalf("messages = %+v, want one assistant message", chatReq.Messages)
+	}
+	if blocks := provider.AnthropicContentBlocksFromMessage(chatReq.Messages[0]); len(blocks) != 3 {
+		t.Fatalf("native blocks = %d, want 3", len(blocks))
+	}
+	response := (&Converter{}).FromInternal(&provider.ChatResponse{Message: chatReq.Messages[0]}, req.Model)
+	wire, err := json.Marshal(response.Content)
+	if err != nil {
+		t.Fatalf("marshal response content: %v", err)
+	}
+	for _, want := range []string{`"server_tool_use"`, `"web_search_tool_result"`, `"citations"`} {
+		if !strings.Contains(string(wire), want) {
+			t.Fatalf("response content = %s, missing %s", wire, want)
+		}
+	}
+
+	var citationOnly MessagesRequest
+	if err := json.Unmarshal([]byte(`{"model":"m","messages":[{"role":"assistant","content":[{"type":"text","text":"Result","citations":[{"url":"https://example.com"}]}]}]}`), &citationOnly); err != nil {
+		t.Fatalf("unmarshal citation-only history: %v", err)
+	}
+	citationReq := (&Converter{}).ToInternal(&citationOnly)
+	if len(citationReq.Messages) != 1 || len(provider.AnthropicContentBlocksFromMessage(citationReq.Messages[0])) != 1 {
+		t.Fatalf("citation-only history lost native metadata: %+v", citationReq.Messages)
+	}
+}
+
+func TestPrepareLLMApiRequestRequiresAnthropicNativeProvider(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"tools":[{"type":"web_search_20260209","name":"web_search","max_uses":2}],
+		"messages":[{"role":"assistant","content":[{"type":"text","text":"Result","citations":[{"url":"https://example.com"}]}]}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	_, requirements, err := NewHandler(nil).PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
+	}
+	if requirements.RequireTools || !requiresDialect(requirements.RequiredNativeDialects, provider.ProtocolDialectAnthropic) {
+		t.Fatalf("requirements = %+v, want native fidelity without generic client-tool capability", requirements)
+	}
+}
+
+func TestPrepareLLMApiRequestIgnoresNullUnmodeledContentFields(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"assistant","content":[{"type":"text","text":"Result","citations":null}]}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, requirements, err := NewHandler(nil).PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
+	}
+	if requiresDialect(requirements.RequiredNativeDialects, provider.ProtocolDialectAnthropic) {
+		t.Fatal("null citations unexpectedly required Anthropic-native replay")
+	}
+	if provider.HasAnthropicNativeContent(prepared.ChatRequest.Messages) {
+		t.Fatal("null citations unexpectedly attached native content")
+	}
+}
+
+func TestServeLLMApiStreamsNativeServerToolEvents(t *testing.T) {
+	handler := NewHandler(nil)
+	start := json.RawMessage(`{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}}`)
+	delta := json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"latest\"}"}}`)
+	stop := json.RawMessage(`{"type":"content_block_stop","index":0}`)
+	citation := json.RawMessage(`{"type":"content_block_delta","index":1,"delta":{"type":"citations_delta","citation":{"url":"https://example.com"}}}`)
+	prov := &testStreamingProvider{chunks: []*schema.Message{
+		provider.AttachAnthropicStreamEvent(nil, "content_block_start", start),
+		provider.AttachAnthropicStreamEvent(nil, "content_block_delta", delta),
+		provider.AttachAnthropicStreamEvent(nil, "content_block_stop", stop),
+		{Role: schema.Assistant, Content: "Result"},
+		provider.AttachAnthropicStreamEvent(nil, "content_block_delta", citation),
+		{Role: schema.Assistant, ResponseMeta: &schema.ResponseMeta{FinishReason: "end_turn"}},
+	}}
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"search"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi: %v", err)
+	}
+	wire := rec.Body.String()
+	for _, want := range []string{`"type":"server_tool_use"`, `"type":"citations_delta"`, `"index":1`, `"text":"Result"`} {
+		if !strings.Contains(wire, want) {
+			t.Fatalf("stream = %s, missing %s", wire, want)
+		}
+	}
+}
+
+func TestServeLLMApiClosesGeneratedTextAndRemapsNativeBlockIndex(t *testing.T) {
+	handler := NewHandler(nil)
+	start := json.RawMessage(`{"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{}}}`)
+	delta := json.RawMessage(`{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"latest\"}"}}`)
+	stop := json.RawMessage(`{"type":"content_block_stop","index":2}`)
+	prov := &testStreamingProvider{chunks: []*schema.Message{
+		{Role: schema.Assistant, Content: "before"},
+		provider.AttachAnthropicStreamEvent(nil, "content_block_start", start),
+		provider.AttachAnthropicStreamEvent(nil, "content_block_delta", delta),
+		provider.AttachAnthropicStreamEvent(nil, "content_block_stop", stop),
+		{Role: schema.Assistant, Content: "after"},
+		{Role: schema.Assistant, ResponseMeta: &schema.ResponseMeta{FinishReason: "end_turn"}},
+	}}
+	body := []byte(`{"model":"claude-sonnet-4-6","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"search"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi() error = %v", err)
+	}
+
+	var sequence []string
+	for _, frame := range strings.Split(rec.Body.String(), "\n\n") {
+		lines := strings.Split(frame, "\n")
+		if len(lines) < 2 || !strings.HasPrefix(lines[0], "event: content_block_") || !strings.HasPrefix(lines[1], "data: ") {
+			continue
+		}
+		var event struct {
+			Type         string `json:"type"`
+			Index        int    `json:"index"`
+			ContentBlock struct {
+				Type string `json:"type"`
+			} `json:"content_block"`
+			Delta struct {
+				Type string `json:"type"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(lines[1], "data: ")), &event); err != nil {
+			t.Fatalf("decode SSE frame %q: %v", frame, err)
+		}
+		detail := event.ContentBlock.Type
+		if detail == "" {
+			detail = event.Delta.Type
+		}
+		sequence = append(sequence, fmt.Sprintf("%s:%d:%s", event.Type, event.Index, detail))
+	}
+	want := []string{
+		"content_block_start:0:text",
+		"content_block_delta:0:text_delta",
+		"content_block_stop:0:",
+		"content_block_start:1:server_tool_use",
+		"content_block_delta:1:input_json_delta",
+		"content_block_stop:1:",
+		"content_block_start:2:text",
+		"content_block_delta:2:text_delta",
+		"content_block_stop:2:",
+	}
+	if !slices.Equal(sequence, want) {
+		t.Fatalf("content block sequence = %v, want %v\nstream:\n%s", sequence, want, rec.Body.String())
 	}
 }
 
@@ -856,5 +1208,314 @@ func TestToInternalCarriesDisableParallelToolUse(t *testing.T) {
 	extra := provider.ChatExtraFieldsFromOptions(chatReq.Options...)
 	if extra == nil || extra.ParallelToolCalls == nil || *extra.ParallelToolCalls {
 		t.Fatalf("parallel_tool_calls = %+v, want false", extra)
+	}
+}
+
+// parseSSEBlockEvents returns the (event, index) pairs of every content_block_*
+// event in an SSE body.
+func parseSSEBlockEvents(t *testing.T, body string) [][2]any {
+	t.Helper()
+	var events [][2]any
+	var eventName string
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case strings.HasPrefix(line, "event: "):
+			eventName = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			if !strings.HasPrefix(eventName, "content_block_") {
+				continue
+			}
+			var payload struct {
+				Index *int `json:"index"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &payload); err != nil {
+				t.Fatalf("decode %s data: %v", eventName, err)
+			}
+			if payload.Index == nil {
+				t.Fatalf("%s event without index: %s", eventName, line)
+			}
+			events = append(events, [2]any{eventName, *payload.Index})
+		}
+	}
+	return events
+}
+
+// assertContentBlockDiscipline enforces the Anthropic streaming contract: a
+// block index is started once, only receives deltas while open, and is stopped
+// exactly once.
+func assertContentBlockDiscipline(t *testing.T, body string) {
+	t.Helper()
+	open := map[int]bool{}
+	seen := map[int]bool{}
+	for _, event := range parseSSEBlockEvents(t, body) {
+		name, index := event[0].(string), event[1].(int)
+		switch name {
+		case "content_block_start":
+			if seen[index] {
+				t.Fatalf("block %d started twice:\n%s", index, body)
+			}
+			seen[index] = true
+			open[index] = true
+		case "content_block_delta":
+			if !open[index] {
+				t.Fatalf("delta for block %d that is not open:\n%s", index, body)
+			}
+		case "content_block_stop":
+			if !open[index] {
+				t.Fatalf("stop for block %d that is not open:\n%s", index, body)
+			}
+			open[index] = false
+		}
+	}
+	for index, isOpen := range open {
+		if isOpen {
+			t.Fatalf("block %d was not stopped:\n%s", index, body)
+		}
+	}
+}
+
+func TestServeLLMApiStreamKeepsInterleavedToolFragmentsInOneBlock(t *testing.T) {
+	handler := NewHandler(nil)
+	idx0 := 0
+	// An upstream that interleaves text between tool-call fragments must still
+	// produce one tool_use block with one complete JSON input value.
+	prov := &testStreamingProvider{
+		cfg: provider.ProviderConfig{Id: "deepseek", ProviderType: "deepseek"},
+		chunks: []*schema.Message{
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				Index: &idx0, ID: "call_1", Type: "function",
+				Function: schema.FunctionCall{Name: "get_weather", Arguments: `{"ci`},
+			}}},
+			{Role: schema.Assistant, Content: "checking"},
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				Index: &idx0, Function: schema.FunctionCall{Arguments: `ty":"Paris"}`},
+			}}, ResponseMeta: &schema.ResponseMeta{FinishReason: "tool_use"}},
+		},
+	}
+
+	body, err := json.Marshal(MessagesRequest{
+		Model:     "claude-sonnet-4-5",
+		MaxTokens: 16,
+		Stream:    true,
+		Messages:  []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "weather"}}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi returned error: %v", err)
+	}
+	payload, err := io.ReadAll(rec.Result().Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	bodyText := string(payload)
+
+	assertContentBlockDiscipline(t, bodyText)
+	if n := strings.Count(bodyText, `"id":"call_1"`); n != 1 {
+		t.Fatalf("tool_use starts carrying call_1 = %d, want exactly one: %s", n, bodyText)
+	}
+	var toolIndex = -1
+	var arguments strings.Builder
+	for _, frame := range strings.Split(bodyText, "\n\n") {
+		lines := strings.Split(frame, "\n")
+		if len(lines) < 2 || !strings.HasPrefix(lines[1], "data: ") {
+			continue
+		}
+		var event struct {
+			Index        int `json:"index"`
+			ContentBlock struct {
+				Type string `json:"type"`
+			} `json:"content_block"`
+			Delta struct {
+				Type        string `json:"type"`
+				PartialJSON string `json:"partial_json"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(lines[1], "data: ")), &event); err != nil {
+			t.Fatalf("decode SSE frame: %v", err)
+		}
+		if event.ContentBlock.Type == "tool_use" {
+			toolIndex = event.Index
+		}
+		if event.Delta.Type == "input_json_delta" && event.Index == toolIndex {
+			arguments.WriteString(event.Delta.PartialJSON)
+		}
+	}
+	var input map[string]any
+	if err := json.Unmarshal([]byte(arguments.String()), &input); err != nil {
+		t.Fatalf("combined tool input %q is invalid JSON: %v\n%s", arguments.String(), err, bodyText)
+	}
+	if input["city"] != "Paris" {
+		t.Fatalf("combined tool input = %+v, want city Paris", input)
+	}
+	if !strings.Contains(bodyText, `"text":"checking"`) {
+		t.Fatalf("interleaved text was lost: %s", bodyText)
+	}
+}
+
+func TestServeLLMApiStreamSynthesizesMissingToolCallID(t *testing.T) {
+	handler := NewHandler(nil)
+	idx0 := 0
+	prov := &testStreamingProvider{
+		cfg: provider.ProviderConfig{Id: "compatible", ProviderType: "openai"},
+		chunks: []*schema.Message{{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+			Index: &idx0,
+			Function: schema.FunctionCall{
+				Name:      "get_weather",
+				Arguments: `{"city":"Paris"}`,
+			},
+		}}}},
+	}
+
+	body, err := json.Marshal(MessagesRequest{
+		Model:     "claude-sonnet-4-5",
+		MaxTokens: 16,
+		Stream:    true,
+		Messages:  []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "weather"}}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi returned error: %v", err)
+	}
+	bodyText := rec.Body.String()
+
+	assertContentBlockDiscipline(t, bodyText)
+	if !strings.Contains(bodyText, `"id":"call_agw_0"`) {
+		t.Fatalf("synthetic tool id missing: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"stop_reason":"tool_use"`) {
+		t.Fatalf("tool stop reason missing: %s", bodyText)
+	}
+}
+
+func TestServeLLMApiStreamClosesCompleteToolBeforeFollowingText(t *testing.T) {
+	handler := NewHandler(nil)
+	idx0 := 0
+	prov := &testStreamingProvider{
+		cfg: provider.ProviderConfig{Id: "compatible", ProviderType: "openai"},
+		chunks: []*schema.Message{
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				Index: &idx0, ID: "call_1",
+				Function: schema.FunctionCall{Name: "get_weather", Arguments: `{"city":"Paris"}`},
+			}}},
+			{Role: schema.Assistant, Content: "I will check."},
+		},
+		recvErr: errors.New("upstream disconnected after text"),
+	}
+
+	body, err := json.Marshal(MessagesRequest{
+		Model:     "claude-sonnet-4-5",
+		MaxTokens: 16,
+		Stream:    true,
+		Messages:  []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "weather"}}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi returned error: %v", err)
+	}
+	bodyText := rec.Body.String()
+
+	if !strings.Contains(bodyText, `"text":"I will check."`) {
+		t.Fatalf("complete-tool follower text was deferred until after the receive error: %s", bodyText)
+	}
+	toolStop := strings.Index(bodyText, "event: content_block_stop")
+	textStart := strings.Index(bodyText, `"content_block":{"text":"","type":"text"}`)
+	if toolStop < 0 || textStart < 0 || toolStop > textStart {
+		t.Fatalf("tool block was not closed before text block: %s", bodyText)
+	}
+}
+
+func TestPrepareLLMApiRequestRequiresNativeProviderForSignedReasoning(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-sonnet-4-6",
+		"messages":[{"role":"assistant","content":[
+			{"type":"thinking","thinking":"inspect","signature":"authentic-signature"},
+			{"type":"redacted_thinking","data":"opaque-redacted"}
+		]}]
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, requirements, err := NewHandler(nil).PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest() error = %v", err)
+	}
+	if !requiresDialect(requirements.RequiredReasoningDialects, provider.ProtocolDialectAnthropic) {
+		t.Fatal("signed reasoning did not require Anthropic reasoning replay")
+	}
+	if requiresDialect(requirements.RequiredNativeDialects, provider.ProtocolDialectAnthropic) {
+		t.Fatal("modeled signed reasoning unnecessarily required full native-content support")
+	}
+	if !provider.HasAnthropicNativeReasoning(prepared.ChatRequest.Messages) {
+		t.Fatal("signed reasoning was not retained in the internal request")
+	}
+}
+
+func TestServeLLMApiDropsUnmappableNativeStreamEvents(t *testing.T) {
+	handler := NewHandler(nil)
+	// A native delta/stop whose upstream block was never started downstream has
+	// no index to point at; forwarding it would break the client's block map.
+	prov := &testStreamingProvider{
+		cfg: provider.ProviderConfig{Id: "claudecode", ProviderType: "claudecode"},
+		chunks: []*schema.Message{
+			provider.AttachAnthropicStreamEvent(nil, "content_block_delta",
+				json.RawMessage(`{"type":"content_block_delta","index":7,"delta":{"type":"citations_delta","citation":{"url":"https://example.com"}}}`)),
+			provider.AttachAnthropicStreamEvent(nil, "content_block_stop",
+				json.RawMessage(`{"type":"content_block_stop","index":7}`)),
+			{Role: schema.Assistant, Content: "answer"},
+		},
+	}
+
+	body, err := json.Marshal(MessagesRequest{
+		Model:     "claude-sonnet-4-5",
+		MaxTokens: 16,
+		Stream:    true,
+		Messages:  []MessageItem{{Role: "user", Content: MessageContent{{Type: "text", Text: "hi"}}}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", bytes.NewReader(body))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatalf("PrepareLLMApiRequest returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatalf("ServeLLMApi returned error: %v", err)
+	}
+	payload, err := io.ReadAll(rec.Result().Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	bodyText := string(payload)
+
+	assertContentBlockDiscipline(t, bodyText)
+	if strings.Contains(bodyText, "citations_delta") {
+		t.Fatalf("unmappable citation delta forwarded: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"text":"answer"`) {
+		t.Fatalf("generic text lost: %s", bodyText)
 	}
 }

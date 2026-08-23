@@ -19,9 +19,56 @@ type ProviderTypeSetting struct {
 	Enabled      bool   `json:"enabled"`
 }
 
+// ProtocolDialect identifies wire-level state that is only portable between
+// providers capable of preserving the same upstream protocol dialect.
+type ProtocolDialect string
+
+const ProtocolDialectAnthropic ProtocolDialect = "anthropic"
+
+// ProviderTypeCapabilities describes protocol-level fidelity that is stable
+// for every instance of one registered provider type.
+type ProviderTypeCapabilities struct {
+	NativeDialects    map[ProtocolDialect]struct{}
+	ReasoningDialects map[ProtocolDialect]struct{}
+}
+
+// NewProtocolDialectSet builds a provider capability or request requirement
+// set without exposing dialect-specific fields in routing code.
+func NewProtocolDialectSet(dialects ...ProtocolDialect) map[ProtocolDialect]struct{} {
+	set := make(map[ProtocolDialect]struct{}, len(dialects))
+	for _, dialect := range dialects {
+		if dialect != "" {
+			set[dialect] = struct{}{}
+		}
+	}
+	return set
+}
+
+func (c ProviderTypeCapabilities) SupportsNativeDialect(dialect ProtocolDialect) bool {
+	_, ok := c.NativeDialects[dialect]
+	return ok
+}
+
+func (c ProviderTypeCapabilities) SupportsReasoningDialect(dialect ProtocolDialect) bool {
+	_, ok := c.ReasoningDialects[dialect]
+	return ok
+}
+
+func cloneProtocolDialects(src map[ProtocolDialect]struct{}) map[ProtocolDialect]struct{} {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[ProtocolDialect]struct{}, len(src))
+	for dialect := range src {
+		dst[dialect] = struct{}{}
+	}
+	return dst
+}
+
 var (
 	mu                    sync.RWMutex
 	factories             = map[string]ProviderFactory{}
+	typeCapabilities      = map[string]ProviderTypeCapabilities{}
 	disabledProviderTypes = map[string]struct{}{}
 )
 
@@ -34,6 +81,32 @@ func RegisterProviderFactory(name string, factory ProviderFactory) {
 	mu.Lock()
 	defer mu.Unlock()
 	factories[name] = factory
+}
+
+// RegisterProviderTypeCapabilities declares protocol-level capabilities used
+// before a provider instance is selected or a credential is charged.
+func RegisterProviderTypeCapabilities(name string, capabilities ProviderTypeCapabilities) {
+	name = normalizeProviderType(name)
+	if name == "" {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	capabilities.NativeDialects = cloneProtocolDialects(capabilities.NativeDialects)
+	capabilities.ReasoningDialects = cloneProtocolDialects(capabilities.ReasoningDialects)
+	typeCapabilities[name] = capabilities
+}
+
+// CapabilitiesForProviderType returns the registered protocol-level
+// capabilities for name. Unknown and undeclared provider types fail closed.
+func CapabilitiesForProviderType(name string) ProviderTypeCapabilities {
+	name = normalizeProviderType(name)
+	mu.RLock()
+	defer mu.RUnlock()
+	capabilities := typeCapabilities[name]
+	capabilities.NativeDialects = cloneProtocolDialects(capabilities.NativeDialects)
+	capabilities.ReasoningDialects = cloneProtocolDialects(capabilities.ReasoningDialects)
+	return capabilities
 }
 
 // NewProvider creates a provider by name using registered factories.

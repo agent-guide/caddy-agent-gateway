@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	einojsonschema "github.com/eino-contrib/jsonschema"
+
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/httplog"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
@@ -85,6 +87,9 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, llmroutepkg.RequestRequirements{}, fmt.Errorf("invalid request: %s", err)
 	}
+	if err := validateToolDefinitions(req.Tools); err != nil {
+		return nil, llmroutepkg.RequestRequirements{}, fmt.Errorf("invalid request: %w", err)
+	}
 
 	h.logger.Debug(h.Name()+": request prepared",
 		zap.String("model", req.Model),
@@ -94,15 +99,23 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 	)
 
 	conv := &Converter{}
+	chatRequest := conv.ToInternal(&req)
 	prepared := &dispatcher.PreparedLLMApiRequest{
 		Type:            provider.LLMApiRequestTypeChat,
-		ChatRequest:     conv.ToInternal(&req),
+		ChatRequest:     chatRequest,
 		StreamRequested: req.Stream,
 		RawRequest:      &req,
 	}
 	requestRequirements := llmroutepkg.RequestRequirements{
 		Model:            req.Model,
 		RequireStreaming: req.Stream,
+		RequireTools:     hasAnthropicClientTools(req.Tools),
+	}
+	if hasAnthropicServerTools(req.Tools) || provider.HasAnthropicNativeContent(chatRequest.Messages) {
+		requestRequirements = requestRequirements.WithNativeDialect(provider.ProtocolDialectAnthropic)
+	}
+	if provider.HasAnthropicNativeReasoning(chatRequest.Messages) {
+		requestRequirements = requestRequirements.WithReasoningDialect(provider.ProtocolDialectAnthropic)
 	}
 	usage.SpanFromContext(r.Context()).SetExtension(usage.LLMExtension{
 		LLMAPI:           h.Name(),
@@ -112,6 +125,41 @@ func (h *Handler) PrepareLLMApiRequest(r *http.Request) (*dispatcher.PreparedLLM
 		RequestToolNames: anthropicToolNames(req.Tools),
 	})
 	return prepared, requestRequirements, nil
+}
+
+func hasAnthropicServerTools(tools []ToolDefinition) bool {
+	for _, tool := range tools {
+		if tool.isServerTool() {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnthropicClientTools(tools []ToolDefinition) bool {
+	for _, tool := range tools {
+		if !tool.isServerTool() {
+			return true
+		}
+	}
+	return false
+}
+
+func validateToolDefinitions(tools []ToolDefinition) error {
+	for i, tool := range tools {
+		if tool.isServerTool() || isEmptyJSON(tool.InputSchema) {
+			continue
+		}
+		normalized, err := provider.NormalizeObjectToolInputSchema(tool.InputSchema)
+		if err != nil {
+			return fmt.Errorf("tools[%d] %q input_schema %w", i, tool.Name, err)
+		}
+		var schemaValue einojsonschema.Schema
+		if err := json.Unmarshal(normalized, &schemaValue); err != nil {
+			return fmt.Errorf("tools[%d] %q input_schema is invalid: %w", i, tool.Name, err)
+		}
+	}
+	return nil
 }
 
 // ServeLLMApi handles Anthropic-compatible API requests.
@@ -251,15 +299,32 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 	finalReasoningTokens := 0
 	usageFinalized := false
 	nextBlockIndex := 0
+	nativeBlockIndices := map[int]int{}
 	emittedToolUse := false
 	toolNames := map[string]struct{}{}
 	// Streamed tool calls arrive as fragments: the first fragment for a tool-call
 	// index carries id+name, later fragments carry argument deltas. Accumulate
 	// them into one Anthropic tool_use content block per index instead of emitting
 	// a separate block per fragment.
-	type streamToolBlock struct{ blockIndex int }
+	type streamToolBlock struct {
+		blockIndex       int
+		started          bool
+		closed           bool
+		id               string
+		name             string
+		arguments        strings.Builder
+		pendingArguments strings.Builder
+	}
 	toolBlocks := map[int]*streamToolBlock{}
 	var toolBlockOrder []int
+	var deferredText strings.Builder
+	toolCallIDs := map[string]struct{}{}
+	syntheticToolCallID := 0
+	allocateBlockIndex := func() int {
+		index := nextBlockIndex
+		nextBlockIndex++
+		return index
+	}
 	closeReasoningBlock := func() {
 		if !reasoningBlockStarted {
 			return
@@ -281,6 +346,104 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		reasoningSourceIndex = -1
 		reasoningSignature = ""
 		reasoningContent.Reset()
+	}
+	closeTextBlock := func() {
+		if !textBlockStarted {
+			return
+		}
+		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": textBlockIndex})
+		textBlockStarted = false
+		textBlockIndex = -1
+	}
+	nextSyntheticToolCallID := func() string {
+		for {
+			id := fmt.Sprintf("call_agw_%d", syntheticToolCallID)
+			syntheticToolCallID++
+			if _, exists := toolCallIDs[id]; exists {
+				continue
+			}
+			toolCallIDs[id] = struct{}{}
+			return id
+		}
+	}
+	closeToolBlocks := func() {
+		for _, key := range toolBlockOrder {
+			block := toolBlocks[key]
+			if block == nil || block.closed {
+				continue
+			}
+			if !block.started && block.name != "" {
+				if block.id == "" {
+					block.id = nextSyntheticToolCallID()
+				}
+				block.blockIndex = allocateBlockIndex()
+				writeSSEEvent(w, "content_block_start", map[string]any{
+					"type": "content_block_start", "index": block.blockIndex,
+					"content_block": map[string]any{
+						"type": "tool_use", "id": block.id, "name": block.name, "input": map[string]any{},
+					},
+				})
+				block.started = true
+				finalStopReason = "tool_use"
+				emittedToolUse = true
+			}
+			if block.started {
+				if block.pendingArguments.Len() > 0 {
+					writeSSEEvent(w, "content_block_delta", map[string]any{
+						"type": "content_block_delta", "index": block.blockIndex,
+						"delta": map[string]any{"type": "input_json_delta", "partial_json": block.pendingArguments.String()},
+					})
+					block.pendingArguments.Reset()
+				}
+				writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": block.blockIndex})
+			} else {
+				h.logger.Debug(h.Name()+": dropping incomplete streamed tool call",
+					zap.Int("tool_call_index", key),
+					zap.Bool("has_id", block.id != ""),
+					zap.Bool("has_name", block.name != ""),
+				)
+			}
+			block.closed = true
+		}
+	}
+	toolBlocksHaveCompleteInput := func() bool {
+		found := false
+		for _, block := range toolBlocks {
+			if block == nil || block.closed {
+				continue
+			}
+			found = true
+			if block.name == "" || !json.Valid([]byte(block.arguments.String())) {
+				return false
+			}
+		}
+		return found
+	}
+	hasOpenToolBlock := func() bool {
+		for _, block := range toolBlocks {
+			if block != nil && !block.closed {
+				return true
+			}
+		}
+		return false
+	}
+	writeText := func(text string) {
+		if text == "" {
+			return
+		}
+		if !textBlockStarted {
+			textBlockIndex = allocateBlockIndex()
+			writeSSEEvent(w, "content_block_start", map[string]any{
+				"type": "content_block_start", "index": textBlockIndex,
+				"content_block": map[string]string{"type": "text", "text": ""},
+			})
+			textBlockStarted = true
+		}
+		writeSSEEvent(w, "content_block_delta", map[string]any{
+			"type": "content_block_delta", "index": textBlockIndex,
+			"delta": map[string]string{"type": "text_delta", "text": text},
+		})
+		flusher.Flush()
 	}
 	for {
 		chunk, err := stream.Recv()
@@ -304,6 +467,55 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 			return
 		}
 		chunkCount++
+		if nativeEvents := provider.AnthropicStreamEventsFromMessage(chunk); len(nativeEvents) > 0 {
+			for _, nativeEvent := range nativeEvents {
+				data := nativeEvent.Data
+				sourceIndex, hasIndex := anthropicSSEEventIndex(data)
+				switch nativeEvent.Event {
+				case "content_block_start":
+					closeReasoningBlock()
+					closeTextBlock()
+					closeToolBlocks()
+					targetIndex := allocateBlockIndex()
+					if hasIndex {
+						nativeBlockIndices[sourceIndex] = targetIndex
+					}
+					data = rewriteAnthropicSSEEventIndex(data, targetIndex)
+				case "content_block_delta":
+					targetIndex, ok := nativeBlockIndices[sourceIndex]
+					switch {
+					case hasIndex && ok:
+						data = rewriteAnthropicSSEEventIndex(data, targetIndex)
+					case hasIndex && textBlockStarted:
+						// citations_delta belongs to the currently open text block,
+						// whose downstream index may have been remapped.
+						data = rewriteAnthropicSSEEventIndex(data, textBlockIndex)
+					default:
+						// The upstream index has no downstream block. Forwarding it
+						// would point the client at a block that was never started.
+						h.logger.Debug(h.Name()+": dropping unmappable native stream event",
+							zap.String("event", nativeEvent.Event),
+							zap.Int("upstream_index", sourceIndex),
+						)
+						continue
+					}
+				case "content_block_stop":
+					targetIndex, ok := nativeBlockIndices[sourceIndex]
+					if !hasIndex || !ok {
+						h.logger.Debug(h.Name()+": dropping unmappable native stream event",
+							zap.String("event", nativeEvent.Event),
+							zap.Int("upstream_index", sourceIndex),
+						)
+						continue
+					}
+					data = rewriteAnthropicSSEEventIndex(data, targetIndex)
+					delete(nativeBlockIndices, sourceIndex)
+				}
+				writeRawSSEEvent(w, nativeEvent.Event, data)
+			}
+			flusher.Flush()
+			continue
+		}
 		handledStructuredReasoning := false
 		if chunk != nil {
 			for _, part := range provider.ReasoningPartsFromMessage(chunk) {
@@ -321,9 +533,8 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 						closeReasoningBlock()
 					}
 					if !reasoningBlockStarted {
-						reasoningBlockIndex = nextBlockIndex
+						reasoningBlockIndex = allocateBlockIndex()
 						reasoningSourceIndex = sourceIndex
-						nextBlockIndex++
 						writeSSEEvent(w, "content_block_start", map[string]any{
 							"type": "content_block_start", "index": reasoningBlockIndex,
 							"content_block": map[string]string{"type": "thinking", "thinking": "", "signature": ""},
@@ -350,8 +561,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 						continue
 					}
 					closeReasoningBlock()
-					idx := nextBlockIndex
-					nextBlockIndex++
+					idx := allocateBlockIndex()
 					writeSSEEvent(w, "content_block_start", map[string]any{
 						"type": "content_block_start", "index": idx,
 						"content_block": map[string]string{
@@ -373,9 +583,8 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 			// that path valid while structured parts preserve real signatures for
 			// Anthropic-compatible providers.
 			if !reasoningBlockStarted {
-				reasoningBlockIndex = nextBlockIndex
+				reasoningBlockIndex = allocateBlockIndex()
 				reasoningSourceIndex = 0
-				nextBlockIndex++
 				writeSSEEvent(w, "content_block_start", map[string]any{
 					"type": "content_block_start", "index": reasoningBlockIndex,
 					"content_block": map[string]string{"type": "thinking", "thinking": "", "signature": ""},
@@ -392,20 +601,26 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 
 		if text := extractText(chunk); text != "" {
 			closeReasoningBlock()
-			if !textBlockStarted {
-				textBlockIndex = nextBlockIndex
-				writeSSEEvent(w, "content_block_start", map[string]any{
-					"type": "content_block_start", "index": textBlockIndex,
-					"content_block": map[string]string{"type": "text", "text": ""},
-				})
-				textBlockStarted = true
-				nextBlockIndex++
+			if toolBlocksHaveCompleteInput() {
+				// A following text chunk is the only generic signal that an
+				// OpenAI-compatible tool-call argument stream is complete. Once
+				// every open call contains a complete JSON value, close the tool
+				// blocks so subsequent text remains genuinely streaming.
+				closeToolBlocks()
 			}
-			writeSSEEvent(w, "content_block_delta", map[string]any{
-				"type": "content_block_delta", "index": textBlockIndex,
-				"delta": map[string]string{"type": "text_delta", "text": text},
-			})
-			flusher.Flush()
+			if hasOpenToolBlock() {
+				// Some OpenAI-compatible providers interleave text between JSON
+				// fragments of one indexed tool call. Anthropic content blocks are
+				// sequential, so retain the text until the tool block can be closed
+				// instead of splitting one call into duplicate tool_use blocks.
+				deferredText.WriteString(text)
+			} else {
+				if deferredText.Len() > 0 {
+					text = deferredText.String() + text
+					deferredText.Reset()
+				}
+				writeText(text)
+			}
 		}
 
 		// Accumulate streamed tool-call fragments into one content block per
@@ -414,13 +629,22 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		// fragment would corrupt the tool call into many empty tool_use blocks.
 		for _, tc := range chunk.ToolCalls {
 			closeReasoningBlock()
+			closeTextBlock()
 			if name := strings.TrimSpace(tc.Function.Name); name != "" {
 				toolNames[name] = struct{}{}
 			}
 			if tc.Index == nil {
 				// Provider delivered the whole tool call in a single fragment.
-				idx := nextBlockIndex
-				nextBlockIndex++
+				if strings.TrimSpace(tc.Function.Name) == "" {
+					h.logger.Debug(h.Name() + ": dropping streamed tool call without a name")
+					continue
+				}
+				if tc.ID == "" {
+					tc.ID = nextSyntheticToolCallID()
+				} else {
+					toolCallIDs[tc.ID] = struct{}{}
+				}
+				idx := allocateBlockIndex()
 				writeSSEEvent(w, "content_block_start", map[string]any{
 					"type": "content_block_start", "index": idx,
 					"content_block": map[string]any{
@@ -439,28 +663,62 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 				flusher.Flush()
 				continue
 			}
-			block, ok := toolBlocks[*tc.Index]
-			if !ok {
-				block = &streamToolBlock{blockIndex: nextBlockIndex}
-				nextBlockIndex++
+			block, exists := toolBlocks[*tc.Index]
+			if !exists {
+				block = &streamToolBlock{}
 				toolBlocks[*tc.Index] = block
 				toolBlockOrder = append(toolBlockOrder, *tc.Index)
+			}
+			if block.closed {
+				h.logger.Debug(h.Name()+": dropping tool fragment for a closed block",
+					zap.Int("tool_call_index", *tc.Index),
+				)
+				continue
+			}
+			if block.id == "" {
+				block.id = tc.ID
+				if block.id != "" {
+					toolCallIDs[block.id] = struct{}{}
+				}
+			}
+			if block.name == "" {
+				block.name = tc.Function.Name
+			}
+			if tc.Function.Arguments != "" {
+				block.arguments.WriteString(tc.Function.Arguments)
+				block.pendingArguments.WriteString(tc.Function.Arguments)
+			}
+			// Anthropic requires id and name in content_block_start. Some
+			// OpenAI-compatible streams omit either value from their first
+			// indexed fragment, so buffer arguments until both arrive.
+			if !block.started && block.id != "" && block.name != "" {
+				block.blockIndex = allocateBlockIndex()
 				writeSSEEvent(w, "content_block_start", map[string]any{
 					"type": "content_block_start", "index": block.blockIndex,
 					"content_block": map[string]any{
-						"type": "tool_use", "id": tc.ID, "name": tc.Function.Name, "input": map[string]any{},
+						"type": "tool_use", "id": block.id, "name": block.name, "input": map[string]any{},
 					},
 				})
+				block.started = true
 				finalStopReason = "tool_use"
 				emittedToolUse = true
 			}
-			if tc.Function.Arguments != "" {
+			if block.started && block.pendingArguments.Len() > 0 {
 				writeSSEEvent(w, "content_block_delta", map[string]any{
 					"type": "content_block_delta", "index": block.blockIndex,
-					"delta": map[string]any{"type": "input_json_delta", "partial_json": tc.Function.Arguments},
+					"delta": map[string]any{"type": "input_json_delta", "partial_json": block.pendingArguments.String()},
 				})
+				block.pendingArguments.Reset()
 			}
 			flusher.Flush()
+		}
+		if deferredText.Len() > 0 && toolBlocksHaveCompleteInput() {
+			// Text may have arrived between the final two argument fragments and
+			// there may be no later text chunk to trigger the boundary.
+			closeToolBlocks()
+			text := deferredText.String()
+			deferredText.Reset()
+			writeText(text)
 		}
 
 		if chunk != nil && chunk.ResponseMeta != nil {
@@ -494,13 +752,12 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		zap.String("model", model),
 		zap.Int("chunks", chunkCount),
 	)
-	if textBlockStarted {
-		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": textBlockIndex})
-	}
+	closeTextBlock()
 	closeReasoningBlock()
-	// Close every accumulated streamed tool-call block.
-	for _, key := range toolBlockOrder {
-		writeSSEEvent(w, "content_block_stop", map[string]any{"type": "content_block_stop", "index": toolBlocks[key].blockIndex})
+	closeToolBlocks()
+	if deferredText.Len() > 0 {
+		writeText(deferredText.String())
+		closeTextBlock()
 	}
 	writeSSEEvent(w, "message_delta", map[string]any{
 		"type":  "message_delta",
@@ -695,6 +952,36 @@ func writeSSEEvent(w http.ResponseWriter, event string, data any) {
 		return
 	}
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
+}
+
+func writeRawSSEEvent(w http.ResponseWriter, event string, data json.RawMessage) {
+	if strings.TrimSpace(event) == "" || len(data) == 0 {
+		return
+	}
+	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+}
+
+func anthropicSSEEventIndex(data json.RawMessage) (int, bool) {
+	var event struct {
+		Index *int `json:"index"`
+	}
+	if json.Unmarshal(data, &event) != nil || event.Index == nil {
+		return 0, false
+	}
+	return *event.Index, true
+}
+
+func rewriteAnthropicSSEEventIndex(data json.RawMessage, index int) json.RawMessage {
+	var event map[string]any
+	if json.Unmarshal(data, &event) != nil {
+		return data
+	}
+	event["index"] = index
+	rewritten, err := json.Marshal(event)
+	if err != nil {
+		return data
+	}
+	return rewritten
 }
 
 var (

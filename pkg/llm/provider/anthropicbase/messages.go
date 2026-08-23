@@ -77,6 +77,23 @@ func BuildMessagesRequest(state *provider.ChatRequestState, opts BuildMessagesOp
 	} else {
 		req.Tools = []ToolDef{}
 	}
+	if extra := provider.ChatExtraFieldsFromOptions(state.Options...); extra != nil && len(extra.AnthropicTools) > 0 {
+		req.Tools = make([]ToolDef, 0, len(extra.AnthropicTools))
+		req.ToolChoice = nil
+		for _, raw := range extra.AnthropicTools {
+			var tool ToolDef
+			if err := json.Unmarshal(raw, &tool); err != nil {
+				// Forward the declaration verbatim rather than silently
+				// removing a tool the client expects to be callable.
+				req.Tools = append(req.Tools, OpaqueToolDef(raw))
+				continue
+			}
+			req.Tools = append(req.Tools, tool)
+		}
+		if len(extra.AnthropicToolChoice) > 0 {
+			req.ToolChoice = append(json.RawMessage(nil), extra.AnthropicToolChoice...)
+		}
+	}
 
 	if !extendedThinking {
 		if chatOpts := provider.GetChatOptions(state.Options...); chatOpts != nil && chatOpts.TopK > 0 {
@@ -191,6 +208,15 @@ func ToolInfosToToolDefs(tools []*schema.ToolInfo) []ToolDef {
 		if err != nil {
 			continue
 		}
+		if js == nil {
+			emptySchema, _ := provider.NormalizeObjectToolInputSchema(nil)
+			out = append(out, ToolDef{
+				Name:        ti.Name,
+				Description: ti.Desc,
+				InputSchema: emptySchema,
+			})
+			continue
+		}
 		raw, err := json.Marshal(js)
 		if err != nil {
 			continue
@@ -289,6 +315,9 @@ func mergeAdjacentSameRole(items []MessageItem) []MessageItem {
 }
 
 func convertAssistantMessage(msg *schema.Message, cacheControl *CacheControl) MessageItem {
+	if blocks := nativeMessageContent(msg); len(blocks) > 0 {
+		return MessageItem{Role: "assistant", Content: blocks}
+	}
 	var blocks []ContentBlock
 	for _, part := range provider.ReasoningPartsFromMessage(msg) {
 		switch part.Type {
@@ -362,7 +391,12 @@ func convertToolResultMessages(msgs []*schema.Message, cacheResolver MessageCach
 		block := ContentBlock{
 			Type:      "tool_result",
 			ToolUseID: msg.ToolCallID,
-			Content:   msg.Content,
+		}
+		// content is an interface field, so encoding/json omitempty only drops a
+		// nil value. Assigning an empty string would send "content": "", which
+		// Anthropic rejects; an absent content is the valid empty tool result.
+		if msg.Content != "" {
+			block.Content = msg.Content
 		}
 		block.CacheControl = resolveMessageCacheControl(msg, cacheResolver)
 		blocks = append(blocks, block)
@@ -371,6 +405,9 @@ func convertToolResultMessages(msgs []*schema.Message, cacheResolver MessageCach
 }
 
 func convertUserMessage(msg *schema.Message, cacheUserText bool, explicitCacheControl *CacheControl) MessageItem {
+	if blocks := nativeMessageContent(msg); len(blocks) > 0 {
+		return MessageItem{Role: "user", Content: blocks}
+	}
 	var blocks []ContentBlock
 	cacheControl := userTextCacheControl(cacheUserText)
 
@@ -399,6 +436,25 @@ func convertUserMessage(msg *schema.Message, cacheUserText bool, explicitCacheCo
 	}
 	applyMessageCacheControl(blocks, explicitCacheControl)
 	return MessageItem{Role: "user", Content: blocks}
+}
+
+func nativeMessageContent(msg *schema.Message) []ContentBlock {
+	rawBlocks := provider.AnthropicContentBlocksFromMessage(msg)
+	if len(rawBlocks) == 0 {
+		return nil
+	}
+	blocks := make([]ContentBlock, 0, len(rawBlocks))
+	for _, raw := range rawBlocks {
+		var block ContentBlock
+		if err := json.Unmarshal(raw, &block); err != nil {
+			// Dropping a block would break the turn — a missing tool_result
+			// leaves a dangling tool_use. Replay the bytes verbatim instead.
+			blocks = append(blocks, OpaqueContentBlock(raw))
+			continue
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
 }
 
 func imageSource(url, base64Data *string, mimeType string) *ImageSource {
@@ -443,7 +499,21 @@ func (r *MessagesResponse) ToChatResponse() *provider.ChatResponse {
 	var reasoningParts []string
 	var structuredReasoning []schema.MessageOutputPart
 	var toolCalls []schema.ToolCall
+	// Attaching native blocks pins every later turn of the conversation to an
+	// Anthropic-native provider, so only do it when a block would not survive
+	// the round trip through the generic message model.
+	var nativeBlocks []json.RawMessage
+	requiresNativeReplay := false
 	for _, b := range r.Content {
+		if b.requiresNativeReplay() {
+			requiresNativeReplay = true
+			break
+		}
+	}
+	for _, b := range r.Content {
+		if requiresNativeReplay && len(b.Raw) > 0 {
+			nativeBlocks = append(nativeBlocks, append(json.RawMessage(nil), b.Raw...))
+		}
 		switch b.Type {
 		case "thinking":
 			if b.Thinking != "" {
@@ -489,5 +559,6 @@ func (r *MessagesResponse) ToChatResponse() *provider.ChatResponse {
 		},
 	}
 	provider.AttachReasoningParts(msg, structuredReasoning...)
+	provider.AttachAnthropicContentBlocks(msg, nativeBlocks)
 	return &provider.ChatResponse{Message: msg}
 }

@@ -201,6 +201,13 @@ Provider `options.compact` selects compatibility request shaping. In Caddyfile p
 
 Built-in `provider_type` values: `openai`, `anthropic`, `claudecode`, `codex`, `gemini`, `ollama`, `openrouter`, `deepseek`, `zhipu`, `qwen`. The `zhipu` provider supports GLM Coding Plan Chat Completions, including request-level thinking, `reasoning_content` replay, and streamed tool arguments; set its `base_url` to `https://open.bigmodel.cn/api/coding/paas/v4`, or set `options.api_profile` to `coding_plan` when using a custom proxy URL. For Claude Code through an Anthropic-compatible endpoint such as GLM Coding Plan, use `provider_type claudecode`; it preserves signed and redacted thinking blocks across tool turns and accepts generic capability overrides such as `context_window`, `max_output_tokens`, `default_max_tokens`, and `vision`. The `qwen` provider targets DashScope's OpenAI-compatible mode and supports an optional `options.enable_thinking` (bool) to control Qwen thinking mode; per-request reasoning fields override it.
 
+Logical-model routes filter candidates against request needs. Requests with
+client-executed tools require a managed-model candidate whose resolved
+capabilities include `tools: true`; incomplete managed-model capability metadata
+can therefore make a tool request return “no eligible bindings.” Anthropic
+server tools use protocol-dialect fidelity filtering instead of this generic
+client-tool capability.
+
 ## MCP Quick Start
 
 The MCP gateway uses the same minimal Caddyfile as the Quick Start. Enable `mcp` in the dispatcher, then apply an MCP bundle.
