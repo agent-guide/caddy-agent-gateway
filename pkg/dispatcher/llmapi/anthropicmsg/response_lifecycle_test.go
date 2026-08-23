@@ -46,3 +46,26 @@ func TestResponseLifecycleFinalizesExactlyOnce(t *testing.T) {
 		t.Fatalf("extension = %#v", span.exts[0])
 	}
 }
+
+func TestResponseLifecycleConcurrentTerminalCallsFinishOnce(t *testing.T) {
+	span := &recordingInteractionSpan{}
+	lifecycle := newSpanResponseLifecycle(span, "stream")
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = lifecycle.Finish(responseFinish{StatusCode: 200, Outcome: "completed"})
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = lifecycle.Fail(responseFailure{StatusCode: 502, Outcome: "sink_error", ErrorType: "sink_error"})
+	}()
+	close(start)
+	wg.Wait()
+	if len(span.finishes) != 1 {
+		t.Fatalf("terminal finishes = %d, want 1", len(span.finishes))
+	}
+}

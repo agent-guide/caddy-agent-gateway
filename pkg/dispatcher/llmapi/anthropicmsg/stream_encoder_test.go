@@ -254,6 +254,35 @@ func TestStreamEncoderConcurrentCancelAndEOFHasOneTerminalOutcome(t *testing.T) 
 	}
 }
 
+func TestStreamEncoderConcurrentCancelAndSinkFailureHasOneTerminalOutcome(t *testing.T) {
+	sink := &memoryStreamSink{}
+	encoder, span := newTestStreamEncoder(t, sink)
+	if err := encoder.Accept(providerStreamEvent{Generic: schema.AssistantMessage("hello", nil)}); err != nil {
+		t.Fatal(err)
+	}
+	sink.failAt = len(sink.events) + 1
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := encoder.Accept(providerStreamEvent{Generic: schema.AssistantMessage("world", nil)}); err != nil {
+			_ = encoder.Fail(err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		_ = encoder.Cancel(context.Canceled)
+	}()
+	close(start)
+	wg.Wait()
+	if len(span.finishes) != 1 {
+		t.Fatalf("terminal finishes = %d, want 1", len(span.finishes))
+	}
+}
+
 func FuzzAnthropicStreamEncoderControlledTermination(f *testing.F) {
 	f.Add([]byte{0, 1, 2, 3, 4})
 	f.Add([]byte{1, 2, 2, 0, 0, 5})
@@ -266,7 +295,7 @@ func FuzzAnthropicStreamEncoderControlledTermination(f *testing.F) {
 		toolIndex := 0
 		for _, symbol := range sequence {
 			var event providerStreamEvent
-			switch symbol % 6 {
+			switch symbol % 11 {
 			case 0:
 				event.Generic = schema.AssistantMessage(strings.Repeat("x", 4096), nil)
 			case 1:
@@ -283,6 +312,16 @@ func FuzzAnthropicStreamEncoderControlledTermination(f *testing.F) {
 				event.Native = &anthropicbase.AnthropicStreamEvent{Event: "message_delta", Data: json.RawMessage(`{"type":"message_delta","usage":{"output_tokens":1}}`)}
 			case 5:
 				event.Generic = schema.AssistantMessage("tail", nil)
+			case 6:
+				event.Native = &anthropicbase.AnthropicStreamEvent{Event: "content_block_start", Data: json.RawMessage(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)}
+			case 7:
+				event.Native = &anthropicbase.AnthropicStreamEvent{Event: "content_block_delta", Data: json.RawMessage(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"native"}}`)}
+			case 8:
+				event.Native = &anthropicbase.AnthropicStreamEvent{Event: "content_block_stop", Data: json.RawMessage(`{"type":"content_block_stop","index":0}`)}
+			case 9:
+				event.Native = &anthropicbase.AnthropicStreamEvent{Event: "message_start", Data: json.RawMessage(`{"type":"message_start","message":{"id":"msg_fuzz","usage":{}}}`)}
+			case 10:
+				event.Native = &anthropicbase.AnthropicStreamEvent{Event: "message_stop", Data: json.RawMessage(`{"type":"message_stop"}`)}
 			}
 			if err := encoder.Accept(event); err != nil {
 				_ = encoder.Fail(err)

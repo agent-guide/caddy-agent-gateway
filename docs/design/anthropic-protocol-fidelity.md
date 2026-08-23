@@ -1,14 +1,37 @@
 # Anthropic Messages Protocol Fidelity Architecture
 
-Status: proposed
+Status: implemented (2026-08-23)
 
-This document defines the target architecture for Anthropic Messages ingress,
+This document defines the implemented architecture for Anthropic Messages ingress,
 the Claude Code (`cc`) ingress profile, protocol-native state preservation, and
 Anthropic SSE generation. It replaces incremental handler-specific fixes with
 explicit protocol contracts and a testable streaming state machine.
 
-It is an implementation design, not a statement that the target packages and
-types already exist.
+The migration was delivered as independently verified phases:
+
+| Phase | Commit | Result |
+|---|---|---|
+| 0 | `78c9ba9` | Froze lifecycle, block, usage, and terminal invariants. |
+| 1 | `8e90d60` | Centralized response lifecycle ownership and stream encoding. |
+| 2 | `ee370a5` | Split standard Anthropic and Claude Code into sibling profiles over one Messages core. |
+| 3 | `3344fe0` | Added scoped protocol state, registered codecs, enriched execution, and native relay. |
+| 4 | `272e37e` | Derived immutable atomic requirements from the AST and made route filtering generic. |
+| 5 | `f2fa3a9` | Proved extension with a second test-only dialect and no routing-core branch. |
+
+A post-implementation review then closed the following regression gaps:
+
+| Commit | Result |
+|---|---|
+| `f5b716a` | Restored pre-commit HTTP errors and delayed SSE header commitment. |
+| `48037a8` | Restored Claude Code tool names inside native relay events. |
+| `af55a8b` | Classified encoder, invalid-state, and sink terminal outcomes. |
+| `5e466ed` | Made the transition table executable and added fuzz/race coverage. |
+| `76ae622` | Made provider dialect registration explicit and deterministic. |
+| `291b877` | Hardened relay completeness, usage, metrics, folding, and requirement-gap status. |
+| `1e2d252` | Removed replaced paths and made fragment validation explicit. |
+
+The phase exit gates and completion criteria below remain the regression
+contract for future changes.
 
 ## 1. Problem Statement
 
@@ -847,7 +870,7 @@ type DialectCodec interface {
     Overlay(NativeOverlayInput) (json.RawMessage, error)
     FoldResponse([]NativeEnvelope) ([]NativeEnvelope, error)
     FoldStreamEvents([]NativeEnvelope) ([]NativeEnvelope, error)
-    MergeFragments(NativeStateKind, []NativeEnvelope) ([]NativeEnvelope, error)
+    ValidateFragments(NativeStateKind, []NativeEnvelope) error
     ValidateOrder([]NativeEnvelope) error
 }
 
@@ -988,7 +1011,10 @@ mode-selection class after provider selection. A separate parallel registry for
 transport capabilities must not be introduced; one definition registry plus one
 provider support set is the source of truth.
 
-Provider-type registration remains the pre-construction source of truth.
+Provider-type registration remains the pre-construction source of truth. Each
+provider type declares one explicit `ProtocolDialect`; registration rejects a
+feature from another dialect, so served-candidate mode selection never depends
+on map iteration order.
 Runtime marker interfaces must not duplicate it.
 
 Feature declarations describe end-to-end fidelity, not merely request
@@ -1025,10 +1051,10 @@ never inspect generic message extras to rediscover Anthropic state.
 Requirement derivation applies only to endpoints that execute a provider.
 `/v1/messages/count_tokens` is non-generative: it must branch before route
 target resolution, must not derive fidelity requirements, must not filter route
-candidates, and must not select or charge a credential. The current handler
-branches after target resolution, so a `count_tokens` request that carries
-server tools or native history can be rejected by native-dialect filtering even
-though it is answered locally and never reaches an upstream. Any future
+candidates, and must not select or charge a credential. The implemented handler
+sets `ExecutionLocal` during preparation, so a `count_tokens` request carrying
+server tools or native history bypasses provider routing while retaining normal
+ingress governance. Any future
 non-generative endpoint follows the same rule.
 
 This branch is expressed through a protocol-neutral dispatcher contract, not an
@@ -1130,7 +1156,8 @@ reports any block or buffer that cannot be emitted. The lifecycle records the
 last known usage when one exists and exactly one `response_outcome`.
 Expected outcomes include `completed`, `upstream_open_error`,
 `upstream_stream_error`, `upstream_error`, `client_cancel`, `invalid_state`, and
-`sink_error`. A failure after response commit emits the protocol error event
+`sink_error`. A locally rejected, unsupported endpoint additionally records
+`unsupported_local`, which never appears on provider execution. A failure after response commit emits the protocol error event
 when the sink is still writable; a failure before commit remains an HTTP error.
 
 The non-streaming coordinator shares that lifecycle finalizer rather than
@@ -1343,12 +1370,14 @@ request -> provider -> response -> response used as next-turn history -> replay
 ```
 
 Native tools, content blocks, ordering, and unmodeled fields must remain
-field-for-field equal after the round trip. A test variant intentionally changes
-each modeled mutable field and verifies that differential overlay changes only
-that field while retaining unknown fields. It also verifies that the canonical
-baseline digest changes for text, reasoning, tool ID/name/arguments, model,
-ordering, and optional-field presence without storing the original modeled
-payload twice.
+field-for-field equal after the round trip. Differential overlay is granular to
+the top-level fields of the dialect-owned `ModeledObject`: content-block callers
+capture each block as its own object, while response-body relay currently
+rewrites only the top-level model. Adding a nested response-body rewrite first
+requires block-level capture or a recursive, ordering-aware overlay; replacing
+an entire containing array would not satisfy this contract. Tests verify that a
+changed modeled field retains sibling unknown fields and that optional-field
+presence participates in its baseline digest.
 
 A second round trip covers the carrier rule in section 4.3: the same turn is
 driven through the `einomodel` bridge and eino stream materialization, and
