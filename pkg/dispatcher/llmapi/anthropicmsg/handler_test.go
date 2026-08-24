@@ -625,6 +625,44 @@ func TestServeLLMApiRestoresClaudeCodeToolNameInNativeRelay(t *testing.T) {
 	}
 }
 
+func TestServeLLMApiRecordsObservedToolNamesAfterAcceptFailure(t *testing.T) {
+	index := 0
+	invalid := anthropicbase.AttachAnthropicContentBlocks(&schema.Message{Role: schema.Assistant}, []json.RawMessage{
+		json.RawMessage(`{"type":"future_block","opaque":true}`),
+	})
+	prov := &testStreamingProvider{chunks: []*schema.Message{
+		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+			Index: &index, ID: "toolu_1", Function: schema.FunctionCall{Name: "lookup", Arguments: `{}`},
+		}}},
+		invalid,
+	}}
+	handler := NewHandler(StandardProfile())
+	span := &recordingInteractionSpan{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+		"model":"client-model","max_tokens":16,"stream":true,
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	req = req.WithContext(usage.ContextWithSpan(req.Context(), span))
+	prepared, _, err := handler.PrepareLLMApiRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	if err := handler.ServeLLMApi(rec, req, prov, prepared); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(rec.Body.String(), `event: error`) {
+		t.Fatalf("stream did not report accept failure: %s", rec.Body.String())
+	}
+	if len(span.exts) == 0 {
+		t.Fatal("tool metrics were not recorded after accept failure")
+	}
+	toolExtension, ok := span.exts[len(span.exts)-1].(usage.LLMExtension)
+	if !ok || toolExtension.ToolCallCount == nil || *toolExtension.ToolCallCount != 1 || !slices.Contains(toolExtension.ToolNames, "lookup") {
+		t.Fatalf("tool extension = %#v", span.exts[len(span.exts)-1])
+	}
+}
+
 func TestPrepareLLMApiRequestAcceptsSystemBlockArray(t *testing.T) {
 	handler := NewHandler(StandardProfile())
 

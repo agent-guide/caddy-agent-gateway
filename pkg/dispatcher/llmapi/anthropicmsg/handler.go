@@ -327,6 +327,9 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		h.writeError(w, r, http.StatusBadGateway, err)
 		return
 	}
+	defer func() {
+		recordAnthropicToolNameSet(r, encoder.ToolNames())
+	}()
 
 	for {
 		chunk, recvErr := stream.Recv()
@@ -369,7 +372,6 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 			return
 		}
 	}
-	recordAnthropicToolNameSet(r, encoder.toolNames)
 }
 
 type httpAnthropicStreamSink struct {
