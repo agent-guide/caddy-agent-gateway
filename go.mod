@@ -5,8 +5,8 @@ go 1.25.5
 require (
 	github.com/anthropics/anthropic-sdk-go v1.56.0
 	github.com/caddyserver/caddy/v2 v2.10.2
-	github.com/cloudwego/eino v0.9.12
-	github.com/cloudwego/eino-ext/components/model/claude v0.1.22
+	github.com/cloudwego/eino v0.9.15
+	github.com/cloudwego/eino-ext/components/model/claude v0.1.25
 	github.com/cloudwego/eino-ext/components/model/deepseek v0.1.7
 	github.com/cloudwego/eino-ext/components/model/gemini v0.1.33
 	github.com/cloudwego/eino-ext/components/model/ollama v0.1.9
