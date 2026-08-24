@@ -3,6 +3,7 @@ package anthropicmsg
 import (
 	"errors"
 	"net/http"
+	"sort"
 	"sync"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
@@ -40,6 +41,7 @@ type responseObservation struct {
 type responseLifecycle interface {
 	Committed()
 	ObserveUsage(usageObservation)
+	ObserveToolNames(map[string]struct{})
 	ObserveExecution(provider.ResolvedExecution)
 	ObserveResponse(responseObservation)
 	Finish(responseFinish) error
@@ -54,6 +56,8 @@ type spanResponseLifecycle struct {
 	committed bool
 	finished  bool
 	usage     *usageObservation
+	toolNames []string
+	toolsSeen bool
 	execution *provider.ResolvedExecution
 	response  responseObservation
 }
@@ -70,15 +74,26 @@ func (l *spanResponseLifecycle) Committed() {
 
 func (l *spanResponseLifecycle) ObserveUsage(observed usageObservation) {
 	l.mu.Lock()
-	copy := observed
-	l.usage = &copy
+	observedCopy := observed
+	l.usage = &observedCopy
+	l.mu.Unlock()
+}
+
+func (l *spanResponseLifecycle) ObserveToolNames(observed map[string]struct{}) {
+	l.mu.Lock()
+	l.toolNames = l.toolNames[:0]
+	for name := range observed {
+		l.toolNames = append(l.toolNames, name)
+	}
+	sort.Strings(l.toolNames)
+	l.toolsSeen = true
 	l.mu.Unlock()
 }
 
 func (l *spanResponseLifecycle) ObserveExecution(resolved provider.ResolvedExecution) {
 	l.mu.Lock()
-	copy := resolved
-	l.execution = &copy
+	resolvedCopy := resolved
+	l.execution = &resolvedCopy
 	l.mu.Unlock()
 }
 
@@ -120,6 +135,8 @@ func (l *spanResponseLifecycle) finalize(success bool, status int, errorType, re
 	}
 	l.finished = true
 	observed := l.usage
+	toolNames := append([]string(nil), l.toolNames...)
+	toolsSeen := l.toolsSeen
 	execution := l.execution
 	response := l.response
 	committed := l.committed
@@ -150,6 +167,10 @@ func (l *spanResponseLifecycle) finalize(success bool, status int, errorType, re
 		extension.CachedTokens = usage.Int(observed.CachedTokens)
 		extension.ReasoningTokens = usage.Int(observed.ReasoningTokens)
 		extension.UsageFinalized = usage.Bool(observed.Final)
+	}
+	if toolsSeen {
+		extension.ToolCallCount = usage.Int(len(toolNames))
+		extension.ToolNames = toolNames
 	}
 	l.span.SetExtension(extension)
 	l.span.Finish(usage.InteractionOutcome{Success: success, StatusCode: status, ErrorType: errorType})

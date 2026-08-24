@@ -149,16 +149,6 @@ func (e *anthropicStreamEncoder) Open() error {
 	return nil
 }
 
-func (e *anthropicStreamEncoder) ToolNames() map[string]struct{} {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	names := make(map[string]struct{}, len(e.toolNames))
-	for name := range e.toolNames {
-		names[name] = struct{}{}
-	}
-	return names
-}
-
 func (e *anthropicStreamEncoder) Accept(event providerStreamEvent) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -921,6 +911,7 @@ func (e *anthropicStreamEncoder) observeChunkMeta(chunk *schema.Message) {
 }
 
 func (e *anthropicStreamEncoder) observeUsage() {
+	e.lifecycle.ObserveToolNames(e.toolNames)
 	if !e.usageObserved {
 		return
 	}

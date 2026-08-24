@@ -12,25 +12,34 @@ type recordingInteractionSpan struct {
 	mu       sync.Mutex
 	finishes []usage.InteractionOutcome
 	exts     []any
+	finished bool
 }
 
 func (s *recordingInteractionSpan) SetExtension(v any) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
 	s.exts = append(s.exts, v)
-	s.mu.Unlock()
 }
 func (*recordingInteractionSpan) AddAnnotation(string, string) {}
 func (*recordingInteractionSpan) Discard()                     {}
 func (s *recordingInteractionSpan) Finish(outcome usage.InteractionOutcome) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
+	s.finished = true
 	s.finishes = append(s.finishes, outcome)
-	s.mu.Unlock()
 }
 
 func TestResponseLifecycleFinalizesExactlyOnce(t *testing.T) {
 	span := &recordingInteractionSpan{}
 	lifecycle := newSpanResponseLifecycle(span, "stream")
 	lifecycle.ObserveUsage(usageObservation{InputTokens: 3, OutputTokens: 2, Final: true})
+	lifecycle.ObserveToolNames(map[string]struct{}{"zeta": {}, "alpha": {}})
 	lifecycle.ObserveResponse(responseObservation{Mode: "native_relay", MessageIDSource: "upstream", UsageSource: "native_stream"})
 	if err := lifecycle.Finish(responseFinish{StatusCode: 200, Outcome: "completed"}); err != nil {
 		t.Fatal(err)
@@ -44,6 +53,9 @@ func TestResponseLifecycleFinalizesExactlyOnce(t *testing.T) {
 	extension, ok := span.exts[0].(usage.LLMExtension)
 	if !ok || extension.ResponseMode != "native_relay" || extension.MessageIDSource != "upstream" || extension.UsageSource != "native_stream" {
 		t.Fatalf("extension = %#v", span.exts[0])
+	}
+	if extension.ToolCallCount == nil || *extension.ToolCallCount != 2 || len(extension.ToolNames) != 2 || extension.ToolNames[0] != "alpha" || extension.ToolNames[1] != "zeta" {
+		t.Fatalf("tool extension = %#v", extension)
 	}
 }
 

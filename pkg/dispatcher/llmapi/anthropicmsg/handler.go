@@ -327,10 +327,6 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, prov provi
 		h.writeError(w, r, http.StatusBadGateway, err)
 		return
 	}
-	defer func() {
-		recordAnthropicToolNameSet(r, encoder.ToolNames())
-	}()
-
 	for {
 		chunk, recvErr := stream.Recv()
 		if recvErr == io.EOF {

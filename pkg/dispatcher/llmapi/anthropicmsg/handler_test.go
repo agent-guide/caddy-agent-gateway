@@ -145,6 +145,15 @@ type testStatusError struct {
 	status int
 }
 
+type testUsageEventSink struct {
+	events []any
+}
+
+func (s *testUsageEventSink) Enqueue(event any) bool {
+	s.events = append(s.events, event)
+	return true
+}
+
 func (e testStatusError) Error() string   { return e.msg }
 func (e testStatusError) StatusCode() int { return e.status }
 
@@ -637,12 +646,13 @@ func TestServeLLMApiRecordsObservedToolNamesAfterAcceptFailure(t *testing.T) {
 		invalid,
 	}}
 	handler := NewHandler(StandardProfile())
-	span := &recordingInteractionSpan{}
+	usageSink := &testUsageEventSink{}
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
 		"model":"client-model","max_tokens":16,"stream":true,
 		"messages":[{"role":"user","content":"hello"}]
 	}`))
-	req = req.WithContext(usage.ContextWithSpan(req.Context(), span))
+	_, observedContext := usage.NewObserver(usageSink).Begin(req.Context(), usage.InteractionDimensions{RouteKind: "llm"})
+	req = req.WithContext(observedContext)
 	prepared, _, err := handler.PrepareLLMApiRequest(req)
 	if err != nil {
 		t.Fatal(err)
@@ -654,12 +664,12 @@ func TestServeLLMApiRecordsObservedToolNamesAfterAcceptFailure(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `event: error`) {
 		t.Fatalf("stream did not report accept failure: %s", rec.Body.String())
 	}
-	if len(span.exts) == 0 {
-		t.Fatal("tool metrics were not recorded after accept failure")
+	if len(usageSink.events) != 1 {
+		t.Fatalf("usage events = %d, want 1", len(usageSink.events))
 	}
-	toolExtension, ok := span.exts[len(span.exts)-1].(usage.LLMExtension)
-	if !ok || toolExtension.ToolCallCount == nil || *toolExtension.ToolCallCount != 1 || !slices.Contains(toolExtension.ToolNames, "lookup") {
-		t.Fatalf("tool extension = %#v", span.exts[len(span.exts)-1])
+	event, ok := usageSink.events[0].(usage.LLMUsageEvent)
+	if !ok || event.ToolCallCount != 1 || !slices.Contains(event.ToolNames, "lookup") {
+		t.Fatalf("usage event = %#v", usageSink.events[0])
 	}
 }
 
