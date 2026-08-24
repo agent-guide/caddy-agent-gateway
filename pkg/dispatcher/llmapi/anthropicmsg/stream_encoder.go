@@ -587,6 +587,11 @@ func (e *anthropicStreamEncoder) acceptGeneric(chunk *schema.Message) error {
 					return err
 				}
 			}
+		case "thinking", "redacted_thinking":
+			// Reasoning parts are emitted by acceptReasoning above so their
+			// structured streaming metadata remains authoritative.
+		default:
+			return fmt.Errorf("normalized stream cannot encode content block type %q", item.Block.Type)
 		}
 	}
 	if e.deferredText.Len() > 0 && e.toolBlocksHaveCompleteInput() {

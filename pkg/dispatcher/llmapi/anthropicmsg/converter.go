@@ -531,7 +531,10 @@ func contentBlocksFromMessage(msg *schema.Message) []ContentBlockResponse {
 	if native := anthropicbase.AnthropicContentBlocksFromMessage(msg); len(native) > 0 {
 		blocks := make([]ContentBlockResponse, 0, len(native))
 		for _, raw := range native {
-			blocks = append(blocks, ContentBlockResponse{Raw: raw})
+			var block ContentBlockResponse
+			_ = json.Unmarshal(raw, &block)
+			block.Raw = append(json.RawMessage(nil), raw...)
+			blocks = append(blocks, block)
 		}
 		return blocks
 	}

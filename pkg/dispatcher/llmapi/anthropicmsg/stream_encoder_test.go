@@ -63,6 +63,43 @@ func TestStreamEncoderDoesNotCommitUntilMeaningfulOutput(t *testing.T) {
 	}
 }
 
+func TestStreamEncoderDecodesNativeTextBlockForNormalizedOutput(t *testing.T) {
+	sink := &memoryStreamSink{}
+	encoder, _ := newTestStreamEncoder(t, sink)
+	chunk := anthropicbase.AttachAnthropicContentBlocks(&schema.Message{Role: schema.Assistant}, []json.RawMessage{
+		json.RawMessage(`{"type":"text","text":"hello"}`),
+	})
+	if err := encoder.Accept(providerStreamEvent{Generic: chunk}); err != nil {
+		t.Fatal(err)
+	}
+	if err := encoder.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range sink.events {
+		if event.Event == "content_block_delta" && strings.Contains(string(event.Data), `"text":"hello"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("native text was not emitted: %+v", sink.events)
+	}
+}
+
+func TestStreamEncoderRejectsUnsupportedNativeBlockInNormalizedOutput(t *testing.T) {
+	sink := &memoryStreamSink{}
+	encoder, span := newTestStreamEncoder(t, sink)
+	chunk := anthropicbase.AttachAnthropicContentBlocks(&schema.Message{Role: schema.Assistant}, []json.RawMessage{
+		json.RawMessage(`{"type":"future_block","opaque":true}`),
+	})
+	err := encoder.Accept(providerStreamEvent{Generic: chunk})
+	if err == nil || !strings.Contains(err.Error(), `content block type "future_block"`) {
+		t.Fatalf("unsupported native block error = %v", err)
+	}
+	_ = encoder.Fail(err)
+	assertLastResponseOutcome(t, span, "invalid_state")
+}
+
 func TestStreamEncoderSerializesParallelToolCalls(t *testing.T) {
 	sink := &memoryStreamSink{}
 	encoder, _ := newTestStreamEncoder(t, sink)
