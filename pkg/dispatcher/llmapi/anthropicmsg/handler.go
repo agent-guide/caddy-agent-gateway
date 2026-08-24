@@ -258,8 +258,12 @@ func (h *Handler) handleMessages(w http.ResponseWriter, r *http.Request, prov pr
 			open.RelayIneligibleReason = ""
 		}
 	}
-	if err := newAnthropicResponseEncoder(lifecycle).Emit(r.Context(), open, resp, httpResponseBodySink{w: w}); err != nil {
+	sink := &httpResponseBodySink{w: w}
+	if err := newAnthropicResponseEncoder(lifecycle).Emit(r.Context(), open, resp, sink); err != nil {
 		h.logger.Error(h.Name()+": encode response", zap.Error(err))
+		if !sink.committed {
+			h.writeError(w, r, http.StatusBadGateway, err)
+		}
 	}
 }
 

@@ -255,6 +255,52 @@ func TestBatchRelayModeReadsServedCandidate(t *testing.T) {
 	}
 }
 
+func TestBatchPreCommitEncodingFailuresWriteBadGateway(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider provider.Provider
+	}{
+		{name: "empty provider response", provider: &testProvider{}},
+		{name: "invalid native relay body", provider: &testRoutedExecutor{chat: &provider.ChatExecution{
+			Response: &provider.ChatResponse{Message: anthropicbase.AttachAnthropicResponseBody(
+				schema.AssistantMessage("answer", nil), json.RawMessage(`{`),
+			)},
+			Resolved: provider.ResolvedExecution{Candidate: provider.ServedCandidate{
+				Dialect: provider.ProtocolDialectAnthropic,
+				Features: map[provider.ProtocolFeature]struct{}{
+					provider.FeatureAnthropicBodyRelay: {},
+				},
+			}},
+		}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewHandler(StandardProfile())
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{
+				"model":"client-model","max_tokens":64,"messages":[{"role":"user","content":"hello"}]
+			}`))
+			prepared, _, err := handler.PrepareLLMApiRequest(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			recorder := httptest.NewRecorder()
+			if err := handler.ServeLLMApi(recorder, request, tt.provider, prepared); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusBadGateway, recorder.Body.String())
+			}
+			var response anthropicErrorResponse
+			if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+				t.Fatalf("decode error response: %v; body=%s", err, recorder.Body.String())
+			}
+			if response.Type != "error" || response.Error.Type == "" || response.Error.Message == "" {
+				t.Fatalf("error response = %+v", response)
+			}
+		})
+	}
+}
+
 func TestRequestProtocolStateIsIndependentOfMessageOrdering(t *testing.T) {
 	request := &MessagesRequest{
 		Model: "client-model", MaxTokens: 64,

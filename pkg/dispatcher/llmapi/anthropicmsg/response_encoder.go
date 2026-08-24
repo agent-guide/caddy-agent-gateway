@@ -118,14 +118,16 @@ func encodeRelayedResponse(message *schema.Message, rewrites rewriteSet) ([]byte
 }
 
 type httpResponseBodySink struct {
-	w http.ResponseWriter
+	w         http.ResponseWriter
+	committed bool
 }
 
-func (s httpResponseBodySink) Emit(_ context.Context, body responseBody) error {
+func (s *httpResponseBodySink) Emit(_ context.Context, body responseBody) error {
 	if body.ContentType != "" {
 		s.w.Header().Set("Content-Type", body.ContentType)
 	}
 	s.w.WriteHeader(body.Status)
+	s.committed = true
 	_, err := s.w.Write(body.Payload)
 	return err
 }
