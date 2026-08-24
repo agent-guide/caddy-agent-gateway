@@ -49,6 +49,41 @@ func TestCodecRejectsWrongProjectionType(t *testing.T) {
 	}
 }
 
+func TestCodecDoesNotPinPortableBatchResponseToAnthropicHistory(t *testing.T) {
+	for _, content := range []string{
+		`[{"type":"text","text":"hello"}]`,
+		`[{"type":"tool_use","id":"toolu_1","name":"lookup","input":{"q":"x"}}]`,
+	} {
+		folded, err := (anthropicCodec{}).FoldResponse([]provider.NativeEnvelope{{
+			Dialect: provider.ProtocolDialectAnthropic, Scope: provider.NativeScopeResponseEphemeral,
+			Kind: provider.NativeKindResponseBody, Raw: json.RawMessage(`{"content":` + content + `}`),
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(folded) != 0 {
+			t.Fatalf("portable content %s folded state = %+v, want none", content, folded)
+		}
+	}
+}
+
+func TestCodecPreservesCompleteBatchHistoryWhenAnyBlockNeedsNativeReplay(t *testing.T) {
+	folded, err := (anthropicCodec{}).FoldResponse([]provider.NativeEnvelope{{
+		Dialect: provider.ProtocolDialectAnthropic, Scope: provider.NativeScopeResponseEphemeral,
+		Kind: provider.NativeKindResponseBody,
+		Raw:  json.RawMessage(`{"content":[{"type":"text","text":"hello"},{"type":"text","text":"cited","citations":[{"type":"page_location","start_page_number":1}]}]}`),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(folded) != 2 {
+		t.Fatalf("folded blocks = %d, want complete 2-block history", len(folded))
+	}
+	if got := string(folded[0].Raw); got != `{"type":"text","text":"hello"}` {
+		t.Fatalf("portable sibling was not retained: %s", got)
+	}
+}
+
 func TestCodecFoldsCompleteStreamIntoReplayableHistory(t *testing.T) {
 	events := []provider.NativeEnvelope{
 		streamEnvelope("message_start", 0, `{"type":"message_start","message":{"id":"msg_1"}}`),

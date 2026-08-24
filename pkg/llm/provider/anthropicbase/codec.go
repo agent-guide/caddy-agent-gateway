@@ -98,6 +98,17 @@ func (anthropicCodec) FoldResponse(envelopes []provider.NativeEnvelope) ([]provi
 		if err := json.Unmarshal(envelope.Raw, &response); err != nil {
 			return nil, fmt.Errorf("anthropic codec: fold response body: %w", err)
 		}
+		requiresNativeHistory := false
+		for _, raw := range response.Content {
+			var block ResponseBlock
+			if err := json.Unmarshal(raw, &block); err != nil || block.requiresNativeReplay() {
+				requiresNativeHistory = true
+				break
+			}
+		}
+		if !requiresNativeHistory {
+			continue
+		}
 		for i, block := range response.Content {
 			folded = append(folded, provider.NativeEnvelope{Dialect: provider.ProtocolDialectAnthropic, Scope: provider.NativeScopeMessageHistory, Kind: provider.NativeKindContentBlock, Location: provider.NativeLocation{ContentIndex: i}, Raw: append(json.RawMessage(nil), block...)})
 		}
