@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l $(git ls-files '*.go' ':!third_party/**'))"
+      - name: Verify modules
+        run: go mod verify
+      - name: Test
+        run: go test ./...
+      - name: Race test
+        # eino-ext/claude v0.1.25 has a known race inside ChatModel.Stream.
+        # Keep race coverage for every other package until upstream releases a fix.
+        run: go list ./... | grep -v '/pkg/llm/provider/anthropic$' | xargs go test -race
+      - name: Vet
+        run: go vet ./...
+      - name: Build binaries
+        run: make build

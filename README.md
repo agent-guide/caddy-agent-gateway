@@ -459,7 +459,7 @@ See [docs/README.md](docs/README.md) for runtime-specific guides and references.
 - ACP is a functional native route/admin/dispatcher surface with a reusable stdio runtime driver and thin codex/opencode agent adapters; crash retry and the in-repo Codex app-server bridge remain deferred
 - metrics Admin APIs expose durable SQLite-backed summaries (with pipeline drop/failure counters), recent LLM/MCP/ACP interaction events, and aggregate breakdowns; a Prometheus exposition endpoint (`GET /admin/metrics/prometheus`) serves O(1) in-process counters, and usage events can be exported as OpenTelemetry spans to an OTLP collector (`metrics { otlp { endpoint ... } }` in the Caddyfile or `--metrics-otlp-*` agwd flags; see the commented OTLP profile in `examples/Caddyfile.example`) — events carry W3C trace/span/parent ids, so the collector sees the full interaction span tree including builtin-agent internal calls; an optional `components` toggle nests one span per eino chat-model component call under the interaction span
 - the agents control plane is active: `pkg/agent`, the `agents` config store, gateway-bundle parity, and `/admin/agents` CRUD plus workspace/activity/usage/interactions/resources/health; the M3 runtime control plane adds capabilities, exact-run list/cancel, one-shot permissions, and capability-gated sessions/transcripts; usage events carry optional `agent_id`, `run_id`, and `runtime_type` correlation
-- memory is not shipped in v0.4.x; `/admin/memory/...` is a reserved Admin API family whose endpoints return `501 Not Implemented`
+- memory is not shipped in v0.5.x; `/admin/memory/...` is a reserved Admin API family whose endpoints return `501 Not Implemented`
 
 ## Development
 

@@ -13,7 +13,7 @@ The current primary LLM path is:
 6. the credential manager invokes the configured external refresh command for an expiring `oauth_token` credential when required
 7. the selected provider executes `Generate` or `Stream`
 
-MCP is active through `agent_route_dispatcher` with MCP enabled. ACP and builtin execution now enter through unified `kind=agent` routes (`pkg/gateway/agentroute`, dispatcher `agent` enablement, `POST /<agent-route>/turn` SSE); the target Agent's `runtime.type` selects the registered backend. ACP execution config is owned inline by `Agent.runtime.acp`, while builtin definitions are materialized by the in-process eino ADK host. The agent control plane is exposed through `/admin/agents` and `/admin/agents/routes`. Memory is not shipped in v0.4.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
+MCP is active through `agent_route_dispatcher` with MCP enabled. ACP and builtin execution now enter through unified `kind=agent` routes (`pkg/gateway/agentroute`, dispatcher `agent` enablement, `POST /<agent-route>/turn` SSE); the target Agent's `runtime.type` selects the registered backend. ACP execution config is owned inline by `Agent.runtime.acp`, while builtin definitions are materialized by the in-process eino ADK host. The agent control plane is exposed through `/admin/agents` and `/admin/agents/routes`. Memory is not shipped in v0.5.x; `/admin/memory/...` is reserved and returns `501 Not Implemented`.
 
 Future gateway Pipeline support is limited to synchronous, request-bound
 `llm`/`mcp`/`transform` composition. Durable Project/Team workflows, Agent
@@ -224,7 +224,7 @@ Implemented families:
 
 Stubbed families currently return `501 Not Implemented`:
 
-- `/admin/memory/...` (reserved; memory is not shipped in v0.4.x)
+- `/admin/memory/...` (reserved; memory is not shipped in v0.5.x)
 
 ## Files To Check Before Large Changes
 

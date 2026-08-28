@@ -836,6 +836,61 @@ func TestStreamResponsesViaChatMergesToolCallDeltasWithoutIndexOrID(t *testing.T
 	}
 }
 
+func TestResponsesStreamEventsSnapshotMutablePayloads(t *testing.T) {
+	resp := &ResponsesResponse{
+		ID:      "resp_1",
+		RawJSON: json.RawMessage(`{"id":"resp_1"}`),
+		Usage:   &ResponsesResponseUsage{InputTokens: 3},
+		Output: []ResponsesResponseOutput{{
+			ID:      "item_1",
+			Summary: []ResponsesReasoningSummaryPart{{Type: "summary_text", Text: "before"}},
+			Content: []ResponsesResponseContentPart{{
+				Type:        "output_text",
+				Text:        "before",
+				Annotations: []any{"before"},
+				Summary:     []any{"before"},
+				RawJSON:     json.RawMessage(`{"text":"before"}`),
+			}},
+		}},
+	}
+	created := ResponsesCreatedEvent(resp)
+	completed := ResponsesCompletedEvent(resp)
+	added := ResponsesOutputItemAddedEvent(0, &resp.Output[0])
+	done := ResponsesOutputItemDoneEvent(0, &resp.Output[0])
+	partAdded := ResponsesReasoningSummaryPartAddedEvent("item_1", 0, &resp.Output[0].Summary[0])
+	partDone := ResponsesReasoningSummaryPartDoneEvent("item_1", 0, &resp.Output[0].Summary[0])
+
+	resp.ID = "mutated"
+	resp.RawJSON[0] = '['
+	resp.Usage.InputTokens = 99
+	resp.Output[0].Summary[0].Text = "mutated"
+	resp.Output[0].Content[0].Text = "mutated"
+	resp.Output[0].Content[0].Annotations[0] = "mutated"
+	resp.Output[0].Content[0].Summary[0] = "mutated"
+	resp.Output[0].Content[0].RawJSON[0] = '['
+
+	for _, event := range []*ResponsesStreamEvent{created, completed} {
+		if event.Response.ID != "resp_1" || event.Response.Usage.InputTokens != 3 {
+			t.Fatalf("%s response = %+v, want immutable snapshot", event.Type, event.Response)
+		}
+		if string(event.Response.RawJSON) != `{"id":"resp_1"}` || event.Response.Output[0].Content[0].Text != "before" {
+			t.Fatalf("%s nested response mutated: %+v", event.Type, event.Response)
+		}
+	}
+	for _, event := range []*ResponsesStreamEvent{added, done} {
+		if event.Item.Summary[0].Text != "before" || event.Item.Content[0].Text != "before" ||
+			event.Item.Content[0].Annotations[0] != "before" || event.Item.Content[0].Summary[0] != "before" ||
+			string(event.Item.Content[0].RawJSON) != `{"text":"before"}` {
+			t.Fatalf("%s item mutated: %+v", event.Type, event.Item)
+		}
+	}
+	for _, event := range []*ResponsesStreamEvent{partAdded, partDone} {
+		if event.Part.Text != "before" {
+			t.Fatalf("%s part mutated: %+v", event.Type, event.Part)
+		}
+	}
+}
+
 func TestSplitInstructionsAndInputPreservesImages(t *testing.T) {
 	url := "https://example.com/cat.png"
 	messages := []*schema.Message{

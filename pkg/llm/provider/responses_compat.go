@@ -340,7 +340,7 @@ func ResponsesFromChatResponse(resp *ChatResponse, model string) *ResponsesRespo
 func ResponsesCreatedEvent(resp *ResponsesResponse) *ResponsesStreamEvent {
 	return &ResponsesStreamEvent{
 		Type:     "response.created",
-		Response: resp,
+		Response: cloneResponsesResponse(resp),
 	}
 }
 
@@ -357,7 +357,7 @@ func ResponsesDeltaEvent(itemID string, outputIndex int, delta string) *Response
 func ResponsesReasoningSummaryPartAddedEvent(itemID string, outputIndex int, part *ResponsesReasoningSummaryPart) *ResponsesStreamEvent {
 	return &ResponsesStreamEvent{
 		Type: "response.reasoning_summary_part.added", ItemID: itemID,
-		OutputIndex: outputIndex, SummaryIndex: 0, Part: part,
+		OutputIndex: outputIndex, SummaryIndex: 0, Part: cloneResponsesReasoningSummaryPart(part),
 	}
 }
 
@@ -371,7 +371,7 @@ func ResponsesReasoningSummaryDeltaEvent(itemID string, outputIndex int, delta s
 func ResponsesReasoningSummaryPartDoneEvent(itemID string, outputIndex int, part *ResponsesReasoningSummaryPart) *ResponsesStreamEvent {
 	return &ResponsesStreamEvent{
 		Type: "response.reasoning_summary_part.done", ItemID: itemID,
-		OutputIndex: outputIndex, SummaryIndex: 0, Part: part,
+		OutputIndex: outputIndex, SummaryIndex: 0, Part: cloneResponsesReasoningSummaryPart(part),
 	}
 }
 
@@ -380,7 +380,7 @@ func ResponsesOutputItemAddedEvent(outputIndex int, item *ResponsesResponseOutpu
 		Type:        "response.output_item.added",
 		ItemID:      item.ID,
 		OutputIndex: outputIndex,
-		Item:        item,
+		Item:        cloneResponsesResponseOutput(item),
 	}
 }
 
@@ -389,7 +389,7 @@ func ResponsesOutputItemDoneEvent(outputIndex int, item *ResponsesResponseOutput
 		Type:        "response.output_item.done",
 		ItemID:      item.ID,
 		OutputIndex: outputIndex,
-		Item:        item,
+		Item:        cloneResponsesResponseOutput(item),
 	}
 }
 
@@ -405,8 +405,57 @@ func ResponsesFunctionCallArgumentsDeltaEvent(itemID string, outputIndex int, de
 func ResponsesCompletedEvent(resp *ResponsesResponse) *ResponsesStreamEvent {
 	return &ResponsesStreamEvent{
 		Type:     "response.completed",
-		Response: resp,
+		Response: cloneResponsesResponse(resp),
 	}
+}
+
+// Stream events cross a goroutine boundary. Snapshot every mutable response
+// value before handing it to schema.Pipe so the producer can continue folding
+// later chunks without racing the HTTP consumer that marshals earlier events.
+func cloneResponsesResponse(resp *ResponsesResponse) *ResponsesResponse {
+	if resp == nil {
+		return nil
+	}
+	cloned := *resp
+	cloned.RawJSON = append(json.RawMessage(nil), resp.RawJSON...)
+	if resp.Usage != nil {
+		usage := *resp.Usage
+		cloned.Usage = &usage
+	}
+	if resp.Output != nil {
+		cloned.Output = make([]ResponsesResponseOutput, len(resp.Output))
+		for i := range resp.Output {
+			cloned.Output[i] = *cloneResponsesResponseOutput(&resp.Output[i])
+		}
+	}
+	return &cloned
+}
+
+func cloneResponsesResponseOutput(item *ResponsesResponseOutput) *ResponsesResponseOutput {
+	if item == nil {
+		return nil
+	}
+	cloned := *item
+	cloned.Summary = append([]ResponsesReasoningSummaryPart(nil), item.Summary...)
+	if item.Content != nil {
+		cloned.Content = make([]ResponsesResponseContentPart, len(item.Content))
+		for i := range item.Content {
+			part := item.Content[i]
+			part.Annotations = append([]any(nil), part.Annotations...)
+			part.Summary = append([]any(nil), part.Summary...)
+			part.RawJSON = append(json.RawMessage(nil), part.RawJSON...)
+			cloned.Content[i] = part
+		}
+	}
+	return &cloned
+}
+
+func cloneResponsesReasoningSummaryPart(part *ResponsesReasoningSummaryPart) *ResponsesReasoningSummaryPart {
+	if part == nil {
+		return nil
+	}
+	cloned := *part
+	return &cloned
 }
 
 func responsesInputToMessages(input any) ([]*schema.Message, error) {
