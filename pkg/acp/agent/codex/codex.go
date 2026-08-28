@@ -7,7 +7,7 @@ import (
 
 	baseacp "github.com/agent-guide/agent-gateway/pkg/acp"
 	"github.com/agent-guide/agent-gateway/pkg/acp/agentspi"
-	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
+	"github.com/agent-guide/agent-gateway/pkg/acp/hostconfig"
 	"github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
@@ -27,9 +27,9 @@ type Agent struct {
 func New(req agentspi.OpenRequest) (agentspi.Agent, error) {
 	cfg := req.Config.Codex
 	if cfg == nil {
-		cfg = &runtimeconfig.CodexConfig{}
+		cfg = &hostconfig.CodexConfig{}
 	}
-	if strings.TrimSpace(cfg.Mode) != "" && strings.TrimSpace(cfg.Mode) != runtimeconfig.CodexModeAdapter {
+	if strings.TrimSpace(cfg.Mode) != "" && strings.TrimSpace(cfg.Mode) != hostconfig.CodexModeAdapter {
 		return nil, fmt.Errorf("codex acp mode %q is not implemented", cfg.Mode)
 	}
 	command := strings.TrimSpace(cfg.AdapterCommand)

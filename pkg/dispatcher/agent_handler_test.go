@@ -13,10 +13,11 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	baseacp "github.com/agent-guide/agent-gateway/pkg/acp"
-	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
+	acphost "github.com/agent-guide/agent-gateway/pkg/acp/host"
+	"github.com/agent-guide/agent-gateway/pkg/acp/hostconfig"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi/runtimeapitest"
+	agentruntime "github.com/agent-guide/agent-gateway/pkg/agent/runtime"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtime/runtimetest"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
@@ -76,21 +77,21 @@ func eventsOfType[T any](events []any) []T {
 }
 
 type agentHandlerCapabilityBackend struct {
-	*runtimeapitest.Backend
-	permissionCalls []runtimeapi.PermissionDecision
-	transcriptCalls []runtimeapi.TranscriptRequest
+	*runtimetest.Backend
+	permissionCalls []agentruntime.PermissionDecision
+	transcriptCalls []agentruntime.TranscriptRequest
 }
 
-func (b *agentHandlerCapabilityBackend) ResolvePermission(_ context.Context, _ agentpkg.Agent, decision runtimeapi.PermissionDecision) error {
+func (b *agentHandlerCapabilityBackend) ResolvePermission(_ context.Context, _ agentpkg.Agent, decision agentruntime.PermissionDecision) error {
 	b.permissionCalls = append(b.permissionCalls, decision)
 	return nil
 }
 
-func (b *agentHandlerCapabilityBackend) LoadTranscript(_ context.Context, _ agentpkg.Agent, req runtimeapi.TranscriptRequest) (runtimeapi.TranscriptResponse, error) {
+func (b *agentHandlerCapabilityBackend) LoadTranscript(_ context.Context, _ agentpkg.Agent, req agentruntime.TranscriptRequest) (agentruntime.TranscriptResponse, error) {
 	b.transcriptCalls = append(b.transcriptCalls, req)
-	return runtimeapi.TranscriptResponse{
+	return agentruntime.TranscriptResponse{
 		SessionID: req.SessionID,
-		Messages:  []runtimeapi.TranscriptMessage{{Role: "assistant", Text: "saved reply"}},
+		Messages:  []agentruntime.TranscriptMessage{{Role: "assistant", Text: "saved reply"}},
 	}, nil
 }
 
@@ -234,7 +235,7 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(firstData), &envelope); err != nil {
 		t.Fatalf("decode envelope %q: %v", firstData, err)
 	}
-	if envelope.AgentID != "unified" || !runtimeapi.ValidRunID(envelope.RunID) || envelope.Sequence != 1 {
+	if envelope.AgentID != "unified" || !agentruntime.ValidRunID(envelope.RunID) || envelope.Sequence != 1 {
 		t.Fatalf("common envelope = %+v", envelope)
 	}
 	// M6 keeps route_kind/protocol unified while selecting the typed builtin
@@ -262,7 +263,7 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	}
 	failedTurnEvents := eventsOfType[usage.BuiltinUsageEvent](sink.events)
 	failedTurn := failedTurnEvents[len(failedTurnEvents)-1]
-	if failedTurn.Success || failedTurn.ResultStatus != "error" || failedTurn.ErrorType != string(runtimeapi.ErrorUnsupportedOption) {
+	if failedTurn.Success || failedTurn.ResultStatus != "error" || failedTurn.ErrorType != string(agentruntime.ErrorUnsupportedOption) {
 		t.Fatalf("pre-stream decode event = %+v, want typed error status", failedTurn)
 	}
 	if rec := turn(`{"input":"hello","options":{"version":"v1","runtime":{"cwd":"/tmp"}}}`); rec.Code != http.StatusBadRequest {
@@ -293,7 +294,7 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 	}
 	capabilityEvents := eventsOfType[usage.BuiltinUsageEvent](sink.events)
 	capabilityEvent := capabilityEvents[len(capabilityEvents)-1]
-	if capabilityEvent.Success || capabilityEvent.ResultStatus != "error" || capabilityEvent.ErrorType != string(runtimeapi.ErrorCapabilityNotSupported) {
+	if capabilityEvent.Success || capabilityEvent.ResultStatus != "error" || capabilityEvent.ErrorType != string(agentruntime.ErrorCapabilityNotSupported) {
 		t.Fatalf("capability rejection event = %+v, want typed error status", capabilityEvent)
 	}
 
@@ -374,20 +375,20 @@ func TestDispatchAgentRouteEndToEnd(t *testing.T) {
 // config, and turn request, and emits a minimal native event sequence.
 type agentRouteACPRuntime struct {
 	owner       string
-	cfg         acpruntime.RuntimeConfig
-	req         acpruntime.TurnRequest
+	cfg         hostconfig.Config
+	req         acphost.TurnRequest
 	retirements []string
 }
 
-func (r *agentRouteACPRuntime) ServeConfiguredTurn(_ context.Context, owner string, cfg acpruntime.RuntimeConfig, req acpruntime.TurnRequest, emit acpruntime.EventSink) error {
+func (r *agentRouteACPRuntime) ServeConfiguredTurn(_ context.Context, owner string, cfg hostconfig.Config, req acphost.TurnRequest, emit acphost.EventSink) error {
 	r.owner, r.cfg, r.req = owner, cfg, req
-	if err := emit(acpruntime.TurnEvent{Event: runtimeapi.EventSession, SessionID: "native-session"}); err != nil {
+	if err := emit(acphost.TurnEvent{Event: agentruntime.EventSession, SessionID: "native-session"}); err != nil {
 		return err
 	}
-	if err := emit(acpruntime.TurnEvent{Event: runtimeapi.EventContent, Text: "acp answer"}); err != nil {
+	if err := emit(acphost.TurnEvent{Event: agentruntime.EventContent, Text: "acp answer"}); err != nil {
 		return err
 	}
-	return emit(acpruntime.TurnEvent{Event: runtimeapi.EventDone, StopReason: "end_turn"})
+	return emit(acphost.TurnEvent{Event: agentruntime.EventDone, StopReason: "end_turn"})
 }
 
 func (r *agentRouteACPRuntime) RetireOwnerDeferred(ownerID, keep string) (int, func()) {
@@ -470,7 +471,7 @@ func TestDispatchAgentRouteACPTurnSuccess(t *testing.T) {
 		if err := json.Unmarshal([]byte(data), &envelope); err != nil {
 			t.Fatalf("decode envelope %q: %v", data, err)
 		}
-		if envelope.AgentID != "acp-agent" || !runtimeapi.ValidRunID(envelope.RunID) {
+		if envelope.AgentID != "acp-agent" || !agentruntime.ValidRunID(envelope.RunID) {
 			t.Fatalf("common envelope = %+v", envelope)
 		}
 		sequences = append(sequences, envelope.Sequence)
@@ -525,9 +526,9 @@ func TestServeAgentPermissionDecodeFailureMarksTypedError(t *testing.T) {
 			AgentType: baseacp.AgentTypeOpencode,
 		}},
 	}
-	backend := &agentHandlerCapabilityBackend{Backend: runtimeapitest.NewBackend(agentpkg.RuntimeTypeACP)}
-	caps := runtimeapi.Capabilities{Executable: true, Permissions: runtimeapi.PermissionCapabilities{
-		Interactive: true, ResumeMode: runtimeapi.PermissionResumeActiveStream,
+	backend := &agentHandlerCapabilityBackend{Backend: runtimetest.NewBackend(agentpkg.RuntimeTypeACP)}
+	caps := agentruntime.Capabilities{Executable: true, Permissions: agentruntime.PermissionCapabilities{
+		Interactive: true, ResumeMode: agentruntime.PermissionResumeActiveStream,
 	}}
 	req := httptest.NewRequest(http.MethodPost, "/agents/acp/permission", strings.NewReader(`{"request_id":`)).WithContext(ctx)
 	rec := httptest.NewRecorder()
@@ -536,10 +537,10 @@ func TestServeAgentPermissionDecodeFailureMarksTypedError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("serveAgentPermission: %v", err)
 	}
-	span.Finish(usage.InteractionOutcome{Success: false, StatusCode: rec.Code, ErrorType: string(runtimeapi.ErrorInvalidRequest)})
+	span.Finish(usage.InteractionOutcome{Success: false, StatusCode: rec.Code, ErrorType: string(agentruntime.ErrorInvalidRequest)})
 
 	event := sink.Events[0].(usage.ACPUsageEvent)
-	if rec.Code != http.StatusBadRequest || event.Success || event.Operation != "permission" || event.ResultStatus != "error" || event.ErrorType != string(runtimeapi.ErrorInvalidRequest) {
+	if rec.Code != http.StatusBadRequest || event.Success || event.Operation != "permission" || event.ResultStatus != "error" || event.ErrorType != string(agentruntime.ErrorInvalidRequest) {
 		t.Fatalf("malformed permission status/event = %d/%+v", rec.Code, event)
 	}
 }
@@ -558,13 +559,13 @@ func TestDispatchAgentOptionalCapabilitiesAndPreBackendRejections(t *testing.T) 
 	if err := gw.Bootstrap(ctx, gateway.BootstrapOptions{ConfigStoreBackend: store}); err != nil {
 		t.Fatalf("Bootstrap: %v", err)
 	}
-	fake := &agentHandlerCapabilityBackend{Backend: runtimeapitest.NewBackend(agentpkg.RuntimeTypeHTTP)}
-	fake.CapabilitiesResult = runtimeapi.Capabilities{
+	fake := &agentHandlerCapabilityBackend{Backend: runtimetest.NewBackend(agentpkg.RuntimeTypeHTTP)}
+	fake.CapabilitiesResult = agentruntime.Capabilities{
 		Executable: true,
-		Sessions:   runtimeapi.SessionCapabilities{Transcript: true},
-		Permissions: runtimeapi.PermissionCapabilities{
+		Sessions:   agentruntime.SessionCapabilities{Transcript: true},
+		Permissions: agentruntime.PermissionCapabilities{
 			Interactive: true,
-			ResumeMode:  runtimeapi.PermissionResumeActiveStream,
+			ResumeMode:  agentruntime.PermissionResumeActiveStream,
 		},
 	}
 	if err := gw.RuntimeRegistry().Register(fake); err != nil {
@@ -605,7 +606,7 @@ func TestDispatchAgentOptionalCapabilitiesAndPreBackendRejections(t *testing.T) 
 	if got := fake.transcriptCalls[0]; got.SessionID != "session-1" || got.CWD != "/workspace" {
 		t.Fatalf("transcript request = %+v", got)
 	}
-	var transcriptBody runtimeapi.TranscriptResponse
+	var transcriptBody agentruntime.TranscriptResponse
 	if err := json.Unmarshal(recTranscript.Body.Bytes(), &transcriptBody); err != nil {
 		t.Fatalf("decode transcript response: %v", err)
 	}
@@ -613,7 +614,7 @@ func TestDispatchAgentOptionalCapabilitiesAndPreBackendRejections(t *testing.T) 
 		t.Fatalf("transcript response = %+v", transcriptBody)
 	}
 
-	fake.SetCapabilities(runtimeapi.Capabilities{Executable: false}, nil)
+	fake.SetCapabilities(agentruntime.Capabilities{Executable: false}, nil)
 	nonExecutableTurn := httptest.NewRequest(http.MethodPost, "/agents/capable/turn", strings.NewReader(`{"input":"hello"}`))
 	recNonExecutable := httptest.NewRecorder()
 	if err := handler.Dispatch(recNonExecutable, nonExecutableTurn, nil); err != nil {
@@ -622,7 +623,7 @@ func TestDispatchAgentOptionalCapabilitiesAndPreBackendRejections(t *testing.T) 
 	if recNonExecutable.Code != http.StatusNotImplemented || len(fake.TurnCalls()) != 0 {
 		t.Fatalf("non-executable status/ServeTurn calls = %d/%d, body = %q", recNonExecutable.Code, len(fake.TurnCalls()), recNonExecutable.Body.String())
 	}
-	fake.SetCapabilities(runtimeapi.Capabilities{Executable: true}, nil)
+	fake.SetCapabilities(agentruntime.Capabilities{Executable: true}, nil)
 
 	a.Disabled = true
 	if err := gw.AgentManager().Update(ctx, a.ID, a); err != nil {

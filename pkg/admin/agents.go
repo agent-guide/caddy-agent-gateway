@@ -10,10 +10,10 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
-	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
+	acphost "github.com/agent-guide/agent-gateway/pkg/acp/host"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
+	agentruntime "github.com/agent-guide/agent-gateway/pkg/agent/runtime"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	agentroute "github.com/agent-guide/agent-gateway/pkg/gateway/agentroute"
 	"github.com/agent-guide/agent-gateway/pkg/gateway/routecore"
@@ -22,9 +22,9 @@ import (
 
 type AgentView struct {
 	agentpkg.Agent
-	Source        string                     `json:"source"`
-	RuntimeStatus *runtimeapi.RuntimeSummary `json:"runtime_status,omitempty"`
-	Capabilities  *runtimeapi.Capabilities   `json:"capabilities,omitempty"`
+	Source        string                       `json:"source"`
+	RuntimeStatus *agentruntime.RuntimeSummary `json:"runtime_status,omitempty"`
+	Capabilities  *agentruntime.Capabilities   `json:"capabilities,omitempty"`
 }
 
 func (h *Handler) agentView(ctx context.Context, a agentpkg.Agent, source string) AgentView {
@@ -129,7 +129,7 @@ func (h *Handler) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.permissionBroker != nil {
-		h.permissionBroker.DrainAgent(runtimeapi.WithPermissionSource(context.Background(), "definition_update"), id)
+		h.permissionBroker.DrainAgent(agentruntime.WithPermissionSource(context.Background(), "definition_update"), id)
 	}
 	h.discardAgentContinuations(previous)
 	if h.runRegistry != nil && previous.Runtime.Type != "" && previous.Runtime.Type != updated.Runtime.Type {
@@ -161,7 +161,7 @@ func (h *Handler) handleDeleteAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.permissionBroker != nil {
-		h.permissionBroker.DrainAgent(runtimeapi.WithPermissionSource(context.Background(), "agent_delete"), id)
+		h.permissionBroker.DrainAgent(agentruntime.WithPermissionSource(context.Background(), "agent_delete"), id)
 	}
 	if getErr == nil {
 		h.discardAgentContinuations(current)
@@ -191,15 +191,15 @@ func (h *Handler) discardAgentContinuations(a agentpkg.Agent) {
 // returns summaries, counts, runtime state, and references — never full session
 // transcripts. The frontend drills into the linked ACP endpoints for content.
 type AgentWorkspace struct {
-	Agent          agentpkg.Agent             `json:"agent"`
-	RuntimeType    string                     `json:"runtime_type"`
-	Runtime        *runtimeapi.RuntimeSummary `json:"runtime,omitempty"`
-	RuntimeDetails json.RawMessage            `json:"runtime_details,omitempty"`
-	Capabilities   *runtimeapi.Capabilities   `json:"capabilities,omitempty"`
-	AgentRoutes    []agentRouteRef            `json:"agent_routes,omitempty"`
-	Builtin        *BuiltinWorkspaceView      `json:"builtin,omitempty"`
-	RuntimeView    *agentRuntimeSummary       `json:"runtime_view,omitempty"`
-	Links          map[string]string          `json:"links,omitempty"`
+	Agent          agentpkg.Agent               `json:"agent"`
+	RuntimeType    string                       `json:"runtime_type"`
+	Runtime        *agentruntime.RuntimeSummary `json:"runtime,omitempty"`
+	RuntimeDetails json.RawMessage              `json:"runtime_details,omitempty"`
+	Capabilities   *agentruntime.Capabilities   `json:"capabilities,omitempty"`
+	AgentRoutes    []agentRouteRef              `json:"agent_routes,omitempty"`
+	Builtin        *BuiltinWorkspaceView        `json:"builtin,omitempty"`
+	RuntimeView    *agentRuntimeSummary         `json:"runtime_view,omitempty"`
+	Links          map[string]string            `json:"links,omitempty"`
 }
 
 // BuiltinWorkspaceView is the builtin-runtime slice of the agent workspace: a
@@ -229,9 +229,9 @@ type agentRouteRef struct {
 }
 
 type agentRuntimeSummary struct {
-	PooledInstances    []acpruntime.PooledInstanceInfo    `json:"pooled_instances"`
-	InFlightTurns      int                                `json:"in_flight_turns"`
-	PendingPermissions []acpruntime.PendingPermissionInfo `json:"pending_permissions"`
+	PooledInstances    []acphost.PooledInstanceInfo    `json:"pooled_instances"`
+	InFlightTurns      int                             `json:"in_flight_turns"`
+	PendingPermissions []acphost.PendingPermissionInfo `json:"pending_permissions"`
 }
 
 func (h *Handler) handleGetAgentWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -336,12 +336,12 @@ func (h *Handler) acpRuntimeSummaryForOwner(agentID string) *agentRuntimeSummary
 	}
 	summary := &agentRuntimeSummary{}
 	for _, inst := range h.acpRuntimeManager.ListInstances() {
-		if acpruntime.ScopeOwnerID(inst.Scope) == agentID {
+		if acphost.ScopeOwnerID(inst.Scope) == agentID {
 			summary.PooledInstances = append(summary.PooledInstances, inst)
 		}
 	}
 	for _, turn := range h.acpRuntimeManager.ListInFlight() {
-		if acpruntime.ScopeOwnerID(turn.Scope) == agentID {
+		if acphost.ScopeOwnerID(turn.Scope) == agentID {
 			summary.InFlightTurns++
 		}
 	}
@@ -674,15 +674,15 @@ func (h *Handler) handleGetAgentHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		health["capabilities"] = caps
 	} else {
-		health["runtime_error"] = runtimeapi.PublicError(err)
+		health["runtime_error"] = agentruntime.PublicError(err)
 	}
 	if !a.Disabled {
 		if backend, err := h.agentBackend(a); err == nil {
-			if checker, ok := backend.(runtimeapi.HealthChecker); ok {
+			if checker, ok := backend.(agentruntime.HealthChecker); ok {
 				if runtimeHealth, checkErr := checker.Health(r.Context(), a); checkErr == nil {
 					health["runtime_health"] = runtimeHealth
 				} else {
-					health["runtime_health_error"] = runtimeapi.PublicError(checkErr)
+					health["runtime_health_error"] = agentruntime.PublicError(checkErr)
 				}
 			}
 		}

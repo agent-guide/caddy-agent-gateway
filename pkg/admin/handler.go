@@ -8,10 +8,10 @@ import (
 	"github.com/agent-guide/agent-gateway/internal/httpcapture"
 	"github.com/agent-guide/agent-gateway/internal/httplog"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
-	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
+	acphost "github.com/agent-guide/agent-gateway/pkg/acp/host"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
+	agentruntime "github.com/agent-guide/agent-gateway/pkg/agent/runtime"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/credential"
 	"github.com/agent-guide/agent-gateway/pkg/gateway"
@@ -41,10 +41,10 @@ type Handler struct {
 	providerManager          *gateway.ProviderManager
 	modelCatalog             modelcatalog.Service
 	mcpRuntimeRegistry       *mcpruntime.Registry
-	acpRuntimeManager        *acpruntime.Manager
-	runtimeRegistry          *runtimeapi.Registry
-	runRegistry              *runtimeapi.RunRegistry
-	permissionBroker         *runtimeapi.PermissionBroker
+	acpRuntimeManager        *acphost.Manager
+	runtimeRegistry          *agentruntime.Registry
+	runRegistry              *agentruntime.RunRegistry
+	permissionBroker         *agentruntime.PermissionBroker
 	usageObserver            usage.InteractionObserver
 	usageQuery               usage.QueryService
 	usageStats               usage.RuntimeStats
@@ -74,10 +74,10 @@ func NewHandler(agentGateway *gateway.AgentGateway, logger *zap.Logger) *Handler
 	var providerManager *gateway.ProviderManager
 	var modelCatalogSvc modelcatalog.Service
 	var mcpRuntimeRegistry *mcpruntime.Registry
-	var acpRuntimeManager *acpruntime.Manager
-	var runtimeRegistry *runtimeapi.Registry
-	var runRegistry *runtimeapi.RunRegistry
-	var permissionBroker *runtimeapi.PermissionBroker
+	var acpRuntimeManager *acphost.Manager
+	var runtimeRegistry *agentruntime.Registry
+	var runRegistry *agentruntime.RunRegistry
+	var permissionBroker *agentruntime.PermissionBroker
 	var usageObserver usage.InteractionObserver
 	var usageQuery usage.QueryService
 	var usageStats usage.RuntimeStats

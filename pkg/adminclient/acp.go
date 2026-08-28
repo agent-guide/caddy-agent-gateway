@@ -5,12 +5,12 @@ import (
 	"net/http"
 	"net/url"
 
-	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
+	acphost "github.com/agent-guide/agent-gateway/pkg/acp/host"
 )
 
-type ACPInFlightTurn = acpruntime.InFlightTurn
-type ACPPooledInstanceInfo = acpruntime.PooledInstanceInfo
-type ACPPendingPermissionInfo = acpruntime.PendingPermissionInfo
+type ACPInFlightTurn = acphost.InFlightTurn
+type ACPPooledInstanceInfo = acphost.PooledInstanceInfo
+type ACPPendingPermissionInfo = acphost.PendingPermissionInfo
 
 type ACPRuntimeView struct {
 	InFlight           []ACPInFlightTurn          `json:"in_flight"`

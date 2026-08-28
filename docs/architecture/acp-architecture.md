@@ -19,10 +19,10 @@ helper.
 - `pkg/gateway/agentroute` owns unified ingress matching and `agent_id`
   targeting.
 - `pkg/gateway.ACPBackend` adapts common Agent execution to the native ACP
-  runtime and maintains the canonical `agent_id -> RuntimeConfig` snapshot.
-- `pkg/acp/runtime.Manager` owns process pools, native sessions, permissions,
+  runtime and maintains the canonical `agent_id -> hostconfig.Config` snapshot.
+- `pkg/acp/host.Manager` owns process pools, native sessions, permissions,
   transcripts, and exact-run cancellation.
-- `pkg/agent/runtimeapi` owns common run IDs, event envelopes, capabilities,
+- `pkg/agent/runtime` owns common run IDs, event envelopes, capabilities,
   permission brokering, and normalized errors.
 
 The dependency direction remains one-way: gateway adapters compose Agent and
@@ -54,7 +54,7 @@ POST /<agent-route>/turn
   -> resolve AgentRoute.agent_id from memory
   -> resolve Agent definition from immutable snapshot
   -> runtime registry selects ACPBackend
-  -> ACPBackend reads the agent_id keyed RuntimeConfig snapshot
+  -> ACPBackend reads the agent_id keyed hostconfig.Config snapshot
   -> native manager reuses or creates a fingerprint-matching process
   -> native ACP session/new or session/load + session/prompt
   -> common Agent SSE envelope

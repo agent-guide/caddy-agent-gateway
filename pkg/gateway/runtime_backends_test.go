@@ -14,16 +14,16 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
-	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
-	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
+	acphost "github.com/agent-guide/agent-gateway/pkg/acp/host"
+	"github.com/agent-guide/agent-gateway/pkg/acp/hostconfig"
 	"github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinhost "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
+	agentruntime "github.com/agent-guide/agent-gateway/pkg/agent/runtime"
 	basemcp "github.com/agent-guide/agent-gateway/pkg/mcp"
 	mcpservice "github.com/agent-guide/agent-gateway/pkg/mcp/service"
 )
 
-func inlineACPRuntime(cfg runtimeconfig.Config) *agent.ACPRuntime {
+func inlineACPRuntime(cfg hostconfig.Config) *agent.ACPRuntime {
 	return &agent.ACPRuntime{
 		AgentType: cfg.AgentType, CWD: cfg.CWD, AllowedRoots: append([]string(nil), cfg.AllowedRoots...),
 		DefaultModel: cfg.DefaultModel, Env: cloneStringMap(cfg.Env), ConfigOverrides: cloneStringMap(cfg.ConfigOverrides),
@@ -34,8 +34,8 @@ func inlineACPRuntime(cfg runtimeconfig.Config) *agent.ACPRuntime {
 type captureACPRuntime struct {
 	t     *testing.T
 	owner string
-	cfg   acpruntime.RuntimeConfig
-	req   acpruntime.TurnRequest
+	cfg   hostconfig.Config
+	req   acphost.TurnRequest
 }
 
 type preNativeRegistrationACPRuntime struct {
@@ -43,34 +43,34 @@ type preNativeRegistrationACPRuntime struct {
 	release chan struct{}
 }
 
-func (r *preNativeRegistrationACPRuntime) ServeConfiguredTurn(context.Context, string, acpruntime.RuntimeConfig, acpruntime.TurnRequest, acpruntime.EventSink) error {
+func (r *preNativeRegistrationACPRuntime) ServeConfiguredTurn(context.Context, string, hostconfig.Config, acphost.TurnRequest, acphost.EventSink) error {
 	close(r.entered)
 	<-r.release
 	return nil
 }
 
 func (*preNativeRegistrationACPRuntime) CancelRun(string, string) error {
-	return acpruntime.ErrRunNotFound
+	return acphost.ErrRunNotFound
 }
 
-func (r *captureACPRuntime) ServeConfiguredTurn(ctx context.Context, owner string, cfg acpruntime.RuntimeConfig, req acpruntime.TurnRequest, emit acpruntime.EventSink) error {
+func (r *captureACPRuntime) ServeConfiguredTurn(ctx context.Context, owner string, cfg hostconfig.Config, req acphost.TurnRequest, emit acphost.EventSink) error {
 	r.owner, r.cfg, r.req = owner, cfg, req
-	ids, _ := runtimeapi.IdentitiesFromContext(ctx)
+	ids, _ := agentruntime.IdentitiesFromContext(ctx)
 	dims, _ := usage.DimensionsFromContext(ctx)
 	if ids.AgentID != owner || ids.RunID == "" || dims.RunID != ids.RunID || dims.RuntimeType != agent.RuntimeTypeACP {
 		r.t.Fatalf("ACP identity bridge ids=%+v dims=%+v", ids, dims)
 	}
-	if err := emit(acpruntime.TurnEvent{Event: runtimeapi.EventSession, SessionID: "native-session"}); err != nil {
+	if err := emit(acphost.TurnEvent{Event: agentruntime.EventSession, SessionID: "native-session"}); err != nil {
 		return err
 	}
-	if err := emit(acpruntime.TurnEvent{Event: runtimeapi.EventContent, Text: "answer"}); err != nil {
+	if err := emit(acphost.TurnEvent{Event: agentruntime.EventContent, Text: "answer"}); err != nil {
 		return err
 	}
-	return emit(acpruntime.TurnEvent{Event: runtimeapi.EventDone, StopReason: "end_turn"})
+	return emit(acphost.TurnEvent{Event: agentruntime.EventDone, StopReason: "end_turn"})
 }
 
 func TestACPBackendTranslatesOptionsIntoIdentityFreeRuntime(t *testing.T) {
-	config := runtimeconfig.Config{
+	config := hostconfig.Config{
 		AgentType: "opencode", CWD: "/workspace",
 		AllowedRoots: []string{"/workspace"}, DefaultModel: "model-a", Env: map[string]string{"A": "B"},
 		ConfigOverrides: map[string]string{"base": "true"}, PermissionMode: "interactive",
@@ -80,15 +80,15 @@ func TestACPBackendTranslatesOptionsIntoIdentityFreeRuntime(t *testing.T) {
 	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(config)}}
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	raw := json.RawMessage(`{"thread_id":"thread-1","cwd":"/workspace/repo","model":"model-b","fresh_session":true,"config_overrides":{"turn":"yes"}}`)
-	req := runtimeapi.TurnRequest{Input: "hello", SessionID: "session-1", Options: runtimeapi.TurnOptions{Version: runtimeapi.TurnOptionsVersionV1, Runtime: raw}}
-	run, err := runtimeapi.NewTurnSequencer(t.Context(), backend, a, req)
+	req := agentruntime.TurnRequest{Input: "hello", SessionID: "session-1", Options: agentruntime.TurnOptions{Version: agentruntime.TurnOptionsVersionV1, Runtime: raw}}
+	run, err := agentruntime.NewTurnSequencer(t.Context(), backend, a, req)
 	if err != nil {
 		t.Fatalf("NewTurnSequencer: %v", err)
 	}
 	req.RunID = run.RunID()
 	ctx := usage.ContextWithDimensions(t.Context(), usage.InteractionDimensions{TraceID: "trace", SpanID: "span", AgentID: a.ID})
-	var events []runtimeapi.TurnEvent
-	if _, err := run.ServeSegment(ctx, backend, a, req, func(ev runtimeapi.TurnEvent) error { events = append(events, ev); return nil }); err != nil {
+	var events []agentruntime.TurnEvent
+	if _, err := run.ServeSegment(ctx, backend, a, req, func(ev agentruntime.TurnEvent) error { events = append(events, ev); return nil }); err != nil {
 		t.Fatalf("ServeSegment: %v", err)
 	}
 	if native.owner != a.ID || native.cfg.AgentType != config.AgentType || native.cfg.CWD != config.CWD {
@@ -97,7 +97,7 @@ func TestACPBackendTranslatesOptionsIntoIdentityFreeRuntime(t *testing.T) {
 	if native.req.ThreadID != "thread-1" || native.req.SessionID != "session-1" || native.req.CWD != "/workspace/repo" || native.req.Model != "model-b" || !native.req.FreshSession || native.req.ConfigOverrides["turn"] != "yes" {
 		t.Fatalf("native request = %+v", native.req)
 	}
-	if len(events) != 3 || events[0].Sequence != 1 || events[2].Event != runtimeapi.EventDone || events[2].RunID != req.RunID {
+	if len(events) != 3 || events[0].Sequence != 1 || events[2].Event != agentruntime.EventDone || events[2].RunID != req.RunID {
 		t.Fatalf("common events = %+v", events)
 	}
 	var terminal struct {
@@ -116,27 +116,27 @@ func TestACPBackendTranslatesOptionsIntoIdentityFreeRuntime(t *testing.T) {
 }
 
 func TestACPBackendCancelBeforeNativeRegistrationIsRetryable(t *testing.T) {
-	config := runtimeconfig.Config{AgentType: "opencode", CWD: "/workspace", AllowedRoots: []string{"/workspace"}}
+	config := hostconfig.Config{AgentType: "opencode", CWD: "/workspace", AllowedRoots: []string{"/workspace"}}
 	native := &preNativeRegistrationACPRuntime{entered: make(chan struct{}), release: make(chan struct{})}
-	backend := NewACPBackend(native, RuntimeControls{Runs: runtimeapi.NewRunRegistry()})
+	backend := NewACPBackend(native, RuntimeControls{Runs: agentruntime.NewRunRegistry()})
 	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(config)}}
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	done := make(chan error, 1)
 	go func() {
-		done <- backend.ServeTurn(t.Context(), a, runtimeapi.TurnRequest{
+		done <- backend.ServeTurn(t.Context(), a, agentruntime.TurnRequest{
 			RunID:   runID,
 			Input:   "hello",
-			Options: runtimeapi.TurnOptions{Version: runtimeapi.TurnOptionsVersionV1, Runtime: json.RawMessage(`{"thread_id":"thread-1"}`)},
-		}, func(runtimeapi.TurnEvent) error { return nil })
+			Options: agentruntime.TurnOptions{Version: agentruntime.TurnOptionsVersionV1, Runtime: json.RawMessage(`{"thread_id":"thread-1"}`)},
+		}, func(agentruntime.TurnEvent) error { return nil })
 	}()
 	select {
 	case <-native.entered:
 	case <-time.After(time.Second):
 		t.Fatal("ServeConfiguredTurn was not entered")
 	}
-	_, err := backend.CancelRun(t.Context(), a, runtimeapi.CancelRequest{RunID: runID, Mode: runtimeapi.CancelModeForce})
-	if !errors.Is(err, runtimeapi.ErrBackendUnavailable) {
+	_, err := backend.CancelRun(t.Context(), a, agentruntime.CancelRequest{RunID: runID, Mode: agentruntime.CancelModeForce})
+	if !errors.Is(err, agentruntime.ErrBackendUnavailable) {
 		t.Fatalf("pre-native cancellation error=%v, want backend_unavailable", err)
 	}
 	close(native.release)
@@ -186,7 +186,7 @@ func (h *checkpointBuiltinHost) StoreContinuationCursor(agentID, requestID strin
 
 func (h *checkpointBuiltinHost) ServeTurn(ctx context.Context, agentID string, req builtinhost.TurnRequest, emit builtinhost.EventSink) error {
 	h.t.Helper()
-	ids, ok := runtimeapi.IdentitiesFromContext(ctx)
+	ids, ok := agentruntime.IdentitiesFromContext(ctx)
 	if !ok || ids.AgentID != agentID || ids.RunID != req.RunID || ids.RuntimeType != agent.RuntimeTypeBuiltin {
 		h.t.Fatalf("runtime identities = %+v, request = %+v", ids, req)
 	}
@@ -219,24 +219,24 @@ func (h *checkpointBuiltinHost) ServeTurn(ctx context.Context, agentID string, r
 
 func TestBuiltinBackendContinuationUsesCommonRunSequencer(t *testing.T) {
 	host := &checkpointBuiltinHost{t: t}
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
-	backend := NewBuiltinBackend(host, RuntimeControls{Runs: runtimeapi.NewRunRegistry(), Permissions: broker})
+	broker := agentruntime.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup")) })
+	backend := NewBuiltinBackend(host, RuntimeControls{Runs: agentruntime.NewRunRegistry(), Permissions: broker})
 	a := agent.Agent{ID: "a1", Name: "A1", Runtime: agent.Runtime{Type: agent.RuntimeTypeBuiltin, Builtin: &agent.BuiltinRuntime{}}}
 	ctx := usage.ContextWithDimensions(t.Context(), usage.InteractionDimensions{TraceID: "trace-1", SpanID: "span-1"})
-	var events []runtimeapi.TurnEvent
+	var events []agentruntime.TurnEvent
 	cursorVisibleAtDone := false
-	sink := func(ev runtimeapi.TurnEvent) error {
+	sink := func(ev agentruntime.TurnEvent) error {
 		events = append(events, ev)
-		if ev.Event == runtimeapi.EventDone && ev.RequestID == "perm-1" {
+		if ev.Event == agentruntime.EventDone && ev.RequestID == "perm-1" {
 			cursor, err := backend.LoadContinuationCursor(ctx, a, "perm-1")
 			cursorVisibleAtDone = err == nil && cursor.RunID == ev.RunID && cursor.NextSequence == ev.Sequence+1 && cursor.NextSegment == ev.SegmentIndex+1
 		}
 		return nil
 	}
 
-	fresh := runtimeapi.TurnRequest{Input: "hello", SessionID: "session-1"}
-	run, err := runtimeapi.NewTurnSequencer(ctx, backend, a, fresh)
+	fresh := agentruntime.TurnRequest{Input: "hello", SessionID: "session-1"}
+	run, err := agentruntime.NewTurnSequencer(ctx, backend, a, fresh)
 	if err != nil {
 		t.Fatalf("NewTurnSequencer(fresh): %v", err)
 	}
@@ -245,8 +245,8 @@ func TestBuiltinBackendContinuationUsesCommonRunSequencer(t *testing.T) {
 		t.Fatalf("ServeSegment(fresh): %v", err)
 	}
 
-	resume := runtimeapi.TurnRequest{SessionID: "session-1", Permission: &runtimeapi.PermissionDecision{RequestID: "perm-1", Decisions: []runtimeapi.PermissionActionDecision{{ActionID: "call-1", Outcome: "allow"}}}}
-	restored, err := runtimeapi.NewTurnSequencer(ctx, backend, a, resume)
+	resume := agentruntime.TurnRequest{SessionID: "session-1", Permission: &agentruntime.PermissionDecision{RequestID: "perm-1", Decisions: []agentruntime.PermissionActionDecision{{ActionID: "call-1", Outcome: "allow"}}}}
+	restored, err := agentruntime.NewTurnSequencer(ctx, backend, a, resume)
 	if err != nil {
 		t.Fatalf("NewTurnSequencer(resume): %v", err)
 	}
@@ -273,24 +273,24 @@ func TestBuiltinBackendContinuationUsesCommonRunSequencer(t *testing.T) {
 			t.Fatalf("event[%d].segment = %d, want %d", i, ev.SegmentIndex, wantSegment)
 		}
 	}
-	if _, err := runtimeapi.NewTurnSequencer(ctx, backend, a, resume); !errors.Is(err, runtimeapi.ErrPermissionNotFound) {
+	if _, err := agentruntime.NewTurnSequencer(ctx, backend, a, resume); !errors.Is(err, agentruntime.ErrPermissionNotFound) {
 		t.Fatalf("second resume error = %v, want permission_not_found", err)
 	}
 }
 
 func TestBuiltinExactRunCancelDrainsPermissionBeforeNativeCancel(t *testing.T) {
 	host := &cancelOrderBuiltinHost{checkpointBuiltinHost: &checkpointBuiltinHost{t: t}}
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
-	backend := NewBuiltinBackend(host, RuntimeControls{Runs: runtimeapi.NewRunRegistry(), Permissions: broker})
+	broker := agentruntime.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup")) })
+	backend := NewBuiltinBackend(host, RuntimeControls{Runs: agentruntime.NewRunRegistry(), Permissions: broker})
 	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeBuiltin, Builtin: &agent.BuiltinRuntime{}}}
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	ctx := builtinBackendTestContext(t.Context(), a.ID, runID)
-	if err := backend.ServeTurn(ctx, a, runtimeapi.TurnRequest{RunID: runID, SessionID: "session-1", Input: "hello"}, func(runtimeapi.TurnEvent) error { return nil }); err != nil {
+	if err := backend.ServeTurn(ctx, a, agentruntime.TurnRequest{RunID: runID, SessionID: "session-1", Input: "hello"}, func(agentruntime.TurnEvent) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
-	result, err := backend.CancelRun(t.Context(), a, runtimeapi.CancelRequest{RunID: runID, Mode: runtimeapi.CancelModeForce})
-	if err != nil || result.State != runtimeapi.RunStateCancelled {
+	result, err := backend.CancelRun(t.Context(), a, agentruntime.CancelRequest{RunID: runID, Mode: agentruntime.CancelModeForce})
+	if err != nil || result.State != agentruntime.RunStateCancelled {
 		t.Fatalf("cancel result=%+v err=%v", result, err)
 	}
 	if got := strings.Join(host.order, ","); got != "expire,cancel" {
@@ -299,18 +299,18 @@ func TestBuiltinExactRunCancelDrainsPermissionBeforeNativeCancel(t *testing.T) {
 }
 
 func TestBuiltinAdminDecisionKeepsExpiryAndFailsClosed(t *testing.T) {
-	backend := NewBuiltinBackend(&checkpointBuiltinHost{t: t}, RuntimeControls{Permissions: runtimeapi.NewPermissionBroker()})
+	backend := NewBuiltinBackend(&checkpointBuiltinHost{t: t}, RuntimeControls{Permissions: agentruntime.NewPermissionBroker()})
 	t.Cleanup(func() {
-		backend.permissions.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup"))
+		backend.permissions.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup"))
 	})
 	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeBuiltin, Builtin: &agent.BuiltinRuntime{}}}
-	decision := runtimeapi.PermissionDecision{RequestID: "perm-expired", Decisions: []runtimeapi.PermissionActionDecision{{ActionID: "call-1", Outcome: "allow"}}}
+	decision := agentruntime.PermissionDecision{RequestID: "perm-expired", Decisions: []agentruntime.PermissionActionDecision{{ActionID: "call-1", Outcome: "allow"}}}
 	backend.storeBuiltinContinuation("cont-expired", builtinPermissionContinuation{agentID: a.ID, runID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", requestID: decision.RequestID})
 	if err := backend.ResolveContinuation(t.Context(), "cont-expired", decision, time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	err := backend.ServeTurn(t.Context(), a, runtimeapi.TurnRequest{RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Permission: &runtimeapi.PermissionDecision{RequestID: decision.RequestID}}, func(runtimeapi.TurnEvent) error { return nil })
-	if !errors.Is(err, runtimeapi.ErrPermissionExpired) {
+	err := backend.ServeTurn(t.Context(), a, agentruntime.TurnRequest{RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Permission: &agentruntime.PermissionDecision{RequestID: decision.RequestID}}, func(agentruntime.TurnEvent) error { return nil })
+	if !errors.Is(err, agentruntime.ErrPermissionExpired) {
 		t.Fatalf("expired decided continuation error=%v", err)
 	}
 	if len(backend.decided) != 0 {
@@ -320,26 +320,26 @@ func TestBuiltinAdminDecisionKeepsExpiryAndFailsClosed(t *testing.T) {
 
 func TestBuiltinPermissionShapeIsValidatedBeforeBrokerClaim(t *testing.T) {
 	host := &checkpointBuiltinHost{t: t}
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
+	broker := agentruntime.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup")) })
 	backend := NewBuiltinBackend(host, RuntimeControls{Permissions: broker})
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	info := runtimeapi.PendingPermission{
+	info := agentruntime.PendingPermission{
 		RequestID: "perm-1", AgentID: "a1", RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID,
-		Actions: []runtimeapi.PermissionAction{{ActionID: "call-1"}}, ExpiresAt: time.Now().Add(time.Minute),
+		Actions: []agentruntime.PermissionAction{{ActionID: "call-1"}}, ExpiresAt: time.Now().Add(time.Minute),
 	}
 	backend.storeBuiltinContinuation("cont-1", builtinPermissionContinuation{agentID: info.AgentID, runID: runID, requestID: info.RequestID})
 	if _, err := broker.Register(info, "cont-1", backend); err != nil {
 		t.Fatal(err)
 	}
-	err := broker.Resolve(t.Context(), info.AgentID, runtimeapi.PermissionDecision{
-		RequestID: info.RequestID, Decisions: []runtimeapi.PermissionActionDecision{{ActionID: "unknown", Outcome: "allow"}},
+	err := broker.Resolve(t.Context(), info.AgentID, agentruntime.PermissionDecision{
+		RequestID: info.RequestID, Decisions: []agentruntime.PermissionActionDecision{{ActionID: "unknown", Outcome: "allow"}},
 	})
-	if !errors.Is(err, runtimeapi.ErrInvalidRequest) || len(broker.List(info.AgentID)) != 1 || len(backend.decided) != 0 {
+	if !errors.Is(err, agentruntime.ErrInvalidRequest) || len(broker.List(info.AgentID)) != 1 || len(backend.decided) != 0 {
 		t.Fatalf("invalid resolve: err=%v pending=%d decided=%+v", err, len(broker.List(info.AgentID)), backend.decided)
 	}
-	if err := broker.Resolve(t.Context(), info.AgentID, runtimeapi.PermissionDecision{
-		RequestID: info.RequestID, Decisions: []runtimeapi.PermissionActionDecision{{ActionID: "call-1", Outcome: "allow"}},
+	if err := broker.Resolve(t.Context(), info.AgentID, agentruntime.PermissionDecision{
+		RequestID: info.RequestID, Decisions: []agentruntime.PermissionActionDecision{{ActionID: "call-1", Outcome: "allow"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -350,38 +350,38 @@ func TestBuiltinPermissionShapeIsValidatedBeforeBrokerClaim(t *testing.T) {
 
 func TestBuiltinDecidedPermissionIsScopedToRun(t *testing.T) {
 	host := &checkpointBuiltinHost{t: t}
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
+	broker := agentruntime.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup")) })
 	backend := NewBuiltinBackend(host, RuntimeControls{Permissions: broker})
 	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeBuiltin, Builtin: &agent.BuiltinRuntime{}}}
 	backend.decided["perm-1"] = decidedPermission{
 		agentID: a.ID, runID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		decision:  runtimeapi.PermissionDecision{RequestID: "perm-1", Outcome: "cancel"},
+		decision:  agentruntime.PermissionDecision{RequestID: "perm-1", Outcome: "cancel"},
 		expiresAt: time.Now().Add(time.Minute),
 	}
-	err := backend.ServeTurn(t.Context(), a, runtimeapi.TurnRequest{
+	err := backend.ServeTurn(t.Context(), a, agentruntime.TurnRequest{
 		RunID:      "run-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		Permission: &runtimeapi.PermissionDecision{RequestID: "perm-1"},
-	}, func(runtimeapi.TurnEvent) error { return nil })
-	if !errors.Is(err, runtimeapi.ErrPermissionNotFound) || len(backend.decided) != 1 {
+		Permission: &agentruntime.PermissionDecision{RequestID: "perm-1"},
+	}, func(agentruntime.TurnEvent) error { return nil })
+	if !errors.Is(err, agentruntime.ErrPermissionNotFound) || len(backend.decided) != 1 {
 		t.Fatalf("cross-run resume: err=%v decided=%+v", err, backend.decided)
 	}
 }
 
 func TestBuiltinResumeMapsMissingRunToPermissionNotFound(t *testing.T) {
 	host := &checkpointBuiltinHost{t: t}
-	backend := NewBuiltinBackend(host, RuntimeControls{Runs: runtimeapi.NewRunRegistry(), Permissions: runtimeapi.NewPermissionBroker()})
+	backend := NewBuiltinBackend(host, RuntimeControls{Runs: agentruntime.NewRunRegistry(), Permissions: agentruntime.NewPermissionBroker()})
 	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeBuiltin, Builtin: &agent.BuiltinRuntime{}}}
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	backend.decided["perm-lost"] = decidedPermission{
 		agentID: a.ID, runID: runID,
-		decision:  runtimeapi.PermissionDecision{RequestID: "perm-lost", Outcome: "cancel"},
+		decision:  agentruntime.PermissionDecision{RequestID: "perm-lost", Outcome: "cancel"},
 		expiresAt: time.Now().Add(time.Minute),
 	}
-	err := backend.ServeTurn(t.Context(), a, runtimeapi.TurnRequest{
-		RunID: runID, Permission: &runtimeapi.PermissionDecision{RequestID: "perm-lost"},
-	}, func(runtimeapi.TurnEvent) error { return nil })
-	if !errors.Is(err, runtimeapi.ErrPermissionNotFound) {
+	err := backend.ServeTurn(t.Context(), a, agentruntime.TurnRequest{
+		RunID: runID, Permission: &agentruntime.PermissionDecision{RequestID: "perm-lost"},
+	}, func(agentruntime.TurnEvent) error { return nil })
+	if !errors.Is(err, agentruntime.ErrPermissionNotFound) {
 		t.Fatalf("missing run resume error=%v", err)
 	}
 	if len(host.expired) != 1 || host.expired[0] != "a1:perm-lost" {
@@ -415,8 +415,8 @@ func TestACPPermissionActionsAreNormalized(t *testing.T) {
 		t.Fatalf("options=%+v", options)
 	}
 	raw, err := json.Marshal(struct {
-		Actions []runtimeapi.PermissionAction `json:"actions"`
-		Options []runtimeapi.PermissionOption `json:"options"`
+		Actions []agentruntime.PermissionAction `json:"actions"`
+		Options []agentruntime.PermissionOption `json:"options"`
 	}{actions, options})
 	if err != nil || strings.Contains(string(raw), "rawInput") || strings.Contains(string(raw), "a.txt") {
 		t.Fatalf("normalized actions leaked native input: %s, err=%v", raw, err)
@@ -428,23 +428,23 @@ type permissionResolverStub struct {
 	err   error
 }
 
-func (r *permissionResolverStub) ResolvePermission(acpruntime.PermissionDecision) error {
+func (r *permissionResolverStub) ResolvePermission(acphost.PermissionDecision) error {
 	r.calls++
 	return r.err
 }
 
 func TestACPLostContinuationUsesSpecificAuditResult(t *testing.T) {
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
-	native := &permissionResolverStub{err: acpruntime.ErrPermissionNotFound}
+	broker := agentruntime.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup")) })
+	native := &permissionResolverStub{err: acphost.ErrPermissionNotFound}
 	backend := NewACPBackend(nil)
-	info := runtimeapi.PendingPermission{RequestID: "perm-lost", AgentID: "a1", RuntimeType: agent.RuntimeTypeACP, RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ExpiresAt: time.Now().Add(time.Minute)}
+	info := agentruntime.PendingPermission{RequestID: "perm-lost", AgentID: "a1", RuntimeType: agent.RuntimeTypeACP, RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ExpiresAt: time.Now().Add(time.Minute)}
 	backend.storeACPContinuation("cont-lost", acpPermissionContinuation{runtime: native, requestID: info.RequestID})
 	if _, err := broker.Register(info, "cont-lost", backend); err != nil {
 		t.Fatal(err)
 	}
-	err := broker.Resolve(runtimeapi.WithPermissionSource(t.Context(), "agent_admin"), info.AgentID, runtimeapi.PermissionDecision{RequestID: info.RequestID, Outcome: "cancelled"})
-	if !errors.Is(err, runtimeapi.ErrPermissionNotFound) {
+	err := broker.Resolve(agentruntime.WithPermissionSource(t.Context(), "agent_admin"), info.AgentID, agentruntime.PermissionDecision{RequestID: info.RequestID, Outcome: "cancelled"})
+	if !errors.Is(err, agentruntime.ErrPermissionNotFound) {
 		t.Fatalf("lost continuation error = %v", err)
 	}
 	audits := broker.Audits(info.AgentID)
@@ -455,14 +455,14 @@ func TestACPLostContinuationUsesSpecificAuditResult(t *testing.T) {
 
 func TestBuiltinPermissionRegistrationFailureRollsBackNativeContinuation(t *testing.T) {
 	host := &checkpointBuiltinHost{t: t}
-	broker := runtimeapi.NewPermissionBroker()
-	broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_setup"))
+	broker := agentruntime.NewPermissionBroker()
+	broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_setup"))
 	backend := NewBuiltinBackend(host, RuntimeControls{Permissions: broker})
 	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeBuiltin, Builtin: &agent.BuiltinRuntime{}}}
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	ctx := builtinBackendTestContext(t.Context(), a.ID, runID)
-	err := backend.ServeTurn(ctx, a, runtimeapi.TurnRequest{RunID: runID, SessionID: "session-1", Input: "hello"}, func(runtimeapi.TurnEvent) error { return nil })
-	if !errors.Is(err, runtimeapi.ErrBackendUnavailable) {
+	err := backend.ServeTurn(ctx, a, agentruntime.TurnRequest{RunID: runID, SessionID: "session-1", Input: "hello"}, func(agentruntime.TurnEvent) error { return nil })
+	if !errors.Is(err, agentruntime.ErrBackendUnavailable) {
 		t.Fatalf("registration failure error = %v", err)
 	}
 	if len(host.expired) != 1 || host.expired[0] != "a1:perm-1" || len(backend.continuations) != 0 {
@@ -472,15 +472,15 @@ func TestBuiltinPermissionRegistrationFailureRollsBackNativeContinuation(t *test
 
 func TestBuiltinPermissionDeliveryFailureRollsBackBothStores(t *testing.T) {
 	host := &checkpointBuiltinHost{t: t}
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
+	broker := agentruntime.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup")) })
 	backend := NewBuiltinBackend(host, RuntimeControls{Permissions: broker})
 	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeBuiltin, Builtin: &agent.BuiltinRuntime{}}}
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	ctx := builtinBackendTestContext(t.Context(), a.ID, runID)
 	deliveryErr := errors.New("client disconnected")
-	err := backend.ServeTurn(ctx, a, runtimeapi.TurnRequest{RunID: runID, SessionID: "session-1", Input: "hello"}, func(ev runtimeapi.TurnEvent) error {
-		if ev.Event == runtimeapi.EventPermission {
+	err := backend.ServeTurn(ctx, a, agentruntime.TurnRequest{RunID: runID, SessionID: "session-1", Input: "hello"}, func(ev agentruntime.TurnEvent) error {
+		if ev.Event == agentruntime.EventPermission {
 			return deliveryErr
 		}
 		return nil
@@ -503,16 +503,16 @@ func TestAgentGatewayResetDrainsPendingAndDecidedPermissions(t *testing.T) {
 	}
 	runID := "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	backend.storeBuiltinContinuation("cont-pending", builtinPermissionContinuation{agentID: "a1", runID: runID, requestID: "perm-pending"})
-	if _, err := oldBroker.Register(runtimeapi.PendingPermission{RequestID: "perm-pending", AgentID: "a1", RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID, ExpiresAt: time.Now().Add(time.Hour)}, "cont-pending", backend); err != nil {
+	if _, err := oldBroker.Register(agentruntime.PendingPermission{RequestID: "perm-pending", AgentID: "a1", RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID, ExpiresAt: time.Now().Add(time.Hour)}, "cont-pending", backend); err != nil {
 		t.Fatal(err)
 	}
-	backend.decided["perm-decided"] = decidedPermission{agentID: "a1", runID: runID, decision: runtimeapi.PermissionDecision{RequestID: "perm-decided"}, expiresAt: time.Now().Add(time.Hour)}
+	backend.decided["perm-decided"] = decidedPermission{agentID: "a1", runID: runID, decision: agentruntime.PermissionDecision{RequestID: "perm-decided"}, expiresAt: time.Now().Add(time.Hour)}
 
 	g.Reset()
 	if len(host.expired) != 2 || len(oldBroker.List("a1")) != 0 {
 		t.Fatalf("reset cleanup: expired=%v pending=%v", host.expired, oldBroker.List("a1"))
 	}
-	if _, err := oldBroker.Register(runtimeapi.PendingPermission{RequestID: "perm-late", AgentID: "a1", RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID, ExpiresAt: time.Now().Add(time.Hour)}, "cont-late", backend); !errors.Is(err, runtimeapi.ErrBackendUnavailable) {
+	if _, err := oldBroker.Register(agentruntime.PendingPermission{RequestID: "perm-late", AgentID: "a1", RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID, ExpiresAt: time.Now().Add(time.Hour)}, "cont-late", backend); !errors.Is(err, agentruntime.ErrBackendUnavailable) {
 		t.Fatalf("old broker accepted late registration: %v", err)
 	}
 	audits := oldBroker.Audits("a1")
@@ -526,29 +526,29 @@ func TestAgentGatewayResetDrainsPendingAndDecidedPermissions(t *testing.T) {
 }
 
 func builtinBackendTestContext(ctx context.Context, agentID, runID string) context.Context {
-	ctx = runtimeapi.WithIdentities(ctx, runtimeapi.Identities{AgentID: agentID, RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID})
+	ctx = agentruntime.WithIdentities(ctx, agentruntime.Identities{AgentID: agentID, RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID})
 	return usage.ContextWithDimensions(ctx, usage.InteractionDimensions{AgentID: agentID, RuntimeType: agent.RuntimeTypeBuiltin, RunID: runID})
 }
 
 func TestACPPermissionShapeIsValidatedBeforeBrokerClaim(t *testing.T) {
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
+	broker := agentruntime.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup")) })
 	native := &permissionResolverStub{}
 	backend := NewACPBackend(nil)
-	info := runtimeapi.PendingPermission{
+	info := agentruntime.PendingPermission{
 		RequestID: "perm-acp", AgentID: "a1", RuntimeType: agent.RuntimeTypeACP,
 		RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ExpiresAt: time.Now().Add(time.Minute),
-		Options: []runtimeapi.PermissionOption{{OptionID: "allow-once", Kind: "allow_once", Name: "Allow once"}},
+		Options: []agentruntime.PermissionOption{{OptionID: "allow-once", Kind: "allow_once", Name: "Allow once"}},
 	}
 	backend.storeACPContinuation("cont-acp", acpPermissionContinuation{runtime: native, requestID: info.RequestID})
 	if _, err := broker.Register(info, "cont-acp", backend); err != nil {
 		t.Fatal(err)
 	}
-	err := broker.Resolve(runtimeapi.WithPermissionSource(t.Context(), "test"), "a1", runtimeapi.PermissionDecision{RequestID: info.RequestID, Outcome: "selected", OptionID: "not-advertised"})
-	if !errors.Is(err, runtimeapi.ErrInvalidRequest) || native.calls != 0 || len(broker.List("a1")) != 1 {
+	err := broker.Resolve(agentruntime.WithPermissionSource(t.Context(), "test"), "a1", agentruntime.PermissionDecision{RequestID: info.RequestID, Outcome: "selected", OptionID: "not-advertised"})
+	if !errors.Is(err, agentruntime.ErrInvalidRequest) || native.calls != 0 || len(broker.List("a1")) != 1 {
 		t.Fatalf("invalid resolve: err=%v calls=%d pending=%d", err, native.calls, len(broker.List("a1")))
 	}
-	if err := broker.Resolve(t.Context(), "a1", runtimeapi.PermissionDecision{RequestID: info.RequestID, Outcome: "selected", OptionID: "allow-once"}); err != nil {
+	if err := broker.Resolve(t.Context(), "a1", agentruntime.PermissionDecision{RequestID: info.RequestID, Outcome: "selected", OptionID: "allow-once"}); err != nil {
 		t.Fatal(err)
 	}
 	if native.calls != 1 || len(broker.List("a1")) != 0 {
@@ -559,12 +559,12 @@ func TestACPPermissionShapeIsValidatedBeforeBrokerClaim(t *testing.T) {
 func TestRuntimeBackendRejectsForeignOptionsAndDisabledAgent(t *testing.T) {
 	backend := NewBuiltinBackend(&checkpointBuiltinHost{t: t})
 	a := agent.Agent{ID: "a1", Runtime: agent.Runtime{Type: agent.RuntimeTypeBuiltin, Builtin: &agent.BuiltinRuntime{}}}
-	err := backend.ServeTurn(t.Context(), a, runtimeapi.TurnRequest{Options: runtimeapi.TurnOptions{Runtime: json.RawMessage(`{"cwd":"/tmp"}`)}}, func(runtimeapi.TurnEvent) error { return nil })
-	if !errors.Is(err, runtimeapi.ErrUnsupportedOption) {
+	err := backend.ServeTurn(t.Context(), a, agentruntime.TurnRequest{Options: agentruntime.TurnOptions{Runtime: json.RawMessage(`{"cwd":"/tmp"}`)}}, func(agentruntime.TurnEvent) error { return nil })
+	if !errors.Is(err, agentruntime.ErrUnsupportedOption) {
 		t.Fatalf("foreign option error = %v", err)
 	}
 	a.Disabled = true
-	if _, err := backend.Capabilities(t.Context(), a); !errors.Is(err, runtimeapi.ErrAgentDisabled) {
+	if _, err := backend.Capabilities(t.Context(), a); !errors.Is(err, agentruntime.ErrAgentDisabled) {
 		t.Fatalf("disabled capabilities error = %v", err)
 	}
 }
@@ -648,18 +648,18 @@ func TestBuiltinBackendRealCheckpointResumePreservesCommonSequenceAndSpanLink(t 
 		Agents: hitlAgentSource{a: a}, Models: hitlModelResolver{model: &hitlModel{}},
 		Tools: &hitlTools{}, Observer: observer,
 	})
-	broker := runtimeapi.NewPermissionBroker()
-	t.Cleanup(func() { broker.Close(runtimeapi.WithPermissionSource(context.Background(), "test_cleanup")) })
-	backend := NewBuiltinBackend(host, RuntimeControls{Runs: runtimeapi.NewRunRegistry(), Permissions: broker})
-	var events []runtimeapi.TurnEvent
-	eventSink := func(ev runtimeapi.TurnEvent) error { events = append(events, ev); return nil }
+	broker := agentruntime.NewPermissionBroker()
+	t.Cleanup(func() { broker.Close(agentruntime.WithPermissionSource(context.Background(), "test_cleanup")) })
+	backend := NewBuiltinBackend(host, RuntimeControls{Runs: agentruntime.NewRunRegistry(), Permissions: broker})
+	var events []agentruntime.TurnEvent
+	eventSink := func(ev agentruntime.TurnEvent) error { events = append(events, ev); return nil }
 
 	freshSpan, freshCtx := observer.Begin(t.Context(), usage.InteractionDimensions{
 		TraceID: "11111111111111111111111111111111", SpanID: "2222222222222222",
 		RouteID: "builtin:gated:turn", RouteKind: "builtin", AgentID: a.ID, RuntimeType: agent.RuntimeTypeBuiltin,
 	})
-	fresh := runtimeapi.TurnRequest{Input: "do it"}
-	run, err := runtimeapi.NewTurnSequencer(freshCtx, backend, a, fresh)
+	fresh := agentruntime.TurnRequest{Input: "do it"}
+	run, err := agentruntime.NewTurnSequencer(freshCtx, backend, a, fresh)
 	if err != nil {
 		t.Fatalf("fresh sequencer: %v", err)
 	}
@@ -668,9 +668,9 @@ func TestBuiltinBackendRealCheckpointResumePreservesCommonSequenceAndSpanLink(t 
 		t.Fatalf("fresh segment: %v", err)
 	}
 	freshSpan.Finish(usage.InteractionOutcome{Success: true, StatusCode: 200})
-	var permission runtimeapi.TurnEvent
+	var permission agentruntime.TurnEvent
 	for _, ev := range events {
-		if ev.Event == runtimeapi.EventPermission {
+		if ev.Event == agentruntime.EventPermission {
 			permission = ev
 		}
 	}
@@ -685,13 +685,13 @@ func TestBuiltinBackendRealCheckpointResumePreservesCommonSequenceAndSpanLink(t 
 	if err := json.Unmarshal(permission.Data, &payload); err != nil || len(payload.Calls) != 1 {
 		t.Fatalf("permission payload = %s, err=%v", permission.Data, err)
 	}
-	badResume := runtimeapi.TurnRequest{SessionID: permission.SessionID, Permission: &runtimeapi.PermissionDecision{RequestID: permission.RequestID, Outcome: "invalid"}}
-	badRun, err := runtimeapi.NewTurnSequencer(freshCtx, backend, a, badResume)
+	badResume := agentruntime.TurnRequest{SessionID: permission.SessionID, Permission: &agentruntime.PermissionDecision{RequestID: permission.RequestID, Outcome: "invalid"}}
+	badRun, err := agentruntime.NewTurnSequencer(freshCtx, backend, a, badResume)
 	if err != nil {
 		t.Fatalf("bad resume sequencer: %v", err)
 	}
 	badResume.RunID = badRun.RunID()
-	if result, err := badRun.ServeSegment(freshCtx, backend, a, badResume, eventSink); !errors.Is(err, runtimeapi.ErrInvalidRequest) || result.Started {
+	if result, err := badRun.ServeSegment(freshCtx, backend, a, badResume, eventSink); !errors.Is(err, agentruntime.ErrInvalidRequest) || result.Started {
 		t.Fatalf("bad resume result=%+v err=%v, want pre-stream invalid_request", result, err)
 	}
 
@@ -699,10 +699,10 @@ func TestBuiltinBackendRealCheckpointResumePreservesCommonSequenceAndSpanLink(t 
 		TraceID: "33333333333333333333333333333333", SpanID: "4444444444444444",
 		RouteID: "builtin:gated:turn", RouteKind: "builtin", AgentID: a.ID, RuntimeType: agent.RuntimeTypeBuiltin,
 	})
-	resume := runtimeapi.TurnRequest{SessionID: permission.SessionID, Permission: &runtimeapi.PermissionDecision{
-		RequestID: permission.RequestID, Decisions: []runtimeapi.PermissionActionDecision{{ActionID: payload.Calls[0].CallID, Outcome: "allow"}},
+	resume := agentruntime.TurnRequest{SessionID: permission.SessionID, Permission: &agentruntime.PermissionDecision{
+		RequestID: permission.RequestID, Decisions: []agentruntime.PermissionActionDecision{{ActionID: payload.Calls[0].CallID, Outcome: "allow"}},
 	}}
-	restored, err := runtimeapi.NewTurnSequencer(resumeCtx, backend, a, resume)
+	restored, err := agentruntime.NewTurnSequencer(resumeCtx, backend, a, resume)
 	if err != nil {
 		t.Fatalf("resume sequencer: %v", err)
 	}
@@ -759,11 +759,11 @@ type expiryRecordingResolver struct {
 	expired int
 }
 
-func (*expiryRecordingResolver) ValidateContinuationDecision(string, runtimeapi.PendingPermission, runtimeapi.PermissionDecision) error {
+func (*expiryRecordingResolver) ValidateContinuationDecision(string, agentruntime.PendingPermission, agentruntime.PermissionDecision) error {
 	return nil
 }
 
-func (*expiryRecordingResolver) ResolveContinuation(context.Context, string, runtimeapi.PermissionDecision, time.Time) error {
+func (*expiryRecordingResolver) ResolveContinuation(context.Context, string, agentruntime.PermissionDecision, time.Time) error {
 	return nil
 }
 
@@ -791,12 +791,12 @@ func (r *retireRecordingACPRuntime) RetireOwnerDeferred(ownerID, keep string) (i
 }
 
 func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
-	config := runtimeconfig.Config{
+	config := hostconfig.Config{
 		AgentType: "opencode", CWD: "/workspace",
 		AllowedRoots: []string{"/workspace"}, DefaultModel: "model-a",
 	}
 	native := &retireRecordingACPRuntime{captureACPRuntime: captureACPRuntime{t: t}}
-	permissions := runtimeapi.NewPermissionBroker()
+	permissions := agentruntime.NewPermissionBroker()
 	defer permissions.Close(context.Background())
 	backend := NewACPBackend(native, RuntimeControls{Permissions: permissions})
 	a := agent.Agent{ID: "agent-1", Runtime: agent.Runtime{Type: agent.RuntimeTypeACP, ACP: inlineACPRuntime(config)}}
@@ -814,7 +814,7 @@ func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
 	// not alias or change the published snapshot.
 	a.Runtime.ACP.DefaultModel = "model-b"
 	permissionResolver := &expiryRecordingResolver{}
-	if _, err := permissions.Register(runtimeapi.PendingPermission{
+	if _, err := permissions.Register(agentruntime.PendingPermission{
 		RequestID: "perm-1", AgentID: a.ID, RuntimeType: agent.RuntimeTypeACP,
 		RunID: "run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", TTL: time.Minute,
 	}, "cont-1", permissionResolver); err != nil {
@@ -839,11 +839,11 @@ func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
 		t.Fatalf("retired fingerprint left permission claimable: pending=%v expired=%d", got, permissionResolver.count())
 	}
 
-	// Disabled is management state rather than part of RuntimeConfig, but its
+	// Disabled is management state rather than part of hostconfig.Config, but its
 	// transition still retires every Agent-owned instance and rejects execution.
 	a.Disabled = true
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
-	if _, err := backend.Capabilities(t.Context(), a); !errors.Is(err, runtimeapi.ErrAgentDisabled) {
+	if _, err := backend.Capabilities(t.Context(), a); !errors.Is(err, agentruntime.ErrAgentDisabled) {
 		t.Fatalf("disabled capabilities error = %v", err)
 	}
 	if len(native.retirements) != 3 || native.retirements[2] != "agent-1|" {
@@ -855,7 +855,7 @@ func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
 	a.Runtime.ACP = &agent.ACPRuntime{}
 	backend.RefreshRuntimeConfigs(t.Context(), []agent.Agent{a})
 	summary, err := backend.RuntimeSummary(t.Context(), a)
-	if err != nil || summary.Healthy || summary.State != runtimeapi.RuntimeStateUnhealthy || !strings.Contains(string(summary.Details), "config_missing") {
+	if err != nil || summary.Healthy || summary.State != agentruntime.RuntimeStateUnhealthy || !strings.Contains(string(summary.Details), "config_missing") {
 		t.Fatalf("missing-config summary = %+v, err=%v", summary, err)
 	}
 	if len(native.retirements) != 4 || native.retirements[3] != "agent-1|" {
@@ -864,7 +864,7 @@ func TestACPRefreshRuntimeConfigsIsAtomicAndRetiresFingerprints(t *testing.T) {
 
 	// Removing the agent retires every owner instance and drops the entry.
 	backend.RefreshRuntimeConfigs(t.Context(), nil)
-	if _, err := backend.agentRuntimeConfig(a.ID); !errors.Is(err, runtimeapi.ErrBackendUnavailable) {
+	if _, err := backend.agentRuntimeConfig(a.ID); !errors.Is(err, agentruntime.ErrBackendUnavailable) {
 		t.Fatalf("removed agent config error = %v, want backend_unavailable", err)
 	}
 	if len(native.retirements) != 5 || native.retirements[4] != "agent-1|" {

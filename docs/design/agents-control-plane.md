@@ -122,7 +122,7 @@ lower-level protocol packages must not depend on `pkg/agent`.
 
 ```text
 pkg/agent
-  -> pkg/acp/runtime
+  -> pkg/acp/host
   -> pkg/gateway/agentroute + pkg/gateway/llmroute + pkg/gateway/mcproute
   -> pkg/llm/provider + pkg/credential + pkg/gateway/modelcatalog
   -> pkg/mcp/service + pkg/mcp/runtime
@@ -248,7 +248,7 @@ remain generic identity/lifecycle metadata and are not repeated inside
 `runtime.acp`. Conversely, ACP execution fields do not move into `policy`.
 This leaves one source of truth without erasing the runtime-specific schema.
 
-Reusable normalization and validation live in `pkg/acp/runtimeconfig` without
+Reusable normalization and validation live in `pkg/acp/hostconfig` without
 service-management fields. The Agent adapter converts `Agent.runtime.acp` to
 that type; `pkg/acp` does not import `pkg/agent`.
 
@@ -397,7 +397,7 @@ shared by direct AgentRoute callers and upper-layer Workflow Workers. The
 authoritative implementation sequence is
 [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md).
 
-The required contract lives in `pkg/agent/runtimeapi`:
+The required contract lives in `pkg/agent/runtime`:
 
 ```go
 type Backend interface {
@@ -429,13 +429,13 @@ handoff; the backend owns one Agent turn and its native capability behavior.
 The classification axis is **who owns the agent's lifecycle, and whether a
 separate process exists**, which yields three Agent runtime categories. ACP and
 builtin execution are implemented today behind runtime-specific dispatch;
-their `runtimeapi.Backend` adapters land before the AgentRoute cutover. `http`
+their `agentruntime.Backend` adapters land before the AgentRoute cutover. `http`
 remains a defined runtime shape whose executable adapter lands only after its
 wire/auth contract is implemented.
 
 - **`acp`** — the gateway owns the agent's external process lifecycle. Its
   adapter translates the Agent-owned `runtime.acp` block into
-  `acp.RuntimeConfig` and invokes the pool with `agent_id` as owner, reusing
+  `hostconfig.Config` and invokes the pool with `agent_id` as owner, reusing
   sessions, scope rebind, permission flow, and transcript. A turn ending does
   not tear down the process; the pool governs it by `IdleTTL`.
 - **`http`** — the agent service owns its lifecycle. Its future adapter
@@ -636,7 +636,7 @@ The control-plane contract is:
 - generic agent policy and attribution rules remain shared with `acp` and
   `http`;
 - upper-layer Workflow Activities use the shared AgentRoute/
-  `runtimeapi.Backend` boundary rather than a builtin-only task model.
+  `agentruntime.Backend` boundary rather than a builtin-only task model.
 
 After the AgentRoute cutover, the runtime-specific builtin route family is
 removed and one `AgentRoute.agent_id` relationship covers builtin, ACP, and
@@ -1013,7 +1013,7 @@ The unified-runtime cutover was deliberately breaking and completed the
 following removals:
 
 - reusable ACP normalization/validation now lives in the identity-free
-  protocol-owned `pkg/acp/runtimeconfig` package;
+  protocol-owned `pkg/acp/hostconfig` package;
 - rename ACP-internal `Service` identifiers that represented that management
   object to runtime/owner terminology;
 - copy each bound service's execution fields into its owning

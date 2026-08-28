@@ -8,10 +8,10 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
 	"github.com/agent-guide/agent-gateway/internal/statuserr"
-	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
+	acphost "github.com/agent-guide/agent-gateway/pkg/acp/host"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 	builtinpkg "github.com/agent-guide/agent-gateway/pkg/agent/builtin"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
+	agentruntime "github.com/agent-guide/agent-gateway/pkg/agent/runtime"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	"github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	"github.com/agent-guide/agent-gateway/pkg/credential"
@@ -68,11 +68,11 @@ type AgentGateway struct {
 	modelCatalog        modelcatalog.Service
 	mcpServiceManager   *mcpservice.Manager
 	mcpRuntimeRegistry  *mcpruntime.Registry
-	acpRuntimeManager   *acpruntime.Manager
+	acpRuntimeManager   *acphost.Manager
 	agentManager        *agentpkg.Manager
-	runtimeRegistry     *runtimeapi.Registry
-	runRegistry         *runtimeapi.RunRegistry
-	permissionBroker    *runtimeapi.PermissionBroker
+	runtimeRegistry     *agentruntime.Registry
+	runRegistry         *agentruntime.RunRegistry
+	permissionBroker    *agentruntime.PermissionBroker
 	usageObserver       usage.InteractionObserver
 	usageQuery          usage.QueryService
 	usageStats          usage.RuntimeStats
@@ -85,9 +85,9 @@ func NewAgentGateway() *AgentGateway {
 	return &AgentGateway{
 		configured:         false,
 		mcpRuntimeRegistry: mcpruntime.NewRegistry(),
-		runtimeRegistry:    runtimeapi.NewRegistry(),
-		runRegistry:        runtimeapi.NewRunRegistry(),
-		permissionBroker:   runtimeapi.NewPermissionBroker(),
+		runtimeRegistry:    agentruntime.NewRegistry(),
+		runRegistry:        agentruntime.NewRunRegistry(),
+		permissionBroker:   agentruntime.NewPermissionBroker(),
 		usageObserver:      usage.NoopObserver{},
 	}
 }
@@ -107,7 +107,7 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 	if err := g.configureMCPServiceManager(opts.ConfigStoreBackend); err != nil {
 		return err
 	}
-	g.acpRuntimeManager = acpruntime.NewManager()
+	g.acpRuntimeManager = acphost.NewManager()
 	if err := g.configureAgentManager(ctx, opts.ConfigStoreBackend); err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ func (g *AgentGateway) Bootstrap(ctx context.Context, opts BootstrapOptions) err
 			Observer: g.usageObserver,
 		})
 	}
-	var backends []runtimeapi.Backend
+	var backends []agentruntime.Backend
 	controls := RuntimeControls{Runs: g.runRegistry, Permissions: g.permissionBroker, Logger: opts.Logger}
 	var acpBackend *ACPBackend
 	if g.acpRuntimeManager != nil {
@@ -180,7 +180,7 @@ func (g *AgentGateway) Reset() {
 	// before tearing down either native runtime. Claimed builtin decisions live
 	// outside the pending broker and are discarded explicitly as well.
 	if g.permissionBroker != nil {
-		g.permissionBroker.Close(runtimeapi.WithPermissionSource(context.Background(), "process_shutdown"))
+		g.permissionBroker.Close(agentruntime.WithPermissionSource(context.Background(), "process_shutdown"))
 	}
 	if g.runtimeRegistry != nil {
 		if backend, err := g.runtimeRegistry.Resolve(agentpkg.RuntimeTypeBuiltin); err == nil {
@@ -209,9 +209,9 @@ func (g *AgentGateway) Reset() {
 	}
 	g.acpRuntimeManager = nil
 	g.agentManager = nil
-	g.runtimeRegistry = runtimeapi.NewRegistry()
-	g.runRegistry = runtimeapi.NewRunRegistry()
-	g.permissionBroker = runtimeapi.NewPermissionBroker()
+	g.runtimeRegistry = agentruntime.NewRegistry()
+	g.runRegistry = agentruntime.NewRunRegistry()
+	g.permissionBroker = agentruntime.NewPermissionBroker()
 	g.usageObserver = usage.NoopObserver{}
 	g.usageQuery = nil
 	g.usageStats = nil
@@ -311,7 +311,7 @@ func (g *AgentGateway) MCPRuntimeRegistry() *mcpruntime.Registry {
 	return g.mcpRuntimeRegistry
 }
 
-func (g *AgentGateway) ACPRuntimeManager() *acpruntime.Manager {
+func (g *AgentGateway) ACPRuntimeManager() *acphost.Manager {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.acpRuntimeManager
@@ -326,19 +326,19 @@ func (g *AgentGateway) AgentManager() *agentpkg.Manager {
 // RuntimeRegistry returns the runtime-neutral Agent backend registry. Runtime
 // adapters are registered during Bootstrap and consumed by Agent-bound ACP
 // and builtin route turns.
-func (g *AgentGateway) RuntimeRegistry() *runtimeapi.Registry {
+func (g *AgentGateway) RuntimeRegistry() *agentruntime.Registry {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.runtimeRegistry
 }
 
-func (g *AgentGateway) RunRegistry() *runtimeapi.RunRegistry {
+func (g *AgentGateway) RunRegistry() *agentruntime.RunRegistry {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.runRegistry
 }
 
-func (g *AgentGateway) PermissionBroker() *runtimeapi.PermissionBroker {
+func (g *AgentGateway) PermissionBroker() *agentruntime.PermissionBroker {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.permissionBroker

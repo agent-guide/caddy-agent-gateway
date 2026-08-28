@@ -187,7 +187,7 @@ func (h *Host) ServeTurn(ctx context.Context, agentID string, req TurnRequest, e
 	runID := req.RunID
 	if runID == "" {
 		// Direct Host callers remain supported until M2 moves every shipping
-		// path behind runtimeapi. Route execution supplies this id at the common
+		// path behind agentruntime. Route execution supplies this id at the common
 		// boundary and the Host preserves it verbatim.
 		runID, err = newRunID()
 		if err != nil {

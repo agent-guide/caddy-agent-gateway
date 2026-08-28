@@ -374,7 +374,7 @@ that meaning, and treat the totals as an approximate context-growth signal, not 
 billable token count.
 
 Field names are fixed by the ACP v1 `session/update` schema (already decoded and
-tested in `pkg/acp/runtime/acpupdate`), so `used`/`size` parsing needs no capture.
+tested in `pkg/acp/host/acpupdate`), so `used`/`size` parsing needs no capture.
 Emission is agent-specific but verified for both current adapters (live captures
 2026-06-24, one `usage_update` per turn each):
 
@@ -394,7 +394,7 @@ coverage.
 
 Targets:
 
-- `pkg/acp/runtime/types.go` + `pkg/acp/runtime/instance.go`: add a `Replay bool`
+- `pkg/acp/host/types.go` + `pkg/acp/host/instance.go`: add a `Replay bool`
   marker to `TurnEvent`, set true for every event built in
   `sessionMetaCache.turnStartEvents` (the cached config/commands/session-info/
   mode/usage snapshot replayed at each turn start). This is the seam that lets the

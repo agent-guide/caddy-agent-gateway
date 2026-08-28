@@ -333,7 +333,7 @@ mapping, and join operations that do not belong to LLM or MCP runtimes.
 ### 5.4 Why There Is No Agent Step
 
 An Agent turn is already a first-class operation exposed by AgentRoute and
-implemented by `runtimeapi.Backend.ServeTurn`. Wrapping it in a Gateway
+implemented by `agentruntime.Backend.ServeTurn`. Wrapping it in a Gateway
 Pipeline would either remain request-bound, adding little value, or reintroduce
 the durable scheduling and recovery engine rejected by this design.
 
@@ -636,7 +636,7 @@ Projects, schedules, and external engine objects never enter a gateway bundle.
 - test cancellation, duplicate Activity delivery, permission capability
   discovery, event relay, and trace correlation;
 - do not add Temporal SDK dependencies to `pkg/requestpipeline`,
-  `pkg/agent/runtimeapi`, or protocol packages.
+  `pkg/agent/runtime`, or protocol packages.
 
 ## 14. Rejected Alternatives
 

@@ -13,7 +13,7 @@ import (
 	"time"
 
 	baseacp "github.com/agent-guide/agent-gateway/pkg/acp"
-	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
+	"github.com/agent-guide/agent-gateway/pkg/acp/hostconfig"
 )
 
 var (
@@ -62,16 +62,16 @@ type Runtime struct {
 // ACPRuntime is the Agent-owned ACP execution configuration. Agent identity,
 // lifecycle metadata, and disabled state stay on Agent itself.
 type ACPRuntime struct {
-	AgentType       string                     `json:"agent_type"`
-	CWD             string                     `json:"cwd"`
-	AllowedRoots    []string                   `json:"allowed_roots,omitempty"`
-	DefaultModel    string                     `json:"default_model,omitempty"`
-	Env             map[string]string          `json:"env,omitempty"`
-	ConfigOverrides map[string]string          `json:"config_overrides,omitempty"`
-	IdleTTL         time.Duration              `json:"idle_ttl,omitempty"`
-	MaxInstances    int                        `json:"max_instances,omitempty"`
-	PermissionMode  string                     `json:"permission_mode,omitempty"`
-	Codex           *runtimeconfig.CodexConfig `json:"codex,omitempty"`
+	AgentType       string                  `json:"agent_type"`
+	CWD             string                  `json:"cwd"`
+	AllowedRoots    []string                `json:"allowed_roots,omitempty"`
+	DefaultModel    string                  `json:"default_model,omitempty"`
+	Env             map[string]string       `json:"env,omitempty"`
+	ConfigOverrides map[string]string       `json:"config_overrides,omitempty"`
+	IdleTTL         time.Duration           `json:"idle_ttl,omitempty"`
+	MaxInstances    int                     `json:"max_instances,omitempty"`
+	PermissionMode  string                  `json:"permission_mode,omitempty"`
+	Codex           *hostconfig.CodexConfig `json:"codex,omitempty"`
 }
 
 // HTTPRuntime carries the agent-level endpoint and callback auth for an agent
@@ -231,12 +231,12 @@ func (c ACPRuntime) validate(agentID string) error {
 	return nil
 }
 
-func (c ACPRuntime) runtimeConfig() runtimeconfig.Config {
+func (c ACPRuntime) runtimeConfig() hostconfig.Config {
 	mode := strings.TrimSpace(c.PermissionMode)
 	if mode == "" {
 		mode = baseacp.PermissionModeDeny
 	}
-	return runtimeconfig.Config{
+	return hostconfig.Config{
 		AgentType: c.AgentType, CWD: c.CWD,
 		AllowedRoots: append([]string(nil), c.AllowedRoots...), DefaultModel: c.DefaultModel,
 		Env: cloneStringMap(c.Env), ConfigOverrides: cloneStringMap(c.ConfigOverrides),
@@ -256,7 +256,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func cloneACPCodexConfig(in *runtimeconfig.CodexConfig) *runtimeconfig.CodexConfig {
+func cloneACPCodexConfig(in *hostconfig.CodexConfig) *hostconfig.CodexConfig {
 	if in == nil {
 		return nil
 	}

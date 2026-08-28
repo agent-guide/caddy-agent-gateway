@@ -119,7 +119,7 @@ CLI `agent-route`, and dispatcher `EnableAgent`/`agent`.
 
 ## ACP runtime-config snapshot (`runtime_backends.go`)
 
-`ACPBackend` builds the canonical `agent_id -> acpruntime.RuntimeConfig`
+`ACPBackend` builds the canonical `agent_id -> hostconfig.Config`
 snapshot solely from `Agent.runtime.acp` during the three-stage Agent
 definition commit. A changed fingerprint, disabled state, runtime switch, or
 deletion retires stale pools and drains pending permissions before the

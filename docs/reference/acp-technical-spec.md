@@ -46,7 +46,7 @@ POST /<agent-route>/turn
   -> resolve AgentRoute.agent_id
   -> read Agent from the in-memory definition snapshot
   -> select runtime.type = acp
-  -> read the agent_id keyed ACP RuntimeConfig snapshot
+  -> read the agent_id keyed ACP host configuration snapshot
   -> acquire/create a fingerprint-matching pooled process
   -> run the native ACP prompt
   -> emit the common Agent SSE envelope

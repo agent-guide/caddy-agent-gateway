@@ -7,7 +7,7 @@ import (
 
 	"github.com/agent-guide/agent-gateway/internal/httpjson"
 	"github.com/agent-guide/agent-gateway/internal/observability/usage"
-	acpruntime "github.com/agent-guide/agent-gateway/pkg/acp/runtime"
+	acphost "github.com/agent-guide/agent-gateway/pkg/acp/host"
 	agentpkg "github.com/agent-guide/agent-gateway/pkg/agent"
 )
 
@@ -44,7 +44,7 @@ type acpInFlightView struct {
 
 type acpInstanceView struct {
 	AgentID string `json:"agent_id"`
-	acpruntime.PooledInstanceInfo
+	acphost.PooledInstanceInfo
 }
 
 type acpPermissionView struct {
@@ -54,23 +54,23 @@ type acpPermissionView struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func acpInFlightViews(items []acpruntime.InFlightTurn) []acpInFlightView {
+func acpInFlightViews(items []acphost.InFlightTurn) []acpInFlightView {
 	out := make([]acpInFlightView, 0, len(items))
 	for _, item := range items {
-		out = append(out, acpInFlightView{AgentID: acpruntime.ScopeOwnerID(item.Scope), Scope: item.Scope})
+		out = append(out, acpInFlightView{AgentID: acphost.ScopeOwnerID(item.Scope), Scope: item.Scope})
 	}
 	return out
 }
 
-func acpInstanceViews(items []acpruntime.PooledInstanceInfo) []acpInstanceView {
+func acpInstanceViews(items []acphost.PooledInstanceInfo) []acpInstanceView {
 	out := make([]acpInstanceView, 0, len(items))
 	for _, item := range items {
-		out = append(out, acpInstanceView{AgentID: acpruntime.ScopeOwnerID(item.Scope), PooledInstanceInfo: item})
+		out = append(out, acpInstanceView{AgentID: acphost.ScopeOwnerID(item.Scope), PooledInstanceInfo: item})
 	}
 	return out
 }
 
-func acpPermissionViews(items []acpruntime.PendingPermissionInfo) []acpPermissionView {
+func acpPermissionViews(items []acphost.PendingPermissionInfo) []acpPermissionView {
 	out := make([]acpPermissionView, 0, len(items))
 	for _, item := range items {
 		out = append(out, acpPermissionView{RequestID: item.RequestID, AgentID: item.OwnerID, SessionID: item.SessionID, CreatedAt: item.CreatedAt})

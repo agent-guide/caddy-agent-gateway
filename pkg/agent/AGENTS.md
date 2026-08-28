@@ -13,7 +13,7 @@ managers; those packages must not depend on `pkg/agent`.
 
 Important files:
 
-- `runtimeapi/`: the runtime-neutral, turn-first Agent execution contracts,
+- `runtime/`: the runtime-neutral, turn-first Agent execution contracts,
   optional capability interfaces, normalized errors, and backend registry.
   It may depend on the `Agent` definition but must not import ACP, LLM, MCP, or
   other runtime implementations; gateway-owned adapters sit above both sides.
@@ -36,7 +36,7 @@ Important files:
   fields, never native payloads or tool arguments. Opaque continuation tokens
   are resolved only in backend-owned stores.
   Durable business workflows are owned by an upper-layer workbench and
-  external engine; their Workers use AgentRoute. `runtimeapi` must not grow a
+  external engine; their Workers use AgentRoute. `pkg/agent/runtime` must not grow a
   gateway AgentTask state machine or import a Temporal SDK.
 - `types.go`: the `Agent` model. Runtime is `acp` (gateway owns the lifecycle and
   stores execution config inline under `runtime.acp`), `http` (the agent owns its own lifecycle), or `builtin`

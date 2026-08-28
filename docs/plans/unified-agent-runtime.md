@@ -33,7 +33,7 @@ The target stack is:
 ```text
 Agent APIs / AgentRoute / external Workflow Activity
   -> runtime-neutral ids, events, errors, capabilities, policy
-  -> runtimeapi.Backend registry
+  -> agentruntime.Backend registry
        acp     -> ACP adapter -> agent-owned ACP runtime/process pool
        builtin -> builtin adapter -> in-process ADK host
        http    -> HTTP adapter -> external endpoint
@@ -47,7 +47,7 @@ becomes public.
 ### 1.1 Relationship to Workflow Orchestration
 
 There is one Agent execution SPI: the turn-first
-`runtimeapi.Backend.ServeTurn` contract defined here and in
+`agentruntime.Backend.ServeTurn` contract defined here and in
 [`agents-control-plane.md` §5.4](../design/agents-control-plane.md#54-runtime-backends).
 It is introduced before route cutover and registers ACP and builtin as the
 first executable backends; HTTP follows after its wire/auth contract is real.
@@ -471,7 +471,7 @@ type RuntimeInspector interface { RuntimeSummary(...) (RuntimeSummary, error) }
 type HealthChecker interface { Health(...) (Health, error) }
 ```
 
-The required contracts live in `pkg/agent/runtimeapi`; the registry is owned by
+The required contracts live in `pkg/agent/runtime`; the registry is owned by
 `AgentGateway`. Protocol packages stay unaware of `pkg/agent`; thin
 higher-level adapters perform translation.
 
@@ -976,14 +976,14 @@ HTTP route matching. Its adapters must preserve these dependency rules:
 - `pkg/acp` does not import `pkg/agent`;
 - lower LLM/MCP packages do not import `pkg/agent`;
 - the adapter translates `Agent.runtime.acp` into a protocol-owned
-  `acp.RuntimeConfig` and passes `agent_id` as the runtime owner key;
+  `hostconfig.Config` and passes `agent_id` as the runtime owner key;
 - route matching and VirtualKey validation stay in `pkg/dispatcher`;
 - runtime process/session logic stays in its current owner.
 
 Required placement and ownership:
 
-- shared request/event/backend contracts: `pkg/agent/runtimeapi`;
-- ACP adapter: a higher-level Agent adapter over `pkg/acp/runtime.Manager`;
+- shared request/event/backend contracts: `pkg/agent/runtime`;
+- ACP adapter: a higher-level Agent adapter over `pkg/acp/host.Manager`;
 - builtin adapter: a higher-level Agent adapter over `pkg/agent/builtin.Host`;
 - HTTP adapter: a higher-level outbound client with explicit auth resolution.
 
@@ -1385,7 +1385,7 @@ The implementation contract-test matrix is:
 
 Implementation status: complete.
 
-- add `pkg/agent/runtimeapi` with backend, optional capability, request, event,
+- add `pkg/agent/runtime` with backend, optional capability, request, event,
   capability, runtime-summary, health, and normalized error types;
 - add a backend registry with duplicate/missing registration validation;
 - wire the registry into `AgentGateway` without changing dispatch behavior;
@@ -1467,12 +1467,12 @@ continuation instead. M2 must unify the turn types and event production, while
 M3 must move those asymmetric operations onto capability interfaces and the
 common control plane. Estimate and review those as explicit workstreams.
 
-- replace `acpruntime.TurnRequest`/`TurnEvent` and
+- replace `acphost.TurnRequest`/`TurnEvent` and
   `builtinhost.TurnRequest`/`TurnEvent` at the adapter boundary with the common
-  `runtimeapi` request/event types; keep native-only data behind validated
+  `agentruntime` request/event types; keep native-only data behind validated
   options and typed event payloads;
 - implement ACP and builtin turn adapters over their existing managers/hosts;
-- bridge `runtimeapi.Identities` and the existing observability
+- bridge `agentruntime.Identities` and the existing observability
   `usage.InteractionDimensions` once at each adapter boundary so Agent/run/
   session/request and trace identities cannot diverge between common backend
   context and nested usage spans;
@@ -1481,7 +1481,7 @@ common control plane. Estimate and review those as explicit workstreams.
   independent backend sequence allocation;
 - while old routes remain, have the ACP adapter resolve the current
   `service_id` once at the migration boundary and translate its service record
-  into the future identity-free `acp.RuntimeConfig`; the common SPI and event
+  into the future identity-free `hostconfig.Config`; the common SPI and event
   model never expose `service_id`;
 - when a legacy ACPRoute's service is not bound to exactly one Agent, preserve
   its current native ACP turn/permission/session/transcript path through M4.
@@ -1525,7 +1525,7 @@ Verification:
 - add Agent-scoped run listing/cancellation;
 - add exact `run_id -> native cancel handle` tracking; for ACP this requires a
   new per-turn in-flight registry and native `session/cancel` path inside
-  `pkg/acp/runtime`, not delegation to `CloseScope`/`CloseThread` or inference
+  `pkg/acp/host`, not delegation to `CloseScope`/`CloseThread` or inference
   from a later I/O failure. ACP advertises force only, while builtin advertises
   force and graceful;
 - add Agent-scoped pending permission listing/decision;
@@ -1599,13 +1599,13 @@ explicit unbound legacy ACP exception remains until M5.
 Implementation status: complete.
 
 - add `pkg/gateway/agentroute` and routecore Agent constants;
-- introduce protocol-owned `acp.RuntimeConfig` without service management
+- introduce protocol-owned `hostconfig.Config` without service management
   identity fields and key the runtime manager/pool by `agent_id`;
 - make the preloaded legacy bound-service snapshot the **only** ACP execution
   config source during M4. Agent inline ACP config is not accepted yet, and
   turn dispatch never merges or races legacy and target config sources;
 - keep the temporary legacy-record translator thin: translate once at
-  definition refresh into the same canonical `acp.RuntimeConfig` shape that M5
+  definition refresh into the same canonical `hostconfig.Config` shape that M5
   will populate from Agent definitions, then discard the service-shaped input.
   Pool keys, config fingerprints, retirement, and turn execution consume only
   the canonical shape and contain no source-specific branch;
@@ -1647,7 +1647,7 @@ Implemented M4 evidence:
   `GetSnapshot` with no per-request store read; full store refreshes serialize
   their List-to-commit window with CRUD, while external ACP service edits
   recommit the already-loaded generation without another Agent-store read;
-- the canonical `acp.RuntimeConfig` snapshot is keyed by `agent_id`, built once
+- the canonical `hostconfig.Config` snapshot is keyed by `agent_id`, built once
   per definition commit by translating the legacy bound-service record, and is
   the only ACP execution/capability config source; pooled instances record
   their config fingerprint, a changed fingerprint is never reused, idle stale
@@ -1679,7 +1679,7 @@ cutover; the doubled migration-only allowance is not a supported steady state.
 - atomically switch the ACP adapter's sole snapshot input from legacy bound
   services to `Agent.runtime.acp`; remove the legacy snapshot builder in the
   same change, including the temporary legacy-record translator. The canonical
-  `acp.RuntimeConfig` consumer, fingerprint, and retirement path remain
+  `hostconfig.Config` consumer, fingerprint, and retirement path remain
   unchanged; the runtime never overlays, prefers, or falls back between two
   config sources;
 - replace bundle fields, validation, apply/export, summaries, and examples,
@@ -1834,7 +1834,7 @@ Implemented M7 evidence:
 - the old ACP/Builtin route packages, ACP service management package, legacy
   dispatcher entrypoints, and their Admin/client/CLI/bundle surfaces are
   physically deleted;
-- ACP process settings live in `pkg/acp/runtimeconfig`, while runtime pools,
+- ACP process settings live in `pkg/acp/hostconfig`, while runtime pools,
   sessions, permissions, diagnostics, and cancellation are keyed by Agent
   owner identity;
 - common Agent routes are the sole ACP/builtin ingress and common Agent run

@@ -37,7 +37,7 @@ The current implementation baseline is:
   target Agent directly, and selects ACP or builtin typed storage from the
   resolved `runtime.type`
 - MCP runtime inspection uses the in-memory registry in `pkg/mcp/runtime/registry.go`
-- ACP runtime inspection uses `pkg/acp/runtime.Manager`
+- ACP runtime inspection uses `pkg/acp/host.Manager`
 - the persisted config backend is SQLite through `pkg/configstore/sqlite`
 - Admin API handlers live under `pkg/admin`
 
@@ -130,7 +130,7 @@ ACP event payloads must not store turn input, deltas, content, reasoning text, t
    llmapi/...       mcp_handler.go    agent_handler.go
         │                │                │
         ▼                ▼                ▼
- pkg/gateway/      pkg/mcp/service   pkg/acp/runtime
+ pkg/gateway/      pkg/mcp/service   pkg/acp/host
  RoutedProvider
         │                │                │
         └────────────────┼────────────────┘
@@ -544,7 +544,7 @@ not persisted by these metrics; in the captured opencode turn `cost.amount` was
 `0`, so it is not a reliable billing source either. The parser extracts only
 `used`/`size` and must tolerate extra or nested fields like `cost`. `used` and
 `size` are the current-context token counts, parsed per the ACP v1
-`session/update` schema (the same schema `pkg/acp/runtime/acpupdate` already
+`session/update` schema (the same schema `pkg/acp/host/acpupdate` already
 decodes and tests against), and should be stored as `context_used_tokens` and
 `context_window_tokens` when this follow-up lands. They must not be treated as LLM-style `input_tokens`,
 `output_tokens`, or per-request `total_tokens`.
@@ -565,13 +565,13 @@ assuming uniform coverage when the v0.5.x token columns are added.
 **Turn-start replay must be excluded.** At the start of every turn the runtime
 replays the cached session metadata, including the last `usage` snapshot, as a
 `usage` event (`sessionMetaCache.turnStartEvents` in
-`pkg/acp/runtime/instance.go`). A replayed snapshot is indistinguishable from a
+`pkg/acp/host/instance.go`). A replayed snapshot is indistinguishable from a
 fresh `usage_update` at the SSE layer, so counting it would mark a turn that
 produced no new usage as `usage_observed=true` and re-stamp a stale
 `context_used_tokens` (and a spurious `token_delta`). ACP token metrics must
 count only **live** (non-replay) usage updates. This requires a source marker on
 the runtime event: add a `Replay bool` (set true in `turnStartEvents`) to
-`acpruntime.TurnEvent`, and have the dispatcher's usage parser ignore replayed
+`acphost.TurnEvent`, and have the dispatcher's usage parser ignore replayed
 `usage` events. Without that marker the metric cannot distinguish a turn's own
 usage from the joined-session snapshot.
 
@@ -1017,7 +1017,7 @@ The shared entry records route match, route disabled, and virtual key failures w
 - for `sessions` and `transcript`, record query shape without storing transcript content
 - finish the ACP span on runtime success, validation error, upstream error, client cancellation, or permission lookup failure
 
-`pkg/acp/runtime.Manager`:
+`pkg/acp/host.Manager`:
 
 - does not own metrics persistence
 - may expose structured summaries to the dispatcher through return values or event sink metadata when the dispatcher cannot derive them itself

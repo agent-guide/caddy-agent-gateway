@@ -18,7 +18,7 @@ Related documents deliberately own different concerns:
   identity, resources, policy, attribution, runtime-backend contract, and
   external Workflow Activity boundary across `acp`, `http`, and `builtin`.
 - [Unified Agent Runtime and Routing](../plans/unified-agent-runtime.md)
-  defines the turn-first `runtimeapi.Backend` adapter, common capability/event
+  defines the turn-first `agentruntime.Backend` adapter, common capability/event
   plane, and breaking migration from BuiltinRoute/ACPRoute to AgentRoute.
 - [Eino Capability Reuse](eino-reuse.md) records which eino/eino-ext
   capabilities the repository adopts, defers, or rejects and why.
@@ -259,7 +259,7 @@ lower protocol layers still never import `pkg/agent`.
   vocabulary is exactly the ACP set or a marked subset is an open question
   (see [§13](#13-open-questions)).
 - **Unified turn adapter**: builtin is registered as a turn-first
-  `runtimeapi.Backend`; AgentRoute is its only public ingress.
+  `agentruntime.Backend`; AgentRoute is its only public ingress.
 - **External Workflow Activity**: an upper-layer Worker invokes the same
   AgentRoute/turn adapter as any other caller. Temporal or another external
   engine may own durable business state, but it does not make the builtin
@@ -497,7 +497,7 @@ the caller's to abandon by disconnecting.
 ## 11. Implementation track
 
 The builtin runtime is its own track. PB0/PB1/PB1b have no dependency on a
-gateway Workflow roadmap. The turn-first builtin `runtimeapi.Backend` adapter
+gateway Workflow roadmap. The turn-first builtin `agentruntime.Backend` adapter
 belongs to the unified Agent runtime foundation; PB2 is only the later durable
 builtin session/checkpoint capability used by direct callers or external
 Workflow Workers.

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/agent-guide/agent-gateway/pkg/acp/runtimeconfig"
+	"github.com/agent-guide/agent-gateway/pkg/acp/hostconfig"
 	"github.com/agent-guide/agent-gateway/pkg/acp/transport"
 )
 
 type OpenRequest struct {
-	Config runtimeconfig.Config
+	Config hostconfig.Config
 	CWD    string
 }
 

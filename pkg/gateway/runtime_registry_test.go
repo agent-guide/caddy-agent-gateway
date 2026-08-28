@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/agent-guide/agent-gateway/pkg/agent"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi"
-	"github.com/agent-guide/agent-gateway/pkg/agent/runtimeapi/runtimeapitest"
+	agentruntime "github.com/agent-guide/agent-gateway/pkg/agent/runtime"
+	"github.com/agent-guide/agent-gateway/pkg/agent/runtime/runtimetest"
 	"github.com/agent-guide/agent-gateway/pkg/configstore"
 	configschema "github.com/agent-guide/agent-gateway/pkg/configstore/schema"
 	configstoresqlite "github.com/agent-guide/agent-gateway/pkg/configstore/sqlite"
@@ -44,7 +44,7 @@ func TestAgentGatewayResetReplacesRuntimeRegistry(t *testing.T) {
 	t.Parallel()
 
 	gateway := NewAgentGateway()
-	backend := runtimeapitest.NewBackend("fake")
+	backend := runtimetest.NewBackend("fake")
 	if err := gateway.RuntimeRegistry().Register(backend); err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
@@ -55,7 +55,7 @@ func TestAgentGatewayResetReplacesRuntimeRegistry(t *testing.T) {
 	if current == nil || current == old {
 		t.Fatal("Reset() did not install a fresh runtime registry")
 	}
-	if _, err := current.Resolve("fake"); !errors.Is(err, runtimeapi.ErrRuntimeNotExecutable) {
+	if _, err := current.Resolve("fake"); !errors.Is(err, agentruntime.ErrRuntimeNotExecutable) {
 		t.Fatalf("Resolve(fake) after Reset error = %v", err)
 	}
 }

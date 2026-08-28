@@ -9,14 +9,14 @@ status belong in `docs/architecture/acp-architecture.md`.
 - ACP is implemented natively in this repository; do not add a dependency on
   `github.com/beyond5959/ngent`.
 - Supported runtime adapters are registered through `pkg/acp/agentspi`; shared
-  wire parsing belongs in `pkg/acp/runtime`, with `session/update` parsing in
-  `pkg/acp/runtime/acpupdate`.
+  wire parsing belongs in `pkg/acp/host`, with `session/update` parsing in
+  `pkg/acp/host/acpupdate`.
 - At the gateway adapter boundary, pass the Agent-owned ACP config as an
-  identity-free `pkg/acp/runtimeconfig.Config` and use `agent_id` as the
+  identity-free `pkg/acp/hostconfig.Config` and use `agent_id` as the
   runtime owner key. Keep Agent identity and control-plane dependencies out of
   `pkg/acp`.
 - Pooled instances record the config content fingerprint they were created
-  under (`RuntimeConfig.Fingerprint` / the internal `configFingerprint`). A
+  under (`hostconfig.Config.Fingerprint` / the internal `configFingerprint`). A
   turn never reuses an instance whose fingerprint differs from the current
   config, and `Manager.RetireOwner(ownerID, keepFingerprint)` closes idle
   stale instances immediately while active ones drain their in-flight turn
@@ -49,7 +49,7 @@ status belong in `docs/architecture/acp-architecture.md`.
 - Apply the optional session-list `cwd` filter in the gateway after
   symlink-canonicalizing both sides; never forward that filter to the agent.
 - Preserve the shared HTTP error contract: missing Agent is `404`,
-  client-correctable input represented by `acpruntime.ErrInvalidRequest` is
+  client-correctable input represented by `acphost.ErrInvalidRequest` is
   `400`, and agent/transport failure is `502`.
 - Pool changes must preserve dead-instance eviction, idle cleanup, instance
   caps, and scope rebind: a session-addressed turn adopts the live instance
